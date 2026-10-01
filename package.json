@@ -1,0 +1,20 @@
+{
+  "name": "roundhouse",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Generic Notion-to-executor orchestration for Roundhouse",
+  "type": "module",
+  "bin": {
+    "roundhouse": "./src/cli.js"
+  },
+  "scripts": {
+    "check": "node --check src/cli.js && node --check src/dispatch.js && node --check src/codex-executor.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  }
+}
