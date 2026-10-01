@@ -77,3 +77,22 @@ test("missing mapping requests Blocked without invoking an executor", async () =
   assert.equal(events[0].status, "Blocked");
   assert.equal(events[0].error.code, "PROJECT_NOT_MAPPED");
 });
+
+test("legacy duplicate dispatch never removes another worker's lock", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-legacy-lock-"));
+  const repo = path.join(root, "repo"); fs.mkdirSync(repo);
+  command("git", ["init", "-q"], repo);
+  const configPath = path.join(root, "projects.yaml");
+  const state = path.join(root, "state");
+  fs.writeFileSync(configPath, `projects:\n  Test:\n    repo: ${repo}\nexecution:\n  state_dir: ${state}\n`);
+  const itemPath = path.join(root, "item.json");
+  fs.writeFileSync(itemPath, JSON.stringify({ Item: "Locked work", Project: "Test", Status: "Ready" }));
+  fs.mkdirSync(path.join(state, "locks"), { recursive: true });
+  const lock = path.join(state, "locks", "locked-work.lock");
+  fs.writeFileSync(lock, "another-owner");
+  const events = [];
+  const result = await dispatch({ configPath, itemPath, emit: (e) => events.push(e) });
+  assert.equal(result, 2);
+  assert.equal(events[0].error.code, "ALREADY_RUNNING");
+  assert.equal(fs.readFileSync(lock, "utf8"), "another-owner");
+});

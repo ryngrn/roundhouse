@@ -1,0 +1,21 @@
+projects:
+  - id: roundhouse
+    name: Roundhouse
+    purpose: Help one operator advance meaningful work across projects.
+    success_state: Ideas become coherent executable slices with minimal manual coordination.
+    status: active
+    weight: 1
+    max_concurrent_runs: 1
+    metric_definitions:
+      - key: slice_ready_rate
+        name: Intake-to-slice readiness rate
+        description: Percentage of captured ideas reaching slice-ready state without manual restructuring beyond answering decisions.
+        unit: percent
+        desired_direction: increase
+    resources: []
+  - id: family-history
+    name: Family History
+    purpose: Preserve family stories and evidence.
+    success_state: Family research is organized and traceable to sources.
+    status: active
+    resources: []

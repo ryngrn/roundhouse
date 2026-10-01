@@ -1,0 +1,37 @@
+# Copy outside the source checkout, e.g. to ~/.config/roundhouse/autonomy.yaml.
+# All relative file paths resolve against the configuration file's directory.
+decision:
+  kind: codex
+  bin: codex
+max_jobs_per_run: 20
+projects:
+  - id: example
+    name: Example
+    purpose: Deliver useful improvements to this project.
+    success_state: Requested improvements pass project checks and reach a delivery branch.
+    status: active
+    repository: /absolute/path/to/a/clean/repository
+    base_ref: HEAD
+    remote: origin
+    context_sources: [README.md]
+    weight: 1
+    max_concurrent_runs: 1
+    runtime: local
+    executor:
+      kind: codex
+      bin: codex
+    timeout_ms: 7200000
+    policy:
+      allow_autonomous: true
+      approval_required: false
+      project_confidence: 0.85
+      execution_confidence: 0.85
+      shipping: push_branch
+      continuation: continue_project_queue
+      review_after_shipping: false
+      max_rework_attempts: 1
+    verification:
+      - id: tests
+        command: [npm, test]
+      - id: checks
+        command: [npm, run, check]

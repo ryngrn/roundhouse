@@ -1,67 +1,76 @@
-# ChatGPT + Notion + Remote Desktop Commander bridge
+# Notion Depot control surface
 
-This bridge keeps provider-specific work outside the Roundhouse core:
+The existing ChatGPT Notion connector can continue to fetch work and show results.
+Remote Desktop Commander can transport files/commands where available. Neither
+connector is embedded into the generic workflow engine.
 
-- ChatGPT's Notion connector reads and updates the Roundhouse Inbox.
-- Remote Desktop Commander transports commands and files to the selected machine.
-- `roundhouse dispatch` resolves the item's `Project` through YAML configuration.
-- Codex CLI implements, checks, and commits the work in the mapped repository.
+## Schema migration
 
-## Status contract
+The existing Roundhouse Inbox database/data source was renamed **Roundhouse Depot**.
+Its ID is unchanged. Existing planning properties and records are preserved.
+Three additive properties support the autonomous workflow:
 
-Only `Ready` is executable. The bridge applies each `notion.status_requested`
-JSONL event emitted by the CLI to the same Notion page:
+- `Workflow State`: Depot, Decision, Needs Clarification, Ready, Executing,
+  Verification, Rework, Review, Blocked, Shipped.
+- `Roundhouse Job ID`: text containing the local item/job identity.
+- `Delivery Summary`: text with delivery refs and verification summary.
 
-1. `Running` immediately after validation, repository resolution, and lock acquisition.
-2. `Review` only after Codex exits successfully, creates a new local commit, and leaves a clean worktree.
-3. `Blocked` when mapping, repository validation, Codex execution, tests, commit verification, or another required step fails.
+The old `Status` select and its values remain for historical planning and the
+legacy adapter. Do not infer execution approval from either Status or Agent Ready.
+For new engine-managed work, use Workflow State. Old planning records are not
+automatically executed or bulk reclassified by this migration.
 
-The bridge never writes `Done`.
+## Submit a fetched page
 
-## Item payload
-
-Write the fetched Notion item to a temporary JSON file on the device. The payload
-may contain flat MCP properties or REST-style Notion property objects. A minimal
-payload is:
+Export a fetched page into JSON with a source `url`, `properties`, and optional
+`content`. Flat MCP and REST rich-text/select properties are accepted:
 
 ```json
 {
-  "url": "https://app.notion.com/p/<page-id>",
+  "url": "https://app.notion.com/p/PAGE_ID",
   "properties": {
-    "Item": "Implement the approved slice",
-    "Project": "Inclusion",
-    "Status": "Ready",
-    "Normalized Brief": "...",
-    "Outcome": "...",
-    "Acceptance Criteria": "..."
-  },
-  "content": "Optional body text from the Notion page"
+    "Item": "Improve the homepage",
+    "Project": "Example",
+    "Raw Intake": "The homepage explanation is confusing; make it clearer.",
+    "Outcome": "Visitors understand the product.",
+    "Acceptance Criteria": "Project-specific checks and approval policy apply."
+  }
 }
 ```
 
-## RDC invocation
-
-First validate without executing:
-
 ```sh
-roundhouse dispatch --item /tmp/roundhouse-item.json --dry-run
+node src/cli.js depot submit --state-dir STATE --config CONFIG --notion page.json
+node src/cli.js depot run --state-dir STATE --config CONFIG
+node src/cli.js depot outbox --state-dir STATE
 ```
 
-Then execute and monitor JSONL output:
+The page source URL is the default idempotency key. Reimporting unchanged content
+does not create a duplicate; changed content under the same key is rejected. Use
+clarification for an existing pending request or an explicit new key for new work.
+The original Raw Intake is preferred, then Normalized Brief, then Item title.
+Other supplied fields become decision context. Project names must map uniquely to
+configured IDs; unmapped names fail visibly.
 
-```sh
-roundhouse dispatch --item /tmp/roundhouse-item.json
-```
+## Returning results
 
-The ChatGPT bridge should update Notion as soon as each lifecycle event appears,
-then report the commit SHA, commit subject, Codex summary, and run-artifact path.
-Do not dispatch a second item until the first process reaches a terminal event.
+The persistent outbox contains source URLs and transition events. Its `current`
+projection contains aggregate item state and per-job delivery evidence. The bridge
+should use that current projection, not blindly replay an old event, when updating
+Workflow State. For decomposed requests, the parent becomes Shipped only when all
+its jobs have shipped. Populate Roundhouse Job ID and Delivery Summary using the
+returned IDs, branch, commit and verification evidence. Surface the decision's
+question only for Needs Clarification or Review. Record human answers through
+`depot clarify` or revision-bound `depot approve`, then run again.
 
-## Selecting work
+This preserves the existing connector-driven architecture: importing/exporting is
+an explicit bridge action. There is no unattended Notion polling service or stored
+Notion credential in the engine. CLI input works without Notion. Local workflow
+state is authoritative; a connector update failure does not rerun shipped work.
 
-Query the Roundhouse Inbox data source for `Status = Ready`. Select work according
-to the requested policy (or priority then creation time when no policy is given),
-fetch the complete page, and preserve the original page URL in the item payload.
+## Legacy dispatch
 
-Project names are never routed in bridge logic. The bridge passes `Project`
-through unchanged; `~/.config/roundhouse/projects.yaml` is the sole mapping source.
+The older `roundhouse dispatch --item page.json` path is retained for compatibility.
+It accepts only Status Ready, resolves a repository from the legacy YAML mapping,
+and asks the bridge for Running, Review, or Blocked. Its Review is a human delivery
+approval gate because that adapter neither verifies through the new policy engine
+nor pushes. It never marks Done. It should not be used for new autonomous work.

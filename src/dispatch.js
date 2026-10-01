@@ -26,6 +26,7 @@ export async function dispatch({
 }) {
   let item;
   let lockPath;
+  let ownsLock = false;
   let runningEmitted = false;
   try {
     const config = loadConfig(configPath);
@@ -53,6 +54,7 @@ export async function dispatch({
     lockPath = path.join(lockDir, `${key}.lock`);
     try {
       fs.writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx", mode: 0o600 });
+      ownsLock = true;
     } catch (error) {
       if (error.code === "EEXIST") {
         throw new RoundhouseError(
@@ -91,6 +93,7 @@ export async function dispatch({
       project: item.project,
       repo: project.repo,
       status: "Review",
+      reason: "Human delivery approval required by the legacy manual-shipping adapter. Use Depot for verified autonomous delivery.",
       commit: commit.headAfter,
       commit_subject: commit.subject,
       summary: execution.finalMessage,
@@ -119,6 +122,6 @@ export async function dispatch({
     emit({ type: "dispatch.rejected", error: failure });
     return 4;
   } finally {
-    if (lockPath) fs.rmSync(lockPath, { force: true });
+    if (ownsLock) fs.rmSync(lockPath, { force: true });
   }
 }

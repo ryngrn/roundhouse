@@ -1,0 +1,69 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { transitions, record, transition } from "../src/workflow/state.js";
+import { validateDecision, routeDecision } from "../src/workflow/decision.js";
+import { Store, acquireLock } from "../src/workflow/store.js";
+import { runProcess } from "../src/workflow/runtime.js";
+import { notionInput } from "../src/workflow/cli.js";
+
+const project = { id: "example", status: "active", executor: { kind: "command" }, runtime: "local",
+  verification: [{ id: "tests" }], policy: { project_confidence: 0.8, execution_confidence: 0.9, allow_autonomous: true, shipping: "push_branch" } };
+const decision = { project: "example", project_confidence: 0.8, execution_confidence: 0.9, sufficient_context: true, safe_to_execute: true,
+  approval_required: false, decision: "execute", reason: "Known project and constrained scope.", question: "", dependencies: [], executor: "command", runtime: "local", shipping_policy: "push_branch", should_decompose: false,
+  work_items: [{ title: "Change", outcome: "Useful outcome", acceptance_criteria: [{ description: "Tests pass", verification_ids: ["tests"] }] }] };
+
+test("unit: every declared state edge succeeds and undeclared edges fail", () => {
+  for (const [from, targets] of Object.entries(transitions)) {
+    for (const to of Object.keys(transitions)) {
+      const value = record("test", { state: from });
+      if (targets.includes(to) || to === "Blocked") { transition(value, to, "test"); assert.equal(value.state, to); assert.equal(value.history.length, 1); }
+      else assert.throws(() => transition(value, to, "test"));
+    }
+  }
+});
+test("unit: threshold boundaries, authority, configuration routing and readiness", () => {
+  assert.equal(routeDecision(decision, [project]).state, "Ready");
+  for (const changes of [{ project: null }, { project_confidence: 0.79 }, { execution_confidence: 0.89 }, { sufficient_context: false }, { runtime: "remote" }, { shipping_policy: "deploy" }, { work_items: [] }]) {
+    assert.equal(routeDecision({ ...decision, ...changes }, [project]).state, "Needs Clarification");
+  }
+  for (const changes of [{ approval_required: true }, { safe_to_execute: false }, { decision: "review" }]) assert.equal(routeDecision({ ...decision, ...changes }, [project]).state, "Review");
+  assert.equal(routeDecision(decision, [{ ...project, policy: { ...project.policy, allow_autonomous: false } }]).state, "Review");
+  assert.equal(routeDecision(decision, [{ ...project, status: "paused" }]).state, "Blocked");
+  assert.equal(routeDecision(decision, [project], "different").state, "Needs Clarification");
+  assert.throws(() => validateDecision({ ...decision, project_confidence: 2 }));
+  assert.throws(() => validateDecision({ ...decision, private_reasoning: "not allowed" }));
+});
+test("unit: idempotent submission, conflicting keys and owner-safe lock release", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-store-"));
+  const store = new Store(directory);
+  const input = { text: "idea" };
+  const first = store.submit(input, "key");
+  assert.equal(store.submit(input, "key").id, first.id);
+  assert.throws(() => store.submit({ text: "different" }, "key"), /different content/);
+  const release = acquireLock(store.workerLock);
+  assert.throws(() => acquireLock(store.workerLock), /Locked/);
+  assert.ok(fs.existsSync(store.workerLock));
+  assert.throws(() => store.recover(), /live/);
+  release();
+  assert.equal(new Store(directory).read().items[first.id].input.text, "idea");
+});
+test("unit: process failure, timeout and non-shell argv remain bounded", async () => {
+  const failed = await runProcess([process.execPath, "-e", "process.exit(3)"]);
+  assert.equal(failed.passed, false);
+  assert.equal(failed.exit_code, 3);
+  const timeout = await runProcess([process.execPath, "-e", "setInterval(()=>{},1000)"], { timeout: 40 });
+  assert.equal(timeout.timed_out, true);
+  assert.equal(timeout.passed, false);
+  const missing = await runProcess(["roundhouse-missing-command"]);
+  assert.equal(missing.passed, false);
+});
+test("unit: Notion is a source adapter, and Ready is never an authority grant", () => {
+  const input = notionInput({ url: "https://app.notion.com/p/abc", properties: { "Raw Intake": "Original request", Project: { select: { name: "Example" } }, Status: "Ready" } }, [{ id: "example", name: "Example" }]);
+  assert.equal(input.text, "Original request");
+  assert.equal(input.project_id, "example");
+  assert.equal(input.approved, undefined);
+  assert.throws(() => notionInput({ url: "https://app.notion.com/p/abc", Project: "Unknown" }, []), /map uniquely/);
+});

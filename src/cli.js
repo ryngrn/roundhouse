@@ -2,10 +2,14 @@
 import path from "node:path";
 import { DEFAULT_CONFIG_PATH } from "./config.js";
 import { dispatch } from "./dispatch.js";
+import { captureCommand } from "./intake.js";
+import { depotCommand } from "./workflow/cli.js";
 
 function usage() {
   return `Usage:
   roundhouse dispatch --item <notion-item.json> [--config <projects.yaml>] [--dry-run]
+  roundhouse capture --input <idea.json> --manifest <manifest.yaml> --state-dir <directory>
+  roundhouse depot <submit|run|status|outbox|approve|clarify|stop|resume|recover> [...]
 
 The command writes JSONL lifecycle events to stdout. A bridge such as ChatGPT +
 Remote Desktop Commander applies notion.status_requested events to Notion.`;
@@ -30,8 +34,14 @@ function parseArgs(argv) {
 }
 
 try {
-  const args = parseArgs(process.argv.slice(2));
-  process.exitCode = await dispatch(args);
+  if (process.argv[2] === "depot") {
+    process.stdout.write(`${JSON.stringify(await depotCommand(process.argv.slice(3)), null, 2)}\n`);
+  } else if (process.argv[2] === "capture") {
+    process.stdout.write(`${JSON.stringify(captureCommand(process.argv.slice(3)))}\n`);
+  } else {
+    const args = parseArgs(process.argv.slice(2));
+    process.exitCode = await dispatch(args);
+  }
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 64;

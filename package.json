@@ -8,11 +8,14 @@
     "roundhouse": "./src/cli.js"
   },
   "scripts": {
-    "check": "node --check src/cli.js && node --check src/dispatch.js && node --check src/codex-executor.js",
-    "test": "node --test"
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/*.test.js",
+    "test:unit": "node --test test/item.test.js test/config.test.js test/intake.test.js test/codex-executor.test.js test/workflow-unit.test.js",
+    "test:e2e": "node --test test/workflow-e2e.test.js",
+    "demo": "node scripts/demo.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.11"
   },
   "dependencies": {
     "yaml": "^2.8.1"
