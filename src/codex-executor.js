@@ -21,11 +21,15 @@ function parseTrace(text) {
   return { finalMessage, usage };
 }
 
+export function codexArgs(repo) {
+  return ["exec", "--json", "--approve-for-me", "-C", repo, "-"];
+}
+
 export async function runCodex({ codexBin, repo, prompt, runDir, timeoutMs }) {
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(path.join(runDir, "prompt.md"), prompt, { mode: 0o600 });
 
-  const args = ["exec", "--json", "--full-auto", "-C", repo, "-"];
+  const args = codexArgs(repo);
   const child = spawn(codexBin, args, {
     cwd: repo,
     env: process.env,
