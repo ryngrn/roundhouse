@@ -41,11 +41,28 @@ decisions are authoritative context. If a provider asks for the same resolved
 decision again, Roundhouse blocks the item instead of opening another Needs You
 question. This guard is deliberately domain-level state, not only prompt wording.
 
-Acceptance criteria must name existing verification command IDs. Every configured
-verification command runs, even if only some IDs are referenced by the decision.
-The decision agent must ask for clarification when those checks cannot establish
-the outcome. Automated tests establish what they actually check, not arbitrary
-product correctness; select meaningful project checks.
+The decision agent writes acceptance criteria from the requested outcome and scope.
+Roundhouse fills routine gaps with applicable configured checks, the shipping
+destination, and the selected role's quality evidence. Experiential, scope, visual
+review, and shipping criteria may intentionally have no command ID; that alone is
+not a reason to ask a human. Unknown command IDs still fail readiness, and every
+applicable configured command runs. Clarification is reserved for missing decisions
+that could materially change the product outcome, scope, risk, authority, or an
+irreversible action. Automated tests establish what they actually check, not
+arbitrary product correctness; select meaningful project checks.
+
+## Agent roles and skills
+
+Agent roles are context and skill bundles, separate from the executor and local
+runtime. Roundhouse infers design-heavy briefs as `designer`; project config can
+constrain `allowed_roles` or set a fixed `default_role`. Ordinary software work
+continues through the general role.
+
+Designer composes small Markdown skills under `src/agent/skills/` with optional
+project-owned skill and context sources. Context is bounded by file count, per-file
+bytes, and total bytes. Designer work records material design decisions and explicit
+browser/visual evidence. Automated checks and agent visual review have distinct
+evidence sources; Roundhouse does not treat an automated score as proof of beauty.
 
 ## Try it without credentials
 

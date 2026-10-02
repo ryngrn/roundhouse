@@ -15,7 +15,12 @@ projects:
     repository: /absolute/path/to/inclusion
     base_ref: main
     remote: origin
-    context_sources: [README.md]
+    context_sources: [README.md, BIBLE.md, DESIGN.md, AGENTS.md]
+    agent:
+      default_role: auto
+      allowed_roles: [general, designer]
+      context_sources:
+        designer: [index.html, assets/rebuild.css, src/site-content.mjs]
     weight: 1
     max_concurrent_runs: 1
     runtime: local
@@ -37,8 +42,12 @@ projects:
         command: [npm, test]
       - id: checks
         command: [npm, run, check]
+      - id: designer-browser
+        roles: [designer]
+        evidence_ids: [browser-render, no-obvious-overflow]
+        command: [node, /absolute/path/to/roundhouse/scripts/designer-browser-check.mjs, dist]
     deployment:
       kind: command
-      environment: production
-      push_branch: true
-      command: [npm, run, deploy:production]
+      environment: preview
+      push_branch: false
+      command: [/absolute/path/to/netlify-preview.sh]

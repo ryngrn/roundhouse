@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import { acquireLock, digest } from "./store.js";
 import { record } from "./state.js";
 import { projectContext } from "./config.js";
-import { DecisionProvider, routeDecision } from "./decision.js";
+import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
 import { LocalRuntime, CommandVerifier } from "./runtime.js";
 import { GitDelivery } from "./delivery.js";
+import { composeAgentRole, inferAgentRole } from "./roles.js";
 
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
@@ -13,6 +14,11 @@ function fallbackDecisionKey(decision) {
     .map((value) => String(value ?? "").toLowerCase().replace(/\s+/g, " ").trim())
     .join("|");
   return `implicit:${digest(text).slice(0, 32)}`;
+}
+
+function executionProjectContext(project, role) {
+  const context = projectContext(project, { role });
+  return { ...context, agent_profile: composeAgentRole(role, project) };
 }
 
 export class Engine {
@@ -37,11 +43,14 @@ export class Engine {
     });
     try {
       const item = this.store.read().items[id];
-      const projects = this.config.projects.map(projectContext);
+      const projects = this.config.projects.map((project) => projectContext(project));
       const selectedProject = item.selected_project ?? item.input.project_id;
-      const decision = await this.decision.decide({ item: { ...item, input: { ...item.input, ...(selectedProject ? { project_id: selectedProject } : {}) } }, projects, directory: path.join(this.store.directory, "decisions", id, String(item.revision)), onStart: this.processRecorder("items", id) });
-      const route = routeDecision(decision, projects, selectedProject);
-      const project = projects.find((p) => p.id === decision.project);
+      const proposed = await this.decision.decide({ item: { ...item, input: { ...item.input, ...(selectedProject ? { project_id: selectedProject } : {}) } }, projects, directory: path.join(this.store.directory, "decisions", id, String(item.revision)), onStart: this.processRecorder("items", id) });
+      const configuredProject = this.config.projects.find((project) => project.id === proposed.project);
+      const role = configuredProject ? inferAgentRole({ item, decision: proposed, project: configuredProject }) : "general";
+      const project = configuredProject ? executionProjectContext(configuredProject, role) : null;
+      const decision = project ? inferRoutineAcceptanceCriteria(proposed, project, item, role) : proposed;
+      const route = routeDecision(decision, project ? [project] : projects, selectedProject);
       this.store.change((data) => {
         const current = data.items[id];
         current.questions ??= [];
@@ -64,6 +73,7 @@ export class Engine {
         current.project_id = project?.id ?? null;
         current.policy_hash = project ? digest(project) : null;
         current.project_context = project ?? null;
+        current.agent_role = project ? role : null;
         current.processes = [];
         if (decision.dependencies.some((dependency) => !data.jobs[dependency])) {
           this.store.move(data, current, "Needs Clarification", "Decision referenced unknown dependencies.");
@@ -110,7 +120,7 @@ export class Engine {
       const id = `${item.id}-${index + 1}`;
       if (data.jobs[id]) throw new Error("Work already exists for this decision.");
       data.jobs[id] = record(id, { state: "Ready", parent_id: item.id, project_id: item.project_id,
-        work, project_context: item.project_context, policy_hash: item.policy_hash,
+        work, agent_role: item.agent_role ?? "general", project_context: item.project_context, policy_hash: item.policy_hash,
         dependencies: [...item.decision.dependencies, ...(index ? [`${item.id}-${index}`] : [])],
         attempts: [], processes: [], position: Object.keys(data.jobs).length });
       return id;
@@ -122,10 +132,11 @@ export class Engine {
       const item = data.items[id];
       if (!item || item.state !== "Review" || item.revision !== revision) throw new Error("Approval must reference the current Review revision.");
       const project = this.config.projects.find((p) => p.id === item.project_id);
-      if (!project || digest(projectContext(project)) !== item.policy_hash) throw new Error("Project context/policy changed. Clarify and re-decide first.");
+      const contextualProject = project ? executionProjectContext(project, item.agent_role ?? "general") : null;
+      if (!contextualProject || digest(contextualProject) !== item.policy_hash) throw new Error("Project context/policy changed. Clarify and re-decide first.");
       // Human approval resolves authority, not missing verification or confidence.
       const decision = { ...item.decision, safe_to_execute: true, approval_required: false, decision: "execute" };
-      const authorized = { ...project, policy: { ...project.policy, allow_autonomous: true, approval_required: false } };
+      const authorized = { ...contextualProject, policy: { ...contextualProject.policy, allow_autonomous: true, approval_required: false } };
       const route = routeDecision(decision, [authorized], item.selected_project ?? item.input.project_id);
       if (route.state !== "Ready") throw new Error(`Approval cannot bypass readiness: ${route.reason}`);
       item.approval = { actor, revision, at: new Date().toISOString() };
@@ -197,6 +208,29 @@ export class Engine {
       release();
     }
   }
+  async reconsider(id, actor = "system", expectedRevision) {
+    if (!actor?.trim()) throw new Error("Reconsideration requires an actor.");
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new Error("Reconsideration requires a positive expected revision.");
+    const release = acquireLock(this.store.workerLock);
+    try {
+      this.store.change((data) => {
+        const item = data.items[id];
+        if (!item || item.state !== "Needs Clarification" || item.job_ids.length || item.revision !== expectedRevision) throw new Error("Only the current unstarted clarification revision can be reconsidered.");
+        const now = new Date().toISOString();
+        for (const question of item.questions ?? []) {
+          if (question.status !== "open") continue;
+          question.status = "superseded";
+          question.revision += 1;
+          question.updated_at = now;
+          question.superseded_by = actor;
+        }
+        this.store.move(data, item, "Decision", `Re-evaluating readiness after a Roundhouse capability update (${actor}).`);
+        item.awaiting_decision = true;
+      });
+      await this.decide(id);
+      return this.store.read().items[id];
+    } finally { release(); }
+  }
   async execute(id, project) {
     let releaseRepo;
     try {
@@ -204,7 +238,7 @@ export class Engine {
       this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? null; });
       const state = this.store.read();
       const job = state.jobs[id];
-      if (digest(projectContext(project)) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
+      if (digest(executionProjectContext(project, job.agent_role ?? "general")) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
       if (!this.shipping.supports(project)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
       this.store.change((data) => { data.jobs[id].prepared = prepared; });
@@ -219,6 +253,7 @@ export class Engine {
         let deliveryAttempted = false;
         try {
           const execution = await this.runtime.execute({ project, job: current, workspace: prepared.workspace,
+            directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
             previous_failure: current.attempts.at(-1) ?? null, onStart: this.processRecorder("jobs", id) });
           this.store.change((data) => { data.jobs[id].attempts.at(-1).execution = execution; });
           if (!execution.passed) throw new Error(`Executor failed (exit ${execution.exit_code}).`);
@@ -227,7 +262,8 @@ export class Engine {
             data.jobs[id].attempts.at(-1).snapshot = snapshot;
             this.store.move(data, data.jobs[id], "Verification", "Verifying committed candidate.");
           });
-          const verification = await this.verifier.verify({ project, job: current, workspace: prepared.workspace, commit: snapshot.commit, onStart: this.processRecorder("jobs", id) });
+          const verification = await this.verifier.verify({ project, job: current, workspace: prepared.workspace, commit: snapshot.commit, snapshot, execution,
+            directory: path.join(this.store.directory, "evidence", id, String(attempt + 1)), onStart: this.processRecorder("jobs", id) });
           if (!this.shipping.unchanged(prepared, snapshot.commit)) {
             verification.passed = false;
             verification.checks.push({ id: "unchanged-tested-version", passed: false, stderr: "Verification modified the tested version or left uncommitted changes." });

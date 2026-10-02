@@ -14,7 +14,9 @@ export function itemView(data, item) {
   const completedJobs = jobs.filter((job) => job.state === "Shipped");
   const blockedJob = jobs.find((job) => job.state === "Blocked");
   const checks = completedJobs.flatMap((job) => job.shipping?.verification?.checks ?? []).map((check) => ({
-    id: check.id, passed: check.passed, exit_code: check.exit_code,
+    id: check.id, passed: check.passed, exit_code: check.exit_code, source: check.source ?? "automated",
+    ...(check.summary ? { summary: check.summary } : {}),
+    ...(check.artifacts?.length ? { artifacts: check.artifacts } : {}),
   }));
   const deliveries = completedJobs.map((job) => ({
     job_id: job.id,
@@ -24,8 +26,9 @@ export function itemView(data, item) {
     deployment: job.shipping?.deployment ?? null,
     timestamp: job.shipping?.timestamp ?? null,
   }));
+  const completionReports = completedJobs.map((job) => job.attempts.at(-1)?.execution?.report).filter(Boolean);
   const outcome = state === "Shipped"
-    ? `${completedJobs.map((job) => job.work.title).join("; ")} — ${completedJobs.length} work item${completedJobs.length === 1 ? "" : "s"} verified and shipped.`
+    ? completionReports.map((report) => report.summary).join(" ") || `${completedJobs.map((job) => job.work.title).join("; ")} — ${completedJobs.length} work item${completedJobs.length === 1 ? "" : "s"} verified and shipped.`
     : blockedJob ? `Blocked: ${blockedJob.history.at(-1)?.reason ?? "attention required"}` : null;
   return {
     id: item.id,
@@ -38,13 +41,14 @@ export function itemView(data, item) {
     question_id: openQuestion?.id ?? null,
     question_revision: openQuestion?.revision ?? null,
     outcome,
-    evidence: { checks, deliveries },
+    evidence: { checks, deliveries, completion_reports: completionReports },
     jobs: jobs.map((job) => ({
       id: job.id,
       title: job.work.title,
       state: job.state,
       reason: job.history.at(-1)?.reason ?? null,
       attempts: job.attempts.length,
+      agent_role: job.agent_role ?? "general",
       shipping: job.shipping ?? null,
     })),
   };

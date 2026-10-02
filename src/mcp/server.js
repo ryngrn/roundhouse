@@ -10,18 +10,23 @@ const filterShape = {
 const filterSchema = z.object(filterShape).strict();
 
 const jobSchema = z.object({
-  id: z.string(), title: z.string(), state: z.string(), reason: z.string().nullable(), attempts: z.number(), shipping: z.unknown().nullable(),
+  id: z.string(), title: z.string(), state: z.string(), reason: z.string().nullable(), attempts: z.number(), agent_role: z.string(), shipping: z.unknown().nullable(),
+});
+const completionReportSchema = z.object({
+  summary: z.string(), design_decisions: z.array(z.string()),
+  evidence: z.array(z.object({ id: z.string(), passed: z.boolean(), summary: z.string(), artifacts: z.array(z.string()) })),
 });
 const itemSchema = z.object({
   id: z.string(), state: z.string(), revision: z.number(), project: z.string().nullable(), summary: z.string(),
   reason: z.string().nullable(), question: z.string().nullable(), question_id: z.string().nullable(), question_revision: z.number().nullable(),
   outcome: z.string().nullable(),
   evidence: z.object({
-    checks: z.array(z.object({ id: z.string(), passed: z.boolean(), exit_code: z.number().optional() })),
+    checks: z.array(z.object({ id: z.string(), passed: z.boolean(), exit_code: z.number().optional(), source: z.string(), summary: z.string().optional(), artifacts: z.array(z.string()).optional() })),
     deliveries: z.array(z.object({
       job_id: z.string(), commit: z.string().nullable(), branch: z.string().nullable(), pushed: z.boolean(),
       deployment: z.unknown().nullable(), timestamp: z.string().nullable(),
     })),
+    completion_reports: z.array(completionReportSchema),
   }),
   jobs: z.array(jobSchema),
 });

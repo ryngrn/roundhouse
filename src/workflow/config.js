@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
+import { agentRoleIds } from "./roles.js";
 
 export const shippingModes = ["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy"];
 const check = (value, message) => { if (!value) throw new Error(message); };
@@ -56,6 +57,8 @@ function normalizeProjects(raw, root) {
       check(nonempty(rule.id) && !verificationKeys.has(rule.id), "Verification IDs must be nonempty and unique.");
       verificationKeys.add(rule.id);
       check(commandValid(rule.command), "Verification command must be an argv array.");
+      check(rule.roles === undefined || (Array.isArray(rule.roles) && rule.roles.length > 0 && rule.roles.every((role) => agentRoleIds.includes(role))), "Verification roles must contain installed agent roles.");
+      check(rule.evidence_ids === undefined || (Array.isArray(rule.evidence_ids) && rule.evidence_ids.every(nonempty)), "Verification evidence_ids must be strings.");
     }
     const executor = project.executor ?? { kind: "codex", bin: "codex" };
     check(["codex", "command"].includes(executor.kind), "Unknown executor.");
@@ -64,6 +67,35 @@ function normalizeProjects(raw, root) {
     const timeout_ms = project.timeout_ms ?? 120 * 60_000;
     check(Number.isInteger(timeout_ms) && timeout_ms > 0, "timeout_ms must be positive.");
     check(project.context_sources === undefined || (Array.isArray(project.context_sources) && project.context_sources.every((source) => typeof source === "string")), "context_sources must be file paths.");
+    const suppliedAgent = project.agent ?? {};
+    check(suppliedAgent && typeof suppliedAgent === "object" && !Array.isArray(suppliedAgent), "agent must be an object.");
+    const agent = {
+      default_role: "auto",
+      allowed_roles: [...agentRoleIds],
+      context_sources: {},
+      skill_sources: {},
+      ...(suppliedAgent ?? {}),
+    };
+    check(agent.default_role === "auto" || agentRoleIds.includes(agent.default_role), "Unknown default agent role.");
+    check(Array.isArray(agent.allowed_roles) && agent.allowed_roles.length > 0 && agent.allowed_roles.every((role) => agentRoleIds.includes(role)), "allowed_roles must contain installed agent roles.");
+    check(new Set(agent.allowed_roles).size === agent.allowed_roles.length, "allowed_roles must be unique.");
+    if (agent.default_role !== "auto") check(agent.allowed_roles.includes(agent.default_role), "default_role must be allowed.");
+    for (const [field, mapping] of [["context_sources", agent.context_sources], ["skill_sources", agent.skill_sources]]) {
+      check(mapping && typeof mapping === "object" && !Array.isArray(mapping), `agent.${field} must be a role mapping.`);
+      for (const [role, sources] of Object.entries(mapping)) {
+        check(agentRoleIds.includes(role), `Unknown role in agent.${field}: ${role}`);
+        check(Array.isArray(sources) && sources.every(nonempty), `agent.${field}.${role} must contain file paths.`);
+      }
+    }
+    const context_limits = {
+      max_files: 16,
+      max_file_bytes: 65_536,
+      max_total_bytes: 262_144,
+      ...(project.context_limits ?? {}),
+    };
+    check(Number.isInteger(context_limits.max_files) && context_limits.max_files > 0 && context_limits.max_files <= 64, "context_limits.max_files must be 1–64.");
+    check(Number.isInteger(context_limits.max_file_bytes) && context_limits.max_file_bytes > 0 && context_limits.max_file_bytes <= 1_000_000, "context_limits.max_file_bytes must be bounded.");
+    check(Number.isInteger(context_limits.max_total_bytes) && context_limits.max_total_bytes > 0 && context_limits.max_total_bytes <= 2_000_000, "context_limits.max_total_bytes must be bounded.");
     let deployment = project.deployment;
     if (policy.shipping === "deploy") {
       check(deployment && typeof deployment === "object" && !Array.isArray(deployment), `Project ${project.id} requires deployment configuration.`);
@@ -78,6 +110,7 @@ function normalizeProjects(raw, root) {
     return {
       ...project, repository, weight, max_concurrent_runs, metric_definitions, policy, executor,
       runtime: "local", timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
+      agent, context_limits,
       ...(deployment ? { deployment } : {}),
     };
   });
@@ -118,12 +151,19 @@ export function saveWorkflowConfig(filename, raw) {
   return loadWorkflowConfig(absolute);
 }
 
-export function projectContext(project) {
-  return { ...project, context: (project.context_sources ?? []).map((relative) => {
+export function projectContext(project, { role } = {}) {
+  const sources = [...(project.context_sources ?? []), ...(role ? project.agent?.context_sources?.[role] ?? [] : [])];
+  const uniqueSources = [...new Set(sources)];
+  check(uniqueSources.length <= project.context_limits.max_files, `Project context exceeds ${project.context_limits.max_files} files.`);
+  let total = 0;
+  return { ...project, context: uniqueSources.map((relative) => {
     const filename = fs.realpathSync(path.resolve(project.repository, relative));
     const rel = path.relative(project.repository, filename);
     check(rel && !rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel), "Context source must remain inside repository.");
-    check(fs.statSync(filename).size <= 65536, "Context file exceeds 64 KiB.");
+    const size = fs.statSync(filename).size;
+    check(size <= project.context_limits.max_file_bytes, `Context file exceeds ${project.context_limits.max_file_bytes} bytes.`);
+    total += size;
+    check(total <= project.context_limits.max_total_bytes, `Project context exceeds ${project.context_limits.max_total_bytes} bytes.`);
     return { source: relative, text: fs.readFileSync(filename, "utf8") };
   }) };
 }

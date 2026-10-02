@@ -158,6 +158,14 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 200, result);
       }
+      const reconsider = url.pathname.match(/^\/api\/items\/([^/]+)\/reconsider$/);
+      if (request.method === "POST" && reconsider) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.reconsiderItem({ id: decodeURIComponent(reconsider[1]), expected_revision: input.expected_revision, actor: "local-user" });
+        loop.wake();
+        return send(response, 200, result);
+      }
       if (request.method === "POST" && url.pathname === "/api/worker/tick") {
         verifyOrigin(request, origins);
         await jsonBody(request);

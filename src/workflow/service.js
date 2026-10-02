@@ -91,4 +91,10 @@ export class RoundhouseService {
     const item = await this.engine.answerQuestion(id, answer, actor, expected_revision);
     return { item: itemView(this.store.read(), item), answer_recorded: true, reevaluated: true };
   }
+
+  async reconsiderItem({ id, expected_revision, actor = "local-user" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to reconsider work.");
+    const item = await this.engine.reconsider(id, actor, expected_revision);
+    return { item: itemView(this.store.read(), item), reconsidered: true };
+  }
 }

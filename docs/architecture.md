@@ -9,9 +9,10 @@ legacy manual-delivery adapter; it is not the autonomous workflow.
 | Depot source | CLI JSON/text, exported Notion page, and ChatGPT MCP | Submit immutable normalized input with a stable key |
 | Project/context store | Private YAML/JSON manifest plus local context files | Validated project policy and context snapshot |
 | Decision provider | Structured Codex response or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
+| Agent-role composer | Role manifest plus bounded Markdown skills and project context | General or Designer execution context and required evidence |
 | Durable workflow | Atomic local snapshot store, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
 | Execution runtime | Local subprocess, Codex or configured command | `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
-| Verification | Configured argv commands plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
+| Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | CLI approval/clarification, durable questions, and MCP answers | Revision-bound human response, durable audit record, immediate readiness reevaluation |
 | Status adapters | Browser polling, MCP status tools, and MCP Events webhooks | Project/item-scoped projection of durable outbox transitions |
@@ -91,7 +92,7 @@ is not implemented by the current Git adapter.
 
 ## Configuration and audit trust
 
-Project policy and verification commands are operator-owned configuration. Model
+Project policy, role settings, context bounds, and verification commands are operator-owned configuration. Model
 decisions cannot inject commands or select an unconfigured delivery policy. Input
 and provider output are validated at the boundary. The model may still misjudge
 semantic correctness; thresholds and tests are controls, not guarantees. State
