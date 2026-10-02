@@ -3,6 +3,7 @@ import path from "node:path";
 import { Store } from "./store.js";
 import { Engine } from "./engine.js";
 import { loadWorkflowConfig } from "./config.js";
+import { pickup, updates, acknowledge } from "./notion-bridge.js";
 
 export function statusView(data) {
   return {
@@ -40,6 +41,9 @@ export function notionInput(raw, projects) {
 export async function depotCommand(argv) {
   const [command, ...rest] = argv;
   const allowed = {
+    pickup: ["--state-dir", "--config", "--input"],
+    "notion-updates": ["--state-dir"],
+    "notion-ack": ["--state-dir", "--input"],
     submit: ["--state-dir", "--input", "--key", "--text", "--project", "--config", "--notion"],
     run: ["--state-dir", "--config", "--project"],
     status: ["--state-dir"], outbox: ["--state-dir"],
@@ -56,6 +60,9 @@ export async function depotCommand(argv) {
   }
   const required = (key) => { if (!options[key]) throw new Error(`${command} requires ${key}.`); return options[key]; };
   const store = new Store(required("--state-dir"));
+  if (command === "pickup") return pickup(store, JSON.parse(fs.readFileSync(required("--input"), "utf8")), loadWorkflowConfig(required("--config")).projects, notionInput);
+  if (command === "notion-updates") return updates(store.read(), statusView);
+  if (command === "notion-ack") return acknowledge(store, JSON.parse(fs.readFileSync(required("--input"), "utf8")), statusView);
   if (command === "status") return statusView(store.read());
   if (command === "outbox") {
     const data = store.read();
