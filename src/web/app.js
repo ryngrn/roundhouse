@@ -1,5 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 let configuration;
+const needsDrafts = new Map();
 
 async function api(url, options = {}) {
   const response = await fetch(url, options);
@@ -17,6 +18,14 @@ function node(tag, text, className) {
 
 function formatState(state) { return state.replace("Needs Clarification", "Needs You"); }
 
+function submitOnEnter(textarea, form) {
+  textarea.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    form.requestSubmit();
+  });
+}
+
 function renderNeeds(questions) {
   const list = $("#needs-list");
   list.replaceChildren();
@@ -28,9 +37,18 @@ function renderNeeds(questions) {
     const form = node("form", undefined, "answer-form");
     const input = node("textarea"); input.required = true; input.placeholder = "Your answer…";
     const button = node("button", "Answer");
+    input.value = needsDrafts.get(question.id) ?? "";
+    input.addEventListener("input", () => {
+      needsDrafts.set(question.id, input.value);
+      input.setCustomValidity("");
+    });
     form.append(input, button);
+    submitOnEnter(input, form);
+    let submitting = false;
     form.addEventListener("submit", async (event) => {
-      event.preventDefault(); button.disabled = true;
+      event.preventDefault();
+      if (submitting) return;
+      submitting = true; button.disabled = true; input.setCustomValidity("");
       try {
         if (question.kind === "review" && input.value.trim().toLowerCase() === "approve") {
           await api(`/api/items/${encodeURIComponent(question.item_id)}/approve`, {
@@ -43,8 +61,11 @@ function renderNeeds(questions) {
             body: JSON.stringify({ answer: input.value, expected_revision: question.revision }),
           });
         }
+        needsDrafts.delete(question.id);
+        input.value = "";
         await load();
-      } catch (error) { button.disabled = false; input.setCustomValidity(error.message); input.reportValidity(); }
+      } catch (error) { input.setCustomValidity(error.message); input.reportValidity(); }
+      finally { submitting = false; button.disabled = false; }
     });
     if (question.kind === "review") card.append(node("p", 'Type “approve” to approve this revision, or provide guidance.', "hint"));
     card.append(form);
@@ -130,17 +151,24 @@ async function load() {
   }
 }
 
-$("#intake-form").addEventListener("submit", async (event) => {
+const intakeForm = $("#intake-form");
+const intakeContent = $("#intake-content");
+submitOnEnter(intakeContent, intakeForm);
+let intakeSubmitting = false;
+intakeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (intakeSubmitting) return;
+  intakeSubmitting = true;
   const message = $("#intake-message"); message.textContent = "Saving…";
   try {
-    const input = { content: $("#intake-content").value };
+    const input = { content: intakeContent.value };
     if ($("#project-hint").value.trim()) input.project_hint = $("#project-hint").value.trim();
     const result = await api("/api/intake", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
     message.textContent = `Saved ${result.item.id}. The local worker will pick it up.`;
-    $("#intake-content").value = ""; $("#project-hint").value = "";
+    intakeContent.value = ""; $("#project-hint").value = "";
     setTimeout(load, 500);
   } catch (error) { message.textContent = error.message; }
+  finally { intakeSubmitting = false; }
 });
 
 $("#refresh").addEventListener("click", load);
