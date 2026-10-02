@@ -8,7 +8,7 @@ import { loadWorkflowConfig } from "../../src/workflow/config.js";
 import { Engine } from "../../src/workflow/engine.js";
 
 export const provider = fileURLToPath(new URL("./providers.mjs", import.meta.url));
-export function harness({ policy = {}, verification, executor } = {}) {
+export function harness({ policy = {}, verification, executor, deployment } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-flow-"));
   const repository = path.join(root, "repository");
   const remote = path.join(root, "remote.git");
@@ -28,6 +28,7 @@ export function harness({ policy = {}, verification, executor } = {}) {
     projects: [{ id: "example", name: "Example", purpose: "Prove delivery", success_state: "Verified changes are delivered", status: "active",
       repository, context_sources: ["README.md"], executor: executor ?? { kind: "command", command: [process.execPath, provider, "execute"] },
       policy: { allow_autonomous: true, continuation: "continue_project_queue", ...policy },
+      ...(deployment ? { deployment } : {}),
       verification: verification ?? [{ id: "feature", command: [process.execPath, "-e", "const fs=require('fs'); const s=fs.readFileSync('feature.txt','utf8'); if(!s.includes('implemented:') || s.includes('invalid')) process.exit(1)"] }],
     }],
   };

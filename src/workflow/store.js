@@ -69,7 +69,7 @@ export class Store {
         if (digest(data.items[id].input) !== digest(input)) throw new Error("Submission key already exists with different content. Use clarify or a new key.");
         return data.items[id];
       }
-      data.items[id] = record(id, { input, clarifications: [], decision: null, job_ids: [] });
+      data.items[id] = record(id, { input, clarifications: [], questions: [], decision: null, job_ids: [] });
       return data.items[id];
     });
   }

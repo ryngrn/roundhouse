@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { acquireLock, digest } from "./store.js";
 import { record } from "./state.js";
 import { projectContext } from "./config.js";
@@ -38,6 +39,7 @@ export class Engine {
         current.decision_history ??= [];
         if (current.decision) current.decision_history.push(current.decision);
         current.decision = decision;
+        current.decision_id = randomUUID();
         current.project_id = project?.id ?? null;
         current.policy_hash = project ? digest(project) : null;
         current.project_context = project ?? null;
@@ -47,6 +49,29 @@ export class Engine {
         } else {
           this.store.move(data, current, route.state, route.reason);
           if (route.state === "Ready") this.createJobs(data, current);
+        }
+        if (["Needs Clarification", "Review"].includes(current.state)) {
+          current.questions ??= [];
+          for (const question of current.questions) {
+            if (question.status === "open") {
+              question.status = "superseded";
+              question.revision += 1;
+              question.updated_at = new Date().toISOString();
+            }
+          }
+          const now = new Date().toISOString();
+          current.questions.push({
+            id: randomUUID(),
+            decision_id: current.decision_id,
+            item_id: current.id,
+            item_revision: current.revision,
+            revision: 1,
+            kind: current.state === "Review" ? "review" : "clarification",
+            prompt: decision.question.trim() || current.history.at(-1).reason,
+            status: "open",
+            created_at: now,
+            updated_at: now,
+          });
         }
       });
     } catch (error) {
@@ -77,6 +102,13 @@ export class Engine {
       const route = routeDecision(decision, [authorized], item.selected_project ?? item.input.project_id);
       if (route.state !== "Ready") throw new Error(`Approval cannot bypass readiness: ${route.reason}`);
       item.approval = { actor, revision, at: new Date().toISOString() };
+      const question = (item.questions ?? []).findLast((candidate) => candidate.status === "open");
+      if (question) {
+        question.answer = { text: "Approved", actor, at: item.approval.at };
+        question.status = "answered";
+        question.revision += 1;
+        question.updated_at = item.approval.at;
+      }
       this.store.move(data, item, "Ready", `Approved by ${actor}.`);
       this.createJobs(data, item);
       data.projects[item.project_id] ??= {};
@@ -88,7 +120,15 @@ export class Engine {
     return this.store.change((data) => {
       const item = data.items[id];
       if (!item || !["Needs Clarification", "Review"].includes(item.state) || item.job_ids.length) throw new Error("Item cannot be clarified here.");
-      item.clarifications.push({ text, actor, project_id: projectId ?? null, at: new Date().toISOString() });
+      const now = new Date().toISOString();
+      const question = (item.questions ?? []).findLast((candidate) => candidate.status === "open");
+      if (question) {
+        question.answer = { text, actor, at: now };
+        question.status = "answered";
+        question.revision += 1;
+        question.updated_at = now;
+      }
+      item.clarifications.push({ text, actor, project_id: projectId ?? null, question_id: question?.id ?? null, at: now });
       if (projectId) {
         if (!this.config.projects.some((p) => p.id === projectId)) throw new Error("Unknown project.");
         // Original input remains immutable; the provider receives this explicit correction.
@@ -100,6 +140,36 @@ export class Engine {
       return item;
     });
   }
+  async answerQuestion(id, answer, actor, expectedRevision) {
+    if (!id?.trim() || !answer?.trim() || !actor?.trim()) throw new Error("Answer requires an id, answer, and actor.");
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new Error("Answer requires a positive expected revision.");
+    const release = acquireLock(this.store.workerLock);
+    let itemId;
+    try {
+      this.store.change((data) => {
+        const matches = Object.values(data.items).flatMap((item) =>
+          (item.questions ?? []).filter((question) => question.id === id || question.decision_id === id).map((question) => ({ item, question })),
+        );
+        if (matches.length !== 1) throw new Error("Question or decision id does not identify one durable question.");
+        const { item, question } = matches[0];
+        if (question.status !== "open" || question.revision !== expectedRevision) throw new Error("Answer is stale or this question was already resolved.");
+        if (!["Needs Clarification", "Review"].includes(item.state) || item.job_ids.length) throw new Error("Question cannot be answered in the item's current state.");
+        const now = new Date().toISOString();
+        question.answer = { text: answer, actor, at: now };
+        question.status = "answered";
+        question.revision += 1;
+        question.updated_at = now;
+        item.clarifications.push({ text: answer, actor, question_id: question.id, decision_id: question.decision_id, at: now });
+        this.store.move(data, item, "Decision", "Human answer received; re-evaluating readiness.");
+        item.awaiting_decision = true;
+        itemId = item.id;
+      });
+      await this.decide(itemId);
+      return this.store.read().items[itemId];
+    } finally {
+      release();
+    }
+  }
   async execute(id, project) {
     let releaseRepo;
     try {
@@ -108,7 +178,7 @@ export class Engine {
       const state = this.store.read();
       const job = state.jobs[id];
       if (digest(projectContext(project)) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
-      if (!this.shipping.supports(project.policy.shipping)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
+      if (!this.shipping.supports(project)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
       this.store.change((data) => { data.jobs[id].prepared = prepared; });
       for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {

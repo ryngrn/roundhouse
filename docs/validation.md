@@ -25,10 +25,11 @@ configured check allowed the complete autonomous run. The initial restricted-she
 attempt could not start Codex; the successful run used the normal local environment
 with access to the configured Codex login.
 
-These demonstrations prove local decision/execution/verification/delivery and
-local Git push behavior. They do not claim a hosted GitHub push, production
-deployment, Herdr integration, parallel project workers, or unattended Notion
-polling. Real projects need valid Git credentials and meaningful verification
+These demonstrations prove local decision/execution/verification/delivery,
+local Git push behavior, and a safe fixture deployment. They do not claim a hosted
+GitHub push, a real external deployment, Herdr integration, parallel project
+workers, or unattended Notion polling. Real projects need valid Git/deployment
+credentials and meaningful verification
 commands. The portable Roundhouse self-development configuration is included;
 other projects use private manifests.
 

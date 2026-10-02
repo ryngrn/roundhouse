@@ -1,0 +1,44 @@
+# Copy this to the private Roundhouse configuration through the control room.
+# Replace the repository path and confirm the real project commands. No secrets
+# belong in this file; authenticate the deployment CLI with its normal credential
+# store or environment before enabling autonomous production deployment.
+decision:
+  kind: codex
+  bin: codex
+max_jobs_per_run: 10
+projects:
+  - id: inclusion
+    name: Inclusion
+    purpose: Deliver verified improvements to Inclusion.
+    success_state: Requested changes pass Inclusion checks and reach the configured deployment environment.
+    status: active
+    repository: /absolute/path/to/inclusion
+    base_ref: main
+    remote: origin
+    context_sources: [README.md]
+    weight: 1
+    max_concurrent_runs: 1
+    runtime: local
+    executor:
+      kind: codex
+      bin: codex
+    timeout_ms: 7200000
+    policy:
+      allow_autonomous: true
+      approval_required: false
+      project_confidence: 0.9
+      execution_confidence: 0.9
+      shipping: deploy
+      continuation: stop_after_job
+      review_after_shipping: false
+      max_rework_attempts: 1
+    verification:
+      - id: tests
+        command: [npm, test]
+      - id: checks
+        command: [npm, run, check]
+    deployment:
+      kind: command
+      environment: production
+      push_branch: true
+      command: [npm, run, deploy:production]

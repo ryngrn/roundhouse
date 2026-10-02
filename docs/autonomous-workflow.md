@@ -20,8 +20,10 @@ for human continuation approval while the delivered job remains Shipped.
 Each Depot item has a decision lifecycle and may produce up to eight sequential
 work jobs. Each job has its own execution lifecycle. The status command presents
 the aggregate item state; all jobs must ship before the item displays Shipped.
-The original request, clarifications, prior decisions, project context, and job
-attempts remain on disk.
+The original request, clarifications, durable questions and answers, prior decisions,
+project context, and job attempts remain on disk. Each question has a stable ID and
+revision. Answering one records the response and immediately repeats decision and
+readiness evaluation; execution remains separately owned by the worker.
 
 The Codex decision provider returns structured JSON: likely project, project and
 execution confidence, context sufficiency, safety/approval judgments, dependencies,
@@ -94,8 +96,11 @@ Implemented delivery policies:
 - `push_branch` (default): push the verified commit to its job branch and confirm
   that the remote reports the expected SHA. It does not merge or deploy.
 - `commit_only`: retain the verified local branch and commit without pushing.
+- `deploy`: optionally push the verified branch, then invoke either the
+  deterministic no-op fixture provider or an operator-configured command provider.
+  Only a successful provider result becomes Shipped.
 
-`create_pull_request`, `merge_to_main`, and `deploy` are recognized policy values
+`create_pull_request` and `merge_to_main` are recognized policy values
 but block before execution until their provider is implemented. They never fall
 back silently to another delivery mode. Git commit and push hooks are disabled for
 engine-owned delivery; declare required checks explicitly in verification policy.
@@ -120,7 +125,7 @@ when other independent work exists. A decomposition automatically chains its job
 Project queues initially use submission/decomposition order. Project weights select
 dispatch turns when multiple project queues have work.
 
-This first local worker has **one execution slot per state directory**. A worker
+The local worker has **one execution slot per state directory**. A worker
 lease and repository lease prevent simultaneous ownership. It does not yet open
 parallel CLI windows across projects. `max_concurrent_runs` is retained in the
 domain configuration for later capacity expansion, not advertised as active

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "roundhouse",
+  "version": "0.1.0",
+  "description": "Capture intent in the Roundhouse Depot, answer durable questions, and inspect work status.",
+  "author": {
+    "name": "Roundhouse"
+  },
+  "keywords": ["autonomous-work", "depot", "project-management"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Roundhouse",
+        "shortDescription": "Send intent to the Depot and resolve material questions.",
+        "longDescription": "Roundhouse owns durable intake, project inference, human decisions, readiness, and work outcomes. This plugin is a thin MCP adapter.",
+        "developerName": "Roundhouse",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "defaultPrompt": [
+          "Send that to Roundhouse.",
+          "Is anything in Roundhouse waiting on me?",
+          "What is the status of my Roundhouse work?"
+        ],
+        "brandColor": "#B44C2E"
+      }
+    }
+  }
+}

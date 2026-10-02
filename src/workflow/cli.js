@@ -4,20 +4,10 @@ import { Store } from "./store.js";
 import { Engine } from "./engine.js";
 import { loadWorkflowConfig } from "./config.js";
 import { pickup, updates, acknowledge } from "./notion-bridge.js";
+import { submitToDepot } from "./intake-contract.js";
+import { statusView } from "./views.js";
 
-export function statusView(data) {
-  return {
-    items: Object.values(data.items).map((item) => {
-      const jobs = item.job_ids.map((id) => data.jobs[id]);
-      const state = !jobs.length ? item.state : jobs.every((j) => j.state === "Shipped") ? "Shipped" :
-        ["Blocked", "Review", "Rework", "Verification", "Executing", "Ready"].find((s) => jobs.some((j) => j.state === s));
-      return { id: item.id, state, revision: item.revision, project: item.project_id ?? null,
-        question: item.decision?.question || item.history.at(-1)?.reason || null,
-        jobs: jobs.map((job) => ({ id: job.id, title: job.work.title, state: job.state, reason: job.history.at(-1)?.reason,
-          attempts: job.attempts.length, shipping: job.shipping ?? null })) };
-    }), projects: data.projects,
-  };
-}
+export { statusView } from "./views.js";
 
 export function notionInput(raw, projects) {
   const props = raw.properties ?? raw;
@@ -89,7 +79,7 @@ export async function depotCommand(argv) {
     if (options["--notion"]) input = notionInput(JSON.parse(fs.readFileSync(options["--notion"], "utf8")), loadWorkflowConfig(required("--config")).projects);
     else input = options["--input"] ? JSON.parse(fs.readFileSync(options["--input"], "utf8")) : { text: options["--text"], source: "cli", actor: "operator" };
     if (options["--project"]) input.project_id = options["--project"];
-    const item = store.submit(input, options["--key"] ?? (options["--notion"] ? input.source : required("--key")));
+    const item = submitToDepot(store, input, options["--key"] ?? (options["--notion"] ? input.source : required("--key")), { source: "cli", actor: "operator" });
     return { id: item.id, state: item.state, message: "Saved in Depot. Run the worker to interpret and execute eligible work." };
   }
   const engine = new Engine({ store, config: loadWorkflowConfig(path.resolve(required("--config"))) });

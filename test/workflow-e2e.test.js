@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { harness } from "./support/harness.js";
+import { harness, provider } from "./support/harness.js";
 import { Engine } from "../src/workflow/engine.js";
 import { Store } from "../src/workflow/store.js";
 import { git } from "../src/workflow/delivery.js";
@@ -62,10 +62,13 @@ test("e2e: human approval stops execution; current-revision approval resumes", a
   const h = harness(); const item = h.submit("requires approval");
   let result = await h.engine.run();
   assert.equal(result.items[item.id].state, "Review");
+  assert.equal(result.items[item.id].questions.length, 1);
+  assert.equal(result.items[item.id].questions[0].status, "open");
   assert.equal(result.executed, 0);
   assert.throws(() => h.engine.approve(item.id, 1, "human"), /revision/);
   h.engine.approve(item.id, result.items[item.id].revision, "human");
   result = await h.engine.run();
+  assert.equal(result.items[item.id].questions[0].status, "answered");
   assert.equal(Object.values(result.jobs)[0].state, "Shipped");
 });
 test("e2e: continue-project ships two jobs exactly once, chains their output and stops", async () => {
@@ -124,9 +127,39 @@ test("integration: verification changing the committed version cannot ship", asy
   assert.equal(job.shipping, undefined);
 });
 test("integration: unsupported delivery policy blocks before executor invocation", async () => {
-  const h = harness({ policy: { shipping: "deploy" } }); h.submit("change");
+  const h = harness({ policy: { shipping: "create_pull_request" } }); h.submit("change");
   const job = Object.values((await h.engine.run()).jobs)[0];
   assert.equal(job.state, "Blocked"); assert.equal(job.attempts.length, 0);
+});
+
+test("e2e: autonomous fixture deployment verifies and reaches durable Shipped state", async () => {
+  const h = harness({ policy: { shipping: "deploy" }, deployment: { kind: "fixture", environment: "production" } });
+  const item = h.submit("deploy this safely");
+  const result = await h.engine.run();
+  const job = Object.values(result.jobs)[0];
+  assert.equal(job.state, "Shipped");
+  assert.equal(result.items[item.id].state, "Ready");
+  assert.equal(job.shipping.pushed, false);
+  assert.equal(job.shipping.deployment.provider, "fixture");
+  assert.equal(job.shipping.deployment.environment, "production");
+  assert.equal(job.shipping.deployment.status, "succeeded");
+  const restarted = new Store(h.store.directory).read();
+  assert.equal(restarted.jobs[job.id].state, "Shipped");
+  assert.equal(restarted.jobs[job.id].shipping.deployment.revision, job.shipping.commit);
+});
+
+test("e2e: configured command deployment provider receives verified commit and ships", async () => {
+  const h = harness({
+    policy: { shipping: "deploy" },
+    deployment: { kind: "command", environment: "preview", command: [process.execPath, provider, "deploy"] },
+  });
+  h.submit("deploy through command provider");
+  const job = Object.values((await h.engine.run()).jobs)[0];
+  assert.equal(job.state, "Shipped");
+  assert.equal(job.shipping.deployment.provider, "command");
+  assert.equal(job.shipping.deployment.environment, "preview");
+  assert.equal(job.shipping.deployment.revision, job.shipping.commit);
+  assert.match(job.shipping.deployment.url, new RegExp(job.shipping.commit));
 });
 test("integration: dirty source repository is preserved and blocks work", async () => {
   const h = harness(); fs.writeFileSync(path.join(h.repository, "personal.txt"), "preserve me"); h.submit("change");

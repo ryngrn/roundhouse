@@ -1,4 +1,5 @@
 import { digest } from "./store.js";
+import { submitToDepot } from "./intake-contract.js";
 
 export function pageId(value) {
   const id = String(value ?? "").replaceAll("-", "").toLowerCase();
@@ -22,7 +23,7 @@ export function pickup(store, batch, projects, convert) {
     const input = convert({ ...page, url: `https://notion.so/${id}` }, projects);
     if (!input.project_id) throw new Error("Unattended pickup requires an explicitly configured project");
     input.notion = { page_id: id, data_source_id: source };
-    const item = store.submit(input, `notion:${id}`);
+    const item = submitToDepot(store, input, `notion:${id}`, { source: `notion:${id}`, actor: "notion-bridge" });
     return { page_id: id, id: item.id, duplicate: false };
   });
 }
@@ -36,7 +37,7 @@ export function updates(data, view) {
       "Roundhouse Job ID": item.id,
       "Delivery Summary": [
         `State: ${item.state}`,
-        item.question ?? "",
+        item.question ?? item.reason ?? "",
         ...item.jobs.map((job) => {
           const delivery = job.shipping;
           if (!delivery) return `${job.title}: ${job.state}. ${job.reason ?? ""}`;

@@ -18,6 +18,12 @@ if (process.argv[2] === "decide") {
     should_decompose: titles.length > 1,
     work_items: titles.map((title) => ({ title, outcome: "Append the requested entry to the feature file.", acceptance_criteria: [{ description: "Feature file contains a valid implemented entry.", verification_ids: ["feature"] }] })),
   }));
+} else if (process.argv[2] === "deploy") {
+  process.stdout.write(JSON.stringify({
+    status: "succeeded",
+    url: `https://deploy.fixture.invalid/${packet.project}/${packet.commit}`,
+    provider_reference: `fixture-${packet.commit.slice(0, 12)}`,
+  }));
 } else {
   if (packet.work.title.includes("executor fails")) process.exit(7);
   if (packet.work.title.includes("slow")) await new Promise((resolve) => setTimeout(resolve, 1500));

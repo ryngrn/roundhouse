@@ -6,18 +6,29 @@ legacy manual-delivery adapter; it is not the autonomous workflow.
 
 | Boundary | Current implementation | Replacement contract |
 | --- | --- | --- |
-| Depot source | CLI JSON/text and exported Notion page | Submit immutable input with a stable key |
-| Project/context store | YAML/JSON manifests plus local context files | Validated project policy and context snapshot |
+| Depot source | CLI JSON/text, exported Notion page, and ChatGPT MCP | Submit immutable normalized input with a stable key |
+| Project/context store | Private YAML/JSON manifest plus local context files | Validated project policy and context snapshot |
 | Decision provider | Structured Codex response or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
 | Durable workflow | Atomic local snapshot store, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
 | Execution runtime | Local subprocess, Codex or configured command | `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
 | Verification | Configured argv commands plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
-| Shipping provider | Git worktree, commit, verified branch push | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
-| Human feedback | CLI approval/clarification and bridge event outbox | Revision-bound human response, durable audit record |
+| Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
+| Human feedback | CLI approval/clarification, durable questions, and MCP answers | Revision-bound human response, durable audit record, immediate readiness reevaluation |
 
 The Engine imports no Notion SDK and contains no Codex command-line flags. Those
 belong to adapters. Runtime state is distinct from product state: a process exiting
 does not decide that work is Shipped or needs Review.
+
+`RoundhouseService` is the reusable external-adapter boundary. It normalizes intake,
+queries work/questions, and submits guarded human answers to the Engine. The MCP
+server contains schemas and presentation text only; the browser JSON API and future
+email or Slack adapters must call the same service instead of implementing
+inference or clarification state.
+
+The combined local server owns the browser control room, JSON API, MCP endpoint,
+and a bounded worker loop. HTTP handlers contain no routing, approval, execution,
+or shipping policy. The loop calls the same Engine used by the CLI, so worker locks
+and conservative recovery continue to govern both paths.
 
 ## Durable ownership
 
@@ -32,8 +43,8 @@ may retry instead of silently stealing ownership.
 Claim intent, runtime process IDs, candidate commits, verification evidence, and
 delivery intent are persisted at their boundaries. A restart never assumes an
 interrupted external action did not happen. Recovery is conservative and retains
-artifacts. No distributed database, queue daemon, or hidden background scheduler is
-required for this slice.
+artifacts. No distributed database or cloud queue is required. The installed
+LaunchAgent keeps the local server and its polling worker alive.
 
 ## Extending execution
 
@@ -54,11 +65,17 @@ adapters are extension boundaries, not claimed working integrations.
 
 ## Extending delivery
 
+The Git delivery adapter owns worktree preparation, candidate commits, optional
+branch push, and unchanged-version checks. For `shipping: deploy`, it invokes a
+configured deployment provider only after verification. The deterministic fixture
+provider has no external effect. The command provider receives a commit-bound JSON
+packet and is the real integration path for an operator-owned deployment CLI.
+
 Implement a provider that acquires resource ownership, prepares the target,
 captures an immutable candidate identity, checks identity after verification, and
 ships only passing evidence. Return repository/resource reference, branch/version,
 commit/artifact identity, timestamp, verification and optional PR/deployment data.
-Register supported policies explicitly. A document provider can use artifact
+Register other supported policies explicitly. A document provider can use artifact
 versions in place of Git SHAs while retaining the same lifecycle. Non-code delivery
 is not implemented by the current Git adapter.
 

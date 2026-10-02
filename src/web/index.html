@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Roundhouse Control Room</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div><span class="mark">R</span><div><h1>Roundhouse</h1><p>Local work control room</p></div></div>
+    <div id="connection" class="connection">Connecting…</div>
+  </header>
+  <main>
+    <section class="metrics" aria-label="Work counts">
+      <div><strong id="count-needs">0</strong><span>Needs You</span></div>
+      <div><strong id="count-active">0</strong><span>Active</span></div>
+      <div><strong id="count-queued">0</strong><span>Queued</span></div>
+      <div><strong id="count-completed">0</strong><span>Completed</span></div>
+      <div><strong id="count-blocked">0</strong><span>Blocked</span></div>
+    </section>
+
+    <section class="panel intake">
+      <div class="section-title"><div><span class="eyebrow">Depot</span><h2>Send in work</h2></div></div>
+      <form id="intake-form">
+        <textarea id="intake-content" required placeholder="Describe the outcome you want…"></textarea>
+        <div class="row"><input id="project-hint" placeholder="Project hint (optional)"><button type="submit">Add to Depot</button></div>
+      </form>
+      <p id="intake-message" class="message" role="status"></p>
+    </section>
+
+    <section class="panel needs">
+      <div class="section-title"><div><span class="eyebrow">Human decisions</span><h2>Needs You</h2></div><span id="needs-badge" class="badge">0</span></div>
+      <div id="needs-list" class="cards empty">Nothing needs you.</div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title"><div><span class="eyebrow">Work state</span><h2>Depot &amp; delivery</h2></div><button id="refresh" class="secondary">Refresh</button></div>
+      <div id="work-board" class="board"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title"><div><span class="eyebrow">Policy &amp; adapters</span><h2>Projects</h2></div><button id="edit-config" class="secondary">Edit configuration</button></div>
+      <div id="projects" class="projects empty">No projects configured yet.</div>
+    </section>
+  </main>
+
+  <dialog id="config-dialog">
+    <form method="dialog" id="config-form">
+      <div class="section-title"><div><span class="eyebrow">Private local file</span><h2>Project configuration</h2></div><button value="cancel" class="icon" aria-label="Close">×</button></div>
+      <p class="hint">JSON editor for project weight, review policy, repository, runtime/executor, verification, and deployment. Commands are argv arrays; validation runs before an atomic save.</p>
+      <textarea id="config-editor" spellcheck="false"></textarea>
+      <p id="config-message" class="message" role="status"></p>
+      <div class="actions"><button value="cancel" class="secondary">Cancel</button><button id="save-config" value="default">Validate &amp; save</button></div>
+    </form>
+  </dialog>
+  <script src="/app.js"></script>
+</body>
+</html>

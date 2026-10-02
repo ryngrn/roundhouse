@@ -1,0 +1,6 @@
+# Installed into the private Application Support directory on first setup.
+decision:
+  kind: codex
+  bin: codex
+max_jobs_per_run: 20
+projects: []

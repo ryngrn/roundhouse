@@ -9,6 +9,8 @@
   },
   "scripts": {
     "check": "node scripts/check.mjs",
+    "start": "node src/server/app-server.js",
+    "mcp": "node src/mcp/http-server.js",
     "test": "node --test test/*.test.js",
     "test:unit": "node --test test/item.test.js test/config.test.js test/intake.test.js test/codex-executor.test.js test/workflow-unit.test.js",
     "test:e2e": "node --test test/workflow-e2e.test.js",
@@ -18,6 +20,8 @@
     "node": ">=20.11"
   },
   "dependencies": {
-    "yaml": "^2.8.1"
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "yaml": "^2.8.1",
+    "zod": "^3.25.76"
   }
 }
