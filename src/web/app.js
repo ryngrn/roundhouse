@@ -134,7 +134,7 @@ $("#intake-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = $("#intake-message"); message.textContent = "Saving…";
   try {
-    const input = { content: $("#intake-content").value, idempotency_key: crypto.randomUUID() };
+    const input = { content: $("#intake-content").value };
     if ($("#project-hint").value.trim()) input.project_hint = $("#project-hint").value.trim();
     const result = await api("/api/intake", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
     message.textContent = `Saved ${result.item.id}. The local worker will pick it up.`;

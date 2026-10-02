@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import vm from "node:vm";
 import { harness } from "./support/harness.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { startRoundhouseServer } from "../src/server/app-server.js";
@@ -21,6 +22,35 @@ function request(base, pathname, { method = "GET", body, host = "roundhouse" } =
     req.on("error", reject);
     if (body !== undefined) req.end(JSON.stringify(body)); else req.end();
   });
+}
+
+class BrowserElement {
+  constructor() {
+    this.children = [];
+    this.listeners = new Map();
+    this.value = "";
+    this.textContent = "";
+    this.className = "";
+  }
+  addEventListener(name, listener) { this.listeners.set(name, listener); }
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = children; }
+  setCustomValidity(message) { this.validationMessage = message; }
+  reportValidity() {}
+  showModal() {}
+  close() {}
+}
+
+function browserDocument() {
+  const elements = new Map();
+  return {
+    elements,
+    querySelector(selector) {
+      if (!elements.has(selector)) elements.set(selector, new BrowserElement());
+      return elements.get(selector);
+    },
+    createElement() { return new BrowserElement(); },
+  };
 }
 
 test("local server: protected UI, health, API, worker, evidence, config, and notifications form one slice", async (t) => {
@@ -78,6 +108,47 @@ test("local front door proxies only the canonical roundhouse host", async (t) =>
   const url = `http://127.0.0.1:${address.port}`;
   assert.equal((await request(url, "/", { host: "roundhouse" })).status, 200);
   assert.equal((await request(url, "/", { host: "localhost" })).status, 403);
+});
+
+test("served browser client submits Depot work without crypto.randomUUID", async (t) => {
+  const h = harness();
+  const running = await startRoundhouseServer({ service: new RoundhouseService({ store: h.store, engine: h.engine }), port: 0, autoStartWorker: false });
+  t.after(() => running.close());
+  const script = await request(running.url, "/app.js");
+  assert.equal(script.status, 200);
+
+  const document = browserDocument();
+  const browserFetch = async (pathname, options = {}) => {
+    const response = await request(running.url, pathname, {
+      method: options.method,
+      body: options.body === undefined ? undefined : JSON.parse(options.body),
+    });
+    return { ok: response.status >= 200 && response.status < 300, status: response.status, json: async () => response.json() };
+  };
+  vm.runInNewContext(script.text, {
+    document,
+    fetch: browserFetch,
+    crypto: {},
+    setInterval: () => 1,
+    setTimeout: () => 1,
+  }, { filename: "served-app.js" });
+
+  const form = document.querySelector("#intake-form");
+  const content = document.querySelector("#intake-content");
+  const hint = document.querySelector("#project-hint");
+  const message = document.querySelector("#intake-message");
+  content.value = "ship from a browser without secure-context crypto";
+  hint.value = "example";
+  await form.listeners.get("submit")({ preventDefault() {} });
+
+  const [item] = Object.values(h.store.read().items);
+  assert.equal(item.input.project_hint, "example");
+  assert.match(message.textContent, new RegExp(`^Saved ${item.id}\\. The local worker will pick it up\\.$`));
+  assert.equal(content.value, "");
+  assert.equal(hint.value, "");
+
+  await form.listeners.get("submit")({ preventDefault() {} });
+  assert.equal(message.textContent, "Intake requires nonempty content.");
 });
 
 test("local server rejects malformed configuration without overwriting the private file", async (t) => {
