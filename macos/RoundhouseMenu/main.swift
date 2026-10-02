@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let counts = NSMenuItem(title: "Needs You 0 · Active 0", action: nil, keyEquivalent: "")
     private var timer: Timer?
     private let base = URL(string: "http://roundhouse")!
+    private let directBase = URL(string: "http://127.0.0.1:8787")!
     private var serviceDomain: String { "gui/\(getuid())" }
     private var serviceLabel: String { "\(serviceDomain)/io.roundhouse.service" }
     private var servicePlist: String {
@@ -60,20 +61,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func poll() {
-        URLSession.shared.dataTask(with: base.appendingPathComponent("api/overview")) { [weak self] data, _, error in
+        URLSession.shared.dataTask(with: directBase.appendingPathComponent("api/overview")) { [weak self] data, response, error in
             guard let self else { return }
-            guard let data, error == nil, let overview = try? JSONDecoder().decode(Overview.self, from: data) else {
+            guard let data, error == nil, (response as? HTTPURLResponse)?.statusCode == 200,
+                  let overview = try? JSONDecoder().decode(Overview.self, from: data) else {
                 DispatchQueue.main.async {
-                    self.health.title = "● Service unavailable"
+                    self.health.title = "● App service unavailable"
+                    self.counts.title = "Counts unavailable"
                     self.item.button?.title = "R!"
                 }
                 return
             }
-            DispatchQueue.main.async {
-                self.health.title = "● Service healthy"
-                self.counts.title = "Needs You \(overview.counts.needsYou) · Active \(overview.counts.active) · Blocked \(overview.counts.blocked)"
-                self.item.button?.title = overview.counts.needsYou > 0 || overview.counts.blocked > 0 ? "R•" : "R"
-            }
+            URLSession.shared.dataTask(with: self.base.appendingPathComponent("health")) { _, frontResponse, frontError in
+                let frontHealthy = frontError == nil && (frontResponse as? HTTPURLResponse)?.statusCode == 200
+                DispatchQueue.main.async {
+                    self.health.title = frontHealthy ? "● App and front door healthy" : "● Front door unavailable · app healthy"
+                    self.counts.title = "Needs You \(overview.counts.needsYou) · Active \(overview.counts.active) · Blocked \(overview.counts.blocked)"
+                    self.item.button?.title = !frontHealthy ? "R!" : overview.counts.needsYou > 0 || overview.counts.blocked > 0 ? "R•" : "R"
+                }
+            }.resume()
         }.resume()
         pollNotifications()
     }

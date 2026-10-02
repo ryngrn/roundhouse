@@ -196,14 +196,13 @@ The next attempt receives the previous failure evidence. Shipping errors do not
 trigger automated execution retries: a network failure may hide a successful push.
 Blocked projects stop taking new jobs until reconciled. Other projects can progress.
 
-State writes are atomic, fsynced snapshots. A crash leaves the worker lease behind.
-Run `depot recover --state-dir STATE` after the worker and its recorded subprocesses
-have stopped. Recovery refuses live/remote owners, marks interrupted work Blocked,
-and releases recorded dead-worker leases. It does not guess whether a push happened.
-Inspect the retained commit, branch and remote before resuming. Incomplete owner
-metadata or an interrupted state-store transaction requires manual inspection;
-never delete a lock merely because it appears old. The store targets one local
-filesystem, not network storage or multiple hosts.
+With the local adapter, state writes are atomic fsynced snapshots and recovery
+refuses live/remote filesystem owners. With PostgreSQL, nodes use expiring heartbeat
+leases; claims and dependency checks are transactional across nodes. Recovery marks
+expired active work Blocked and never guesses whether a push happened. Inspect the
+retained commit, branch and remote before resuming. A persisted delivery intent
+always requires reconciliation. Database loss stops autonomous work; there is no
+stale local fallback or offline multi-master mode.
 
 This is at-most-one automatic execution with explicit crash reconciliation, not
 an exactly-once guarantee across external Git servers. External side effects are
@@ -219,6 +218,8 @@ configuration, temporary Git repositories and local bare remotes, deterministic
 fixture decision/execution providers, and the safe fixture deployment provider.
 It never uses the Inclusion repository, production deployment, hosted Git
 providers, or the normal `~/Library/Application Support/Roundhouse` state.
+`npm run test:postgres` additionally runs real transaction/locking tests when a
+dedicated `TEST_DATABASE_URL` is supplied and otherwise reports explicit skips.
 
 The deterministic acceptance harness proves:
 

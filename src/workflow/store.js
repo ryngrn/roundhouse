@@ -1,32 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { record, transition } from "./state.js";
+import { StorageRepository, digest } from "../storage/repository.js";
+import { acquireLock, alive } from "../storage/file-lock.js";
+import { loadNodeIdentity } from "../storage/node-identity.js";
 
-export const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-export const alive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; }
-};
-
-export function acquireLock(directory) {
-  fs.mkdirSync(path.dirname(directory), { recursive: true, mode: 0o700 });
-  try { fs.mkdirSync(directory, { mode: 0o700 }); }
-  catch (error) {
-    if (error.code === "EEXIST") throw new Error(`Locked: ${directory}. Another worker may be active; inspect before recovery.`);
-    throw error;
-  }
-  const owner = { pid: process.pid, hostname: os.hostname(), token: randomUUID(), at: new Date().toISOString() };
-  fs.writeFileSync(path.join(directory, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
-  const release = () => {
-    const current = JSON.parse(fs.readFileSync(path.join(directory, "owner.json"), "utf8"));
-    if (current.token !== owner.token) throw new Error("Lock ownership changed.");
-    fs.unlinkSync(path.join(directory, "owner.json"));
-    fs.rmdirSync(directory);
-  };
-  release.directory = directory;
-  return release;
-}
+export { acquireLock, alive, digest };
 
 function atomicWrite(filename, data) {
   const temporary = `${filename}.${randomUUID()}.tmp`;
@@ -38,13 +19,21 @@ function atomicWrite(filename, data) {
   try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
 }
 
-export class Store {
-  constructor(directory) {
+export class Store extends StorageRepository {
+  constructor(directory, { node, env = process.env } = {}) {
+    super({ kind: "local", shared: false });
     this.directory = path.resolve(directory);
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+    this.node = node ?? loadNodeIdentity(this.directory, env);
     this.file = path.join(this.directory, "state.json");
     this.workerLock = path.join(this.directory, "worker.lock");
   }
+  status() {
+    return { kind: "local", shared: false, authoritative: true, connected: true, read_only: false,
+      warning: "Local storage is single-node only.",
+      node: { id: this.node.id, name: this.node.name, capabilities: this.node.capabilities } };
+  }
+  acquireWorkerLease() { return acquireLock(this.workerLock); }
   read() {
     if (!fs.existsSync(this.file)) return { schema_version: 1, items: {}, jobs: {}, projects: {}, project_candidates: {}, system_metadata: {}, outbox: [] };
     const data = JSON.parse(fs.readFileSync(this.file, "utf8"));
@@ -111,3 +100,5 @@ export class Store {
     return this.read();
   }
 }
+
+export const LocalStorageRepository = Store;

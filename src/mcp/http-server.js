@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { RoundhouseService } from "../workflow/service.js";
 import { callRoundhouseTool, createRoundhouseMcpServer, roundhouseToolCatalog } from "./server.js";
 import { MCP_PROTOCOL_VERSION, McpEventBroker, principalFromRequest } from "./events.js";
+import { openStorage } from "../storage/open.js";
 
 function requestHostname(value) {
   try { return new URL(`http://${value}`).hostname.toLowerCase(); }
@@ -79,7 +80,7 @@ async function handleModernRequest(request, response, service, events) {
     } else if (message.method === "events/subscribe") {
       result = await events.subscribe(message.params, principalFromRequest(request));
     } else if (message.method === "events/unsubscribe") {
-      result = events.unsubscribe(message.params, principalFromRequest(request));
+      result = await events.unsubscribe(message.params, principalFromRequest(request));
     } else {
       throw Object.assign(new Error("Method not found"), { code: -32601 });
     }
@@ -117,7 +118,9 @@ export async function handleMcpRequest(request, response, service, eventBroker) 
 
 export async function startMcpHttpServer({ stateDirectory, configFile, host = "127.0.0.1", port = 8787, allowedHosts = [], service, eventBroker } = {}) {
   if (!service && (!stateDirectory || !configFile)) throw new Error("MCP server requires stateDirectory and configFile.");
-  const roundhouse = service ?? new RoundhouseService({ stateDirectory, configFile });
+  const ownedStore = service ? null : await openStorage({ directory: stateDirectory });
+  const roundhouse = service ?? new RoundhouseService({ store: ownedStore, configFile });
+  await roundhouse.initialize?.();
   const events = eventBroker ?? new McpEventBroker({ service: roundhouse });
   const eventTimer = setInterval(() => events.drain().catch(() => {}), 2_000);
   eventTimer.unref();
@@ -151,9 +154,10 @@ export async function startMcpHttpServer({ stateDirectory, configFile, host = "1
     server: httpServer,
     url: `http://${host}:${address.port}/mcp`,
     eventBroker: events,
-    close: () => {
+    close: async () => {
       clearInterval(eventTimer);
-      return new Promise((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+      await new Promise((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+      if (ownedStore) await ownedStore.close();
     },
   };
 }

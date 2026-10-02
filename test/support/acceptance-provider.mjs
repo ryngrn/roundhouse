@@ -46,7 +46,7 @@ if (process.argv[2] === "decide") {
       question: "Is manual README inspection acceptable, or is an executable verification check required?",
       decision_key: "verification-method",
     });
-  } else if (packet.input.text.includes("human review acceptance")) {
+  } else if (packet.input.text.includes("human review acceptance") && !resolved.has("human-review-gate")) {
     decision({
       decision: "review",
       question: "Approve the verified disposable change?",
@@ -55,6 +55,8 @@ if (process.argv[2] === "decide") {
       safe_to_execute: false,
       title: "human review acceptance",
     });
+  } else if (packet.input.text.includes("human review acceptance")) {
+    decision({ decision: "execute", title: "human review acceptance" });
   } else if (packet.input.text.includes("live codex acceptance")) {
     decision({ decision: "execute", title: "Append exactly this line to feature.txt: implemented: live codex acceptance" });
   } else {

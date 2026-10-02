@@ -234,8 +234,8 @@ export class McpEventBroker {
     return { resultType: "complete", events: [roundhouseEventDefinition] };
   }
 
-  authorize(argumentsValue) {
-    const data = this.store.read();
+  async authorize(argumentsValue) {
+    const data = await this.store.read();
     if (argumentsValue.item_id && !data.items[argumentsValue.item_id]) throw rpcError(-32011, "NotFound", { kind: "item" });
     if (argumentsValue.project_id) {
       const configured = this.service.config?.projects?.some((project) => project.id === argumentsValue.project_id);
@@ -247,14 +247,14 @@ export class McpEventBroker {
   async subscribe(params, owner = "local-anonymous") {
     if (params?.name !== WORK_EVENT_NAME) throw rpcError(-32011, "NotFound", { kind: "event" });
     const argumentsValue = validateArguments(params.arguments);
-    this.authorize(argumentsValue);
+    await this.authorize(argumentsValue);
     if (params.delivery?.mode !== "webhook" || typeof params.delivery.url !== "string") throw rpcError(-32014, "Unsupported", { feature: "deliveryMode", value: params.delivery?.mode });
     const secret = validateSecret(params.delivery.secret);
     const resolved = await resolveCallback(params.delivery.url, this.allowInsecureLoopback);
     const id = subscriptionId(owner, resolved.url.href, params.name, argumentsValue);
     const now = this.clock();
     const cacheKey = sha256(`${owner}\n${resolved.url.href}`);
-    const snapshot = this.store.read();
+    const snapshot = await this.store.read();
     const cached = eventState(snapshot).verified_endpoints[cacheKey];
     if (!cached || Date.parse(cached.expires_at) <= now) {
       const challenge = randomBytes(32).toString("base64url");
@@ -277,7 +277,7 @@ export class McpEventBroker {
     if (requestedTtl !== undefined && requestedTtl !== null && (!Number.isInteger(requestedTtl) || requestedTtl <= 0)) throw rpcError(-32602, "InvalidParams", { reason: "invalid_ttl" });
     const ttl = requestedTtl === null ? null : Math.min(requestedTtl ?? defaultTtlMs, maximumTtlMs);
     const refreshBefore = ttl === null ? null : new Date(now + ttl).toISOString();
-    this.store.change((data) => {
+    await this.store.change((data) => {
       const events = eventState(data);
       const previous = events.subscriptions[id];
       const continuing = previous?.active && (!previous.refresh_before || Date.parse(previous.refresh_before) > now);
@@ -305,14 +305,14 @@ export class McpEventBroker {
     return { resultType: "complete", id, refreshBefore, cursor: null, truncated: false };
   }
 
-  unsubscribe(params, owner = "local-anonymous") {
+  async unsubscribe(params, owner = "local-anonymous") {
     if (params?.name !== WORK_EVENT_NAME) return { resultType: "complete" };
     const argumentsValue = validateArguments(params.arguments);
     if (params.delivery?.mode !== "webhook" || typeof params.delivery.url !== "string") throw rpcError(-32602, "InvalidParams", { reason: "invalid_delivery" });
     let href;
     try { href = new URL(params.delivery.url).href; } catch { throw rpcError(-32602, "InvalidParams", { reason: "invalid_callback_url" }); }
     const id = subscriptionId(owner, href, params.name, argumentsValue);
-    this.store.change((data) => {
+    await this.store.change((data) => {
       const events = eventState(data);
       if (events.subscriptions[id]?.owner === owner) events.subscriptions[id].active = false;
       for (const delivery of Object.values(events.deliveries)) {
@@ -322,9 +322,13 @@ export class McpEventBroker {
     return { resultType: "complete" };
   }
 
-  materialize() {
+  async materialize() {
     const now = this.clock();
-    this.store.change((data) => {
+    if (this.store.shared) {
+      const snapshot = await this.store.read();
+      if (!Object.values(snapshot.mcp_events?.subscriptions ?? {}).some((subscription) => subscription.active)) return;
+    }
+    await this.store.change((data) => {
       const events = eventState(data);
       for (const subscription of Object.values(events.subscriptions)) {
         if (!subscription.active || (subscription.refresh_before && Date.parse(subscription.refresh_before) <= now)) {
@@ -354,7 +358,7 @@ export class McpEventBroker {
     });
   }
 
-  claim() {
+  async claim() {
     const now = this.clock();
     return this.store.change((data) => {
       const events = eventState(data);
@@ -391,7 +395,7 @@ export class McpEventBroker {
     } catch (error) {
       outcome = { status: 0, accepted: false, reason: responseReason(error) };
     }
-    this.store.change((data) => {
+    await this.store.change((data) => {
       const delivery = eventState(data).deliveries[claim.delivery.id];
       if (!delivery || delivery.status !== "sending") return;
       delete delivery.lease_until;
@@ -417,10 +421,10 @@ export class McpEventBroker {
   }
 
   async drain({ maximum = 100 } = {}) {
-    this.materialize();
+    await this.materialize();
     let attempted = 0;
     while (attempted < maximum) {
-      const claim = this.claim();
+      const claim = await this.claim();
       if (!claim) break;
       await this.deliverClaim(claim);
       attempted += 1;

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { digest } from "./store.js";
+import { digest } from "../storage/repository.js";
 import { record } from "./state.js";
 
 export const LEGACY_FIELDS = [

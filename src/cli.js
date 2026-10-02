@@ -7,16 +7,30 @@ import { depotCommand } from "./workflow/cli.js";
 import { loadWorkflowConfig } from "./workflow/config.js";
 import { exportFileDigest, importNotionDepot } from "./workflow/notion-depot-migration.js";
 import { Store } from "./workflow/store.js";
+import { importLocalStateToPostgres } from "./storage/import-local-state.js";
 
 function usage() {
   return `Usage:
   roundhouse capture --input <idea.json> --manifest <manifest.yaml> --state-dir <directory>
   roundhouse depot <submit|run|status|outbox|approve|clarify|reevaluate-import|stop|resume|recover> [...]
-  roundhouse migrate notion-depot <export.json> [--state-dir <directory>] [--config <projects.yaml>]`;
+  roundhouse migrate notion-depot <export.json> [--state-dir <directory>] [--config <projects.yaml>]
+  roundhouse migrate state-to-postgres [--state-dir <directory>]`;
 }
 
-function migrateCommand(argv) {
+async function migrateCommand(argv) {
   const [kind, input, ...rest] = argv;
+  if (kind === "state-to-postgres") {
+    if (input && input !== "--state-dir") throw new Error(usage());
+    const support = path.join(os.homedir(), "Library", "Application Support", "Roundhouse");
+    let stateDirectory = process.env.ROUNDHOUSE_STATE_DIR ?? path.join(support, "state");
+    const options = input ? [input, ...rest] : rest;
+    if (options.length) {
+      if (options.length !== 2 || options[0] !== "--state-dir" || !options[1] || options[1].startsWith("--")) throw new Error(usage());
+      stateDirectory = options[1];
+    }
+    return importLocalStateToPostgres({ stateDirectory });
+  }
+  if (process.env.DATABASE_URL) throw new Error("Notion archive import is pre-cutover only; PostgreSQL is already configured as authoritative storage.");
   if (kind !== "notion-depot" || !input || input.startsWith("--")) throw new Error(usage());
   const support = path.join(os.homedir(), "Library", "Application Support", "Roundhouse");
   const options = {
@@ -51,7 +65,7 @@ try {
   if (process.argv[2] === "depot") {
     process.stdout.write(`${JSON.stringify(await depotCommand(process.argv.slice(3)), null, 2)}\n`);
   } else if (process.argv[2] === "migrate") {
-    process.stdout.write(`${JSON.stringify(migrateCommand(process.argv.slice(3)), null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(await migrateCommand(process.argv.slice(3)), null, 2)}\n`);
   } else if (process.argv[2] === "capture") {
     process.stdout.write(`${JSON.stringify(captureCommand(process.argv.slice(3)))}\n`);
   } else {

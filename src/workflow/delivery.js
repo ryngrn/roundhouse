@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { acquireLock } from "./store.js";
+import { acquireLock } from "../storage/file-lock.js";
 import { runProcess } from "./runtime.js";
 import { deploymentProvider } from "./deployment.js";
 

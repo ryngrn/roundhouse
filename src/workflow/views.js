@@ -8,12 +8,13 @@ function aggregateState(item, jobs) {
 
 export function itemView(data, item) {
   const jobs = item.job_ids.map((id) => data.jobs[id]).filter(Boolean);
-  const openQuestion = (item.questions ?? []).findLast((question) => question.status === "open");
+  const openQuestions = (item.questions ?? []).filter((question) => question.status === "open");
+  const openQuestion = openQuestions[0];
   const state = aggregateState(item, jobs);
   const currentJob = jobs.find((job) => job.state === state);
   const completedJobs = jobs.filter((job) => job.state === "Shipped");
   const blockedJob = jobs.find((job) => job.state === "Blocked");
-  const checks = completedJobs.flatMap((job) => job.shipping?.verification?.checks ?? []).map((check) => ({
+  const checks = jobs.flatMap((job) => job.shipping?.verification?.checks ?? job.attempts.at(-1)?.verification?.checks ?? []).map((check) => ({
     id: check.id, passed: check.passed, exit_code: check.exit_code, source: check.source ?? "automated",
     ...(check.summary ? { summary: check.summary } : {}),
     ...(check.artifacts?.length ? { artifacts: check.artifacts } : {}),
@@ -36,6 +37,14 @@ export function itemView(data, item) {
     : state === "Imported History" ? importedOutcome ?? "Imported completed history from the archived Notion Depot."
       : blockedJob ? `Blocked: ${blockedJob.history.at(-1)?.reason ?? "attention required"}` : null;
   const provenance = item.provenance ?? item.legacy_sources?.at(-1) ?? null;
+  const legacy = item.legacy_depot ?? item.legacy_depot_records?.at(-1) ?? null;
+  const title = legacy?.Item || item.decision?.work_items?.[0]?.title || item.input.text.split("\n").find((line) => line.trim())?.trim().slice(0, 160) || "Untitled work";
+  const decidedAcceptance = item.decision?.work_items?.flatMap((work) => work.acceptance_criteria ?? []).map((criterion) => criterion.description) ?? [];
+  const acceptance = decidedAcceptance.length ? decidedAcceptance : (legacy?.["Acceptance Criteria"] ? [legacy["Acceptance Criteria"]] : []);
+  const answeredQuestions = (item.questions ?? []).filter((question) => question.status === "answered").map((question) => ({
+    id: question.id, decision_key: question.decision_key ?? null, prompt: question.prompt, answer: question.answer?.text ?? "",
+    answered_at: question.answer?.at ?? question.updated_at ?? null,
+  }));
   return {
     id: item.id,
     state,
@@ -43,19 +52,36 @@ export function itemView(data, item) {
     project: item.project_id ?? null,
     project_candidate: item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id] ?? null : null,
     priority: item.priority ?? null,
+    title,
     summary: item.input.text.slice(0, 240),
+    raw_intake: item.input.text,
+    brief: legacy?.["Normalized Brief"] || item.decision?.reason || null,
+    context: item.input.context ?? null,
+    acceptance_criteria: acceptance,
     reason: currentJob?.history.at(-1)?.reason ?? item.history.at(-1)?.reason ?? null,
     question: openQuestion?.prompt ?? null,
     question_id: openQuestion?.id ?? null,
     question_revision: openQuestion?.revision ?? null,
+    questions: openQuestions.map((question) => ({
+      id: question.id, decision_id: question.decision_id ?? null, decision_key: question.decision_key ?? null,
+      revision: question.revision, kind: question.kind, prompt: question.prompt,
+    })),
+    needs_you: openQuestions.length > 0,
+    display_state: openQuestions.length ? "Needs You" : state,
     outcome,
     imported: Boolean(provenance?.source_system === "notion"),
     provenance,
-    legacy: item.legacy_depot ?? item.legacy_depot_records?.at(-1) ?? null,
+    legacy,
     requires_reevaluation: item.requires_reevaluation === true,
     execution_eligible: item.execution_eligible !== false,
     created_at: item.created_at ?? null,
     updated_at: item.updated_at ?? null,
+    agent_role: currentJob?.agent_role ?? item.agent_role ?? null,
+    owning_node: currentJob?.owning_node ?? item.owning_node ?? data.projects?.[item.project_id]?.owning_node ?? null,
+    verification_status: checks.length ? (checks.every((check) => check.passed) ? "Passed" : "Failed") : (state === "Verification" ? "Running" : "Not run"),
+    shipping_status: deliveries.length ? (deliveries.every((delivery) => delivery.deployment?.status === "succeeded" || delivery.pushed || delivery.commit) ? "Delivered" : "Pending") : (state === "Shipped" ? "Shipped" : "Not shipped"),
+    prior_decisions: answeredQuestions,
+    history: (item.history ?? []).map((event) => ({ from: event.from ?? null, to: event.to, reason: event.reason, at: event.at })),
     evidence: { checks, deliveries, completion_reports: completionReports },
     jobs: jobs.map((job) => ({
       id: job.id,

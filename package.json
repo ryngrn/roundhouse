@@ -2,7 +2,7 @@
   "name": "roundhouse",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first control plane for policy-controlled autonomous work",
+  "description": "PostgreSQL-backed control plane for policy-controlled autonomous work",
   "type": "module",
   "bin": {
     "roundhouse": "./src/cli.js"
@@ -14,6 +14,7 @@
     "test": "node --test test/*.test.js",
     "test:unit": "node --test test/intake.test.js test/codex-executor.test.js test/workflow-unit.test.js test/notion-depot-migration.test.js",
     "test:e2e": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
+    "test:postgres": "node --test test/storage-unit.test.js test/postgres-storage.test.js",
     "acceptance": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
     "acceptance:live": "node --test test/acceptance-live.test.js",
     "demo": "node scripts/demo.mjs"
@@ -24,6 +25,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",
     "ipaddr.js": "^2.5.0",
+    "pg": "^8.23.1",
     "standardwebhooks": "^1.1.1",
     "yaml": "^2.8.1",
     "zod": "^3.25.76",

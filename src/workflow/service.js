@@ -4,6 +4,8 @@ import { Store } from "./store.js";
 import { loadWorkflowConfig, readWorkflowConfig, saveWorkflowConfig } from "./config.js";
 import { normalizeDepotIntake, submitToDepot } from "./intake-contract.js";
 import { itemView, needsHumanView, notificationView, statusView } from "./views.js";
+import { mapResult } from "../storage/repository.js";
+import { migrateLegacyDecisionQuestions } from "./legacy-decisions.js";
 
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const jsonSize = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -47,25 +49,34 @@ export class RoundhouseService {
     this.configFile = configFile ?? engine?.config?.filename ?? null;
     this.config = engine?.config ?? (configFile ? loadWorkflowConfig(configFile) : null);
     this.engine = engine ?? (this.config ? new Engine({ store: this.store, config: this.config }) : null);
+    // Idempotent domain migration through the persistence boundary. This keeps
+    // the service compatible with alternate stores while upgrading legacy data.
+    this.initialization = this.store.shared ? null : migrateLegacyDecisionQuestions(this.store);
+  }
+
+  async initialize() {
+    if (!this.initialization) this.initialization = migrateLegacyDecisionQuestions(this.store);
+    await this.initialization;
+    return this;
   }
 
   addToDepot(input, adapter = { source: "external", actor: "external-user" }) {
     const normalized = normalizeIntake(input, adapter);
     const key = nonempty(input.idempotency_key) ? `external:${input.idempotency_key}` : `external:${randomUUID()}`;
-    const item = submitToDepot(this.store, normalized, key, adapter);
-    return { item: itemView(this.store.read(), item), durable: true };
+    return mapResult(submitToDepot(this.store, normalized, key, adapter), (item) =>
+      mapResult(this.store.read(), (data) => ({ item: itemView(data, item), durable: true })));
   }
 
   getNeedsHuman(filters = {}) {
-    return needsHumanView(this.store.read(), validateFilters(filters));
+    return mapResult(this.store.read(), (data) => needsHumanView(data, validateFilters(filters)));
   }
 
   getWorkStatus(filters = {}) {
-    return statusView(this.store.read(), validateFilters(filters));
+    return mapResult(this.store.read(), (data) => statusView(data, validateFilters(filters)));
   }
 
   getNotifications(options = {}) {
-    return notificationView(this.store.read(), options);
+    return mapResult(this.store.read(), (data) => notificationView(data, options));
   }
 
   getConfiguration() {
@@ -82,25 +93,35 @@ export class RoundhouseService {
 
   approveItem({ id, expected_revision, actor = "local-user" }) {
     if (!this.engine) throw new Error("Roundhouse configuration is required to approve work.");
-    const item = this.engine.approve(id, expected_revision, actor);
-    return { item: itemView(this.store.read(), item), approved: true };
+    return mapResult(this.engine.approve(id, expected_revision, actor), (item) =>
+      mapResult(this.store.read(), (data) => ({ item: itemView(data, item), approved: true })));
   }
 
   async answerQuestion({ id, answer, expected_revision, actor = "chatgpt-user" }) {
     if (!this.engine) throw new Error("Roundhouse configuration is required to re-evaluate an answer.");
     const item = await this.engine.answerQuestion(id, answer, actor, expected_revision);
-    return { item: itemView(this.store.read(), item), answer_recorded: true, reevaluated: true };
+    return { item: itemView(await this.store.read(), item), answer_recorded: true, reevaluated: true };
+  }
+
+  async answerDecisionSession({ item_id, expected_item_revision, answers, actor = "local-user" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to re-evaluate decision answers.");
+    const item = await this.engine.answerDecisionSession(item_id, expected_item_revision, answers, actor);
+    return { item: itemView(await this.store.read(), item), answers_recorded: answers.length, reevaluated: true };
   }
 
   async reconsiderItem({ id, expected_revision, actor = "local-user" }) {
     if (!this.engine) throw new Error("Roundhouse configuration is required to reconsider work.");
     const item = await this.engine.reconsider(id, actor, expected_revision);
-    return { item: itemView(this.store.read(), item), reconsidered: true };
+    return { item: itemView(await this.store.read(), item), reconsidered: true };
   }
 
   async reevaluateImportedItem({ id, expected_revision, actor = "local-user" }) {
     if (!this.engine) throw new Error("Roundhouse configuration is required to re-evaluate imported work.");
     const item = await this.engine.reevaluateImported(id, expected_revision, actor);
-    return { item: itemView(this.store.read(), item), reevaluated: true };
+    return { item: itemView(await this.store.read(), item), reevaluated: true };
+  }
+
+  getStorageStatus() {
+    return this.store.status();
   }
 }

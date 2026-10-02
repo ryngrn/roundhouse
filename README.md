@@ -6,15 +6,24 @@ Roundhouse turns incoming ideas in the **Depot** into policy-controlled work:
 interpret the request, resolve the project, execute, verify, ship, and optionally
 continue the project's queue. Review means a human decision is needed.
 
-The complete vertical slice runs locally, with a durable workflow and replaceable
+The complete vertical slice can run locally or across nodes, with a durable workflow and replaceable
 decision, execution, verification, shipping/deployment, and source adapters. The
 browser control room, JSON API, MCP endpoint, and background worker run in one
 loopback service. Codex and trusted command executors are supported; deployments
 use an explicit fixture or operator-owned command provider.
 
+The control room is project-first: dense work rows expose operational state at a
+glance, while a large details dialog keeps briefs, evidence, history, and atomic
+multi-question decision sessions out of the main dashboard.
+
 Roundhouse is the authoritative system for Depot intake and every downstream
 workflow state. The former Notion Roundhouse Depot is archive/reference only; new
 “add to Depot” requests go directly to Roundhouse.
+
+For shared/multi-node installs, PostgreSQL is authoritative; Neon is the intended
+hosted provider. Local JSON storage is only for explicit single-node development,
+tests, and pre-cutover bootstrap. See the [PostgreSQL control-plane and cutover
+guide](docs/postgresql-control-plane.md).
 
 ## Install on one Mac
 
@@ -78,13 +87,14 @@ are repository-relative and contain no personal machine settings.
 
 - [Behavior, configuration, approvals, recovery, and test contracts](docs/autonomous-workflow.md)
 - [Architecture and adapter extension guide](docs/architecture.md)
+- [PostgreSQL operations, migration, backup, and recovery](docs/postgresql-control-plane.md)
 - [Notion Depot archive and one-time cutover](docs/chatgpt-rdc-bridge.md)
 - [ChatGPT MCP adapter setup and testing](docs/chatgpt-mcp.md)
 
-The worker has one local execution slot per state directory. It supports
-project queue order and weighted dispatch turns, bounded rework, duplicate guards,
-and conservative crash recovery. Herdr, remote/cloud workers, parallel CLI windows,
-PR creation, and merging remain extension points. Deployment is available through
+The local adapter has one execution slot per state directory. PostgreSQL workers use
+atomic claims plus job and project leases across nodes. Both support project queue
+order, bounded rework, duplicate guards, and conservative crash recovery. Remote
+execution runtimes, PR creation, and merging remain extension points. Deployment is available through
 the fixture provider for proof and a configurable command provider for real systems.
 
 ## Earlier interfaces

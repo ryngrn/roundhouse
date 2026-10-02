@@ -46,7 +46,11 @@ similarity is deliberately not used. Re-running identical export bytes is a
 state-level no-op. A later changed source record is reported as a conflict and
 does not overwrite native or already imported history.
 
-`state.json` records `system_metadata.notion_depot_cutover`, including completion
+The authoritative storage repository records `system_metadata.notion_depot_cutover`, including completion
 time, archive-only mode, export SHA-256 digest/count, and row results. The command
 prints totals for imported history, imported pending, reconciled, already
 imported, conflicts, and errors.
+
+For the existing local cutover, run this archive import before the one-time
+`state-to-postgres` migration. Once `DATABASE_URL` is configured, the CLI refuses
+to create a divergent local Notion import.

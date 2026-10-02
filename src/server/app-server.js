@@ -9,12 +9,14 @@ import { RoundhouseService } from "../workflow/service.js";
 import { handleMcpRequest } from "../mcp/http-server.js";
 import { McpEventBroker } from "../mcp/events.js";
 import { WorkerLoop } from "./worker.js";
+import { openStorage } from "../storage/open.js";
 
 const webRoot = fileURLToPath(new URL("../web/", import.meta.url));
 const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
+  ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
 ]);
 
 export function defaultLocalPaths(home = os.homedir()) {
@@ -77,7 +79,9 @@ export async function startRoundhouseServer({
   const state = stateDirectory ?? defaults.stateDirectory;
   const config = configFile ?? defaults.configFile;
   if (!service) ensureLocalConfig(config);
-  const roundhouse = service ?? new RoundhouseService({ stateDirectory: state, configFile: config });
+  const ownedStore = service ? null : await openStorage({ directory: state });
+  const roundhouse = service ?? new RoundhouseService({ store: ownedStore, configFile: config });
+  await roundhouse.initialize?.();
   const events = new McpEventBroker({ service: roundhouse });
   const loop = worker ?? new WorkerLoop({ service: roundhouse, eventBroker: events, intervalMs: workerIntervalMs, onError: (error) => process.stderr.write(`Worker: ${error.message}\n`) });
   loop.eventBroker ??= events;
@@ -101,16 +105,20 @@ export async function startRoundhouseServer({
         return send(response, 200, fs.readFileSync(path.join(webRoot, filename), "utf8"), type);
       }
       if (request.method === "GET" && url.pathname === "/health") {
-        return send(response, 200, { status: "ok", service: "roundhouse", worker: loop.status(), mcp: "/mcp" });
+        const storage = await roundhouse.getStorageStatus();
+        return send(response, 200, { status: storage.connected ? "ok" : "degraded", service: "roundhouse", storage, worker: loop.status(), mcp: "/mcp" });
       }
       if (request.method === "GET" && url.pathname === "/api/overview") {
-        const status = roundhouse.getWorkStatus();
-        const needs = roundhouse.getNeedsHuman();
+        const storage = await roundhouse.getStorageStatus();
+        if (!storage.connected) return send(response, 503, { items: [], needs_you: [], counts: {},
+          connection: { local_service: "connected", storage, worker: loop.status() } });
+        const status = await roundhouse.getWorkStatus();
+        const needs = await roundhouse.getNeedsHuman();
         return send(response, 200, {
           ...status,
           needs_you: needs.questions,
           counts: {
-            needs_you: needs.questions.length,
+            needs_you: status.items.filter((item) => item.needs_you).length,
             active: status.items.filter((item) => ["Decision", "Executing", "Verification", "Rework"].includes(item.state)).length,
             queued: status.items.filter((item) => ["Depot", "Ready", "Imported Pending"].includes(item.state)).length,
             completed: status.items.filter((item) => ["Shipped", "Imported History"].includes(item.state)).length,
@@ -122,6 +130,7 @@ export async function startRoundhouseServer({
             endpoint: "/mcp",
             chatgpt: "managed externally; local connection state is not observable",
             worker: loop.status(),
+            storage,
           },
         });
       }
@@ -134,11 +143,11 @@ export async function startRoundhouseServer({
         return send(response, 200, result);
       }
       if (request.method === "GET" && url.pathname === "/api/notifications") {
-        return send(response, 200, roundhouse.getNotifications({ after: url.searchParams.get("after") ?? undefined }));
+        return send(response, 200, await roundhouse.getNotifications({ after: url.searchParams.get("after") ?? undefined }));
       }
       if (request.method === "POST" && url.pathname === "/api/intake") {
         verifyOrigin(request, origins);
-        const result = roundhouse.addToDepot(await jsonBody(request), { source: "web", actor: "local-user" });
+        const result = await roundhouse.addToDepot(await jsonBody(request), { source: "web", actor: "local-user" });
         loop.wake();
         return send(response, 201, result);
       }
@@ -150,11 +159,24 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 200, result);
       }
+      const decisionSession = url.pathname.match(/^\/api\/items\/([^/]+)\/decision-session$/);
+      if (request.method === "POST" && decisionSession) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.answerDecisionSession({
+          item_id: decodeURIComponent(decisionSession[1]),
+          expected_item_revision: input.expected_item_revision,
+          answers: input.answers,
+          actor: "local-user",
+        });
+        loop.wake();
+        return send(response, 200, result);
+      }
       const approve = url.pathname.match(/^\/api\/items\/([^/]+)\/approve$/);
       if (request.method === "POST" && approve) {
         verifyOrigin(request, origins);
         const input = await jsonBody(request);
-        const result = roundhouse.approveItem({ id: decodeURIComponent(approve[1]), expected_revision: input.expected_revision, actor: "local-user" });
+        const result = await roundhouse.approveItem({ id: decodeURIComponent(approve[1]), expected_revision: input.expected_revision, actor: "local-user" });
         loop.wake();
         return send(response, 200, result);
       }
@@ -182,7 +204,11 @@ export async function startRoundhouseServer({
       }
       return send(response, 404, { error: "Not Found" });
     } catch (error) {
-      if (!response.headersSent) send(response, error.status ?? (/Locked:/.test(error.message) ? 409 : 400), { error: error.message });
+      if (!response.headersSent) send(response, error.status ?? (error.code === "decision_session_conflict" || /Locked:/.test(error.message) ? 409 : 400), {
+        error: error.message,
+        ...(error.code ? { code: error.code } : {}),
+        ...(error.details && Object.keys(error.details).length ? { conflict: error.details } : {}),
+      });
     }
   });
   await new Promise((resolve, reject) => {
@@ -200,6 +226,7 @@ export async function startRoundhouseServer({
     close: async () => {
       loop.stop();
       await new Promise((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+      if (ownedStore) await ownedStore.close();
     },
   };
 }

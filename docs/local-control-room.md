@@ -38,10 +38,20 @@ Useful commands:
 ```sh
 ./scripts/macos/service.sh status
 ./scripts/macos/service.sh restart
+./scripts/macos/service.sh repair
+./scripts/macos/service.sh smoke
+./scripts/macos/install.sh smoke
 ./scripts/macos/menu-bar.sh run
 ./scripts/macos/menu-bar.sh uninstall
 ./scripts/macos/uninstall.sh
 ```
+
+Install and repair report success only after both the unprivileged app's direct
+health endpoint and the canonical front-door health endpoint return healthy. A
+failed user-service bootstrap is cleared and retried once. The smoke paths are
+idempotent and do not unload either service. The menu helper reports app-service
+and front-door failures separately and labels counts unavailable when the app
+cannot provide an authoritative overview.
 
 Uninstall removes both launchd jobs and the marked host entry. It deliberately
 keeps state and private project configuration in Application Support; the operator
@@ -73,3 +83,20 @@ performs no external action, and exists only for safe tests/demos.
 
 Roundhouse persists delivery intent before push/deploy. An uncertain result is
 blocked for reconciliation and is never automatically replayed after a crash.
+
+## Project dashboard and decision sessions
+
+The control room groups compact work rows under configured projects, imported
+project candidates, and Unknown / Unassigned. Project headings summarize Needs
+You, active, queued, shipped, and blocked work. A row carries workflow state,
+priority, agent role, owning node when known, current activity, verification,
+shipping, and subordinate import provenance.
+
+Opening a row shows its outcome and brief before expandable intake, acceptance,
+prior decisions, evidence, and history. Needs You rows open on Decisions. A
+decision session presents one durable question at a time; Back and Next only move
+through local drafts. The final `Submit N answers` request includes the item
+revision and the complete ordered question/revision set. Roundhouse validates and
+persists the whole set in one repository transaction, applies none on conflict,
+and invokes decision evaluation once after commit. Polling and manual refresh
+continue to update the board without replacing the open dialog or textarea.

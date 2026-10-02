@@ -32,7 +32,7 @@ const itemSchema = z.object({
     completion_reports: z.array(completionReportSchema),
   }),
   jobs: z.array(jobSchema),
-});
+}).passthrough();
 const questionSchema = z.object({
   id: z.string(), decision_id: z.string().nullable(), revision: z.number(), kind: z.enum(["clarification", "review", "imported_decision"]), prompt: z.string(),
   item_id: z.string(), item_revision: z.number(), project: z.string().nullable(), state: z.string(),
@@ -69,7 +69,7 @@ const toolSpecs = [
     output: z.object({ item: itemSchema, durable: z.boolean() }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     run: async (service, input) => {
-      const value = service.addToDepot(input, { source: "chatgpt:mcp", actor: "chatgpt-user" });
+      const value = await service.addToDepot(input, { source: "chatgpt:mcp", actor: "chatgpt-user" });
       return result(value, `Saved item ${value.item.id} in Roundhouse: ${value.item.state}.`);
     },
   },
@@ -81,7 +81,7 @@ const toolSpecs = [
     output: z.object({ questions: z.array(questionSchema) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async (service, filters) => {
-      const value = service.getNeedsHuman(filters);
+      const value = await service.getNeedsHuman(filters);
       return result(value, value.questions.length ? `Roundhouse is waiting on ${value.questions.length} question(s).` : "Nothing in Roundhouse is waiting on you.");
     },
   },
@@ -107,7 +107,7 @@ const toolSpecs = [
       project_candidates: z.record(z.string(), z.unknown()), system_metadata: z.record(z.string(), z.unknown()) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async (service, filters) => {
-      const value = service.getWorkStatus(filters);
+      const value = await service.getWorkStatus(filters);
       return result(value, value.items.length ? `Found ${value.items.length} Roundhouse item(s).` : "No matching Roundhouse work found.");
     },
   },

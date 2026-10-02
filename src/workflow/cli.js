@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Store } from "./store.js";
 import { Engine } from "./engine.js";
 import { loadWorkflowConfig } from "./config.js";
 import { submitToDepot } from "./intake-contract.js";
 import { statusView } from "./views.js";
+import { openStorage } from "../storage/open.js";
 
 export { statusView } from "./views.js";
 
@@ -27,16 +27,21 @@ export async function depotCommand(argv) {
     options[rest[i]] = rest[i + 1];
   }
   const required = (key) => { if (!options[key]) throw new Error(`${command} requires ${key}.`); return options[key]; };
-  const store = new Store(required("--state-dir"));
-  if (command === "status") return statusView(store.read());
+  const store = await openStorage({ directory: required("--state-dir") });
+  try {
+  if (command === "status") return statusView(await store.read());
   if (command === "outbox") {
-    const data = store.read();
+    const data = await store.read();
     return { events: data.outbox, current: statusView(data) };
   }
-  if (command === "recover") return statusView(store.recover());
+  if (command === "recover") {
+    if (store.shared) await store.recoverExpiredClaims();
+    else store.recover();
+    return statusView(await store.read());
+  }
   if (["stop", "resume"].includes(command)) {
     const id = required("--project");
-    return store.change((data) => {
+    return await store.change((data) => {
       const state = data.projects[id] ?? {};
       if (command === "resume") {
         if (state.blocked) required("--note");
@@ -52,13 +57,16 @@ export async function depotCommand(argv) {
     if (modes.length !== 1) throw new Error("Use exactly one of --input or --text.");
     const input = options["--input"] ? JSON.parse(fs.readFileSync(options["--input"], "utf8")) : { text: options["--text"], source: "cli", actor: "operator" };
     if (options["--project"]) input.project_id = options["--project"];
-    const item = submitToDepot(store, input, required("--key"), { source: "cli", actor: "operator" });
+    const item = await submitToDepot(store, input, required("--key"), { source: "cli", actor: "operator" });
     return { id: item.id, state: item.state, message: "Saved in Depot. Run the worker to interpret and execute eligible work." };
   }
   const engine = new Engine({ store, config: loadWorkflowConfig(path.resolve(required("--config"))) });
-  if (command === "approve") return engine.approve(required("--id"), Number(required("--revision")), required("--actor"));
-  if (command === "clarify") return engine.clarify(required("--id"), required("--text"), required("--actor"), options["--project"]);
+  if (command === "approve") return await engine.approve(required("--id"), Number(required("--revision")), required("--actor"));
+  if (command === "clarify") return await engine.clarify(required("--id"), required("--text"), required("--actor"), options["--project"]);
   if (command === "reevaluate-import") return engine.reevaluateImported(required("--id"), Number(required("--revision")), required("--actor"));
   const result = await engine.run({ projectId: options["--project"] });
   return { executed: result.executed, limit_reached: result.limit_reached, ...statusView(result) };
+  } finally {
+    await store.close();
+  }
 }
