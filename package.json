@@ -13,7 +13,9 @@
     "mcp": "node src/mcp/http-server.js",
     "test": "node --test test/*.test.js",
     "test:unit": "node --test test/item.test.js test/config.test.js test/intake.test.js test/codex-executor.test.js test/workflow-unit.test.js",
-    "test:e2e": "node --test test/workflow-e2e.test.js",
+    "test:e2e": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
+    "acceptance": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
+    "acceptance:live": "node --test test/acceptance-live.test.js",
     "demo": "node scripts/demo.mjs"
   },
   "engines": {
@@ -26,5 +28,8 @@
     "yaml": "^2.8.1",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.2"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
   }
 }

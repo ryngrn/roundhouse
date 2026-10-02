@@ -7,6 +7,14 @@ import { DecisionProvider, routeDecision } from "./decision.js";
 import { LocalRuntime, CommandVerifier } from "./runtime.js";
 import { GitDelivery } from "./delivery.js";
 
+function fallbackDecisionKey(decision) {
+  if (decision.decision_key) return decision.decision_key;
+  const text = [decision.decision, decision.project, decision.executor, decision.runtime, decision.shipping_policy, decision.question]
+    .map((value) => String(value ?? "").toLowerCase().replace(/\s+/g, " ").trim())
+    .join("|");
+  return `implicit:${digest(text).slice(0, 32)}`;
+}
+
 export class Engine {
   constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = new LocalRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery() }) {
     Object.assign(this, { store, config, decision, runtime, verifier, shipping });
@@ -36,9 +44,22 @@ export class Engine {
       const project = projects.find((p) => p.id === decision.project);
       this.store.change((data) => {
         const current = data.items[id];
+        current.questions ??= [];
+        const decisionKey = ["clarify", "review"].includes(decision.decision) || route.state === "Needs Clarification" || route.state === "Review"
+          ? fallbackDecisionKey(decision)
+          : decision.decision_key ?? null;
+        const resolvedKeys = new Set(current.questions
+          .filter((question) => question.status === "answered" && question.decision_key)
+          .map((question) => question.decision_key));
+        if (decisionKey && resolvedKeys.has(decisionKey) && ["Needs Clarification", "Review"].includes(route.state)) {
+          this.store.move(data, current, "Blocked", `Decision provider repeated already resolved decision ${decisionKey}.`);
+          current.processes = [];
+          return;
+        }
         current.decision_history ??= [];
         if (current.decision) current.decision_history.push(current.decision);
         current.decision = decision;
+        current.decision_key = decisionKey;
         current.decision_id = randomUUID();
         current.project_id = project?.id ?? null;
         current.policy_hash = project ? digest(project) : null;
@@ -51,7 +72,6 @@ export class Engine {
           if (route.state === "Ready") this.createJobs(data, current);
         }
         if (["Needs Clarification", "Review"].includes(current.state)) {
-          current.questions ??= [];
           for (const question of current.questions) {
             if (question.status === "open") {
               question.status = "superseded";
@@ -63,6 +83,7 @@ export class Engine {
           const question = {
             id: randomUUID(),
             decision_id: current.decision_id,
+            decision_key: decisionKey,
             item_id: current.id,
             item_revision: current.revision,
             revision: 1,
@@ -134,7 +155,7 @@ export class Engine {
         question.revision += 1;
         question.updated_at = now;
       }
-      item.clarifications.push({ text, actor, project_id: projectId ?? null, question_id: question?.id ?? null, at: now });
+      item.clarifications.push({ text, actor, project_id: projectId ?? null, question_id: question?.id ?? null, decision_key: question?.decision_key ?? null, at: now });
       if (projectId) {
         if (!this.config.projects.some((p) => p.id === projectId)) throw new Error("Unknown project.");
         // Original input remains immutable; the provider receives this explicit correction.
@@ -165,7 +186,7 @@ export class Engine {
         question.status = "answered";
         question.revision += 1;
         question.updated_at = now;
-        item.clarifications.push({ text: answer, actor, question_id: question.id, decision_id: question.decision_id, at: now });
+        item.clarifications.push({ text: answer, actor, question_id: question.id, decision_id: question.decision_id, decision_key: question.decision_key ?? null, at: now });
         this.store.move(data, item, "Decision", "Human answer received; re-evaluating readiness.");
         item.awaiting_decision = true;
         itemId = item.id;

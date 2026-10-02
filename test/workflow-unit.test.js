@@ -12,7 +12,8 @@ import { notionInput } from "../src/workflow/cli.js";
 const project = { id: "example", status: "active", executor: { kind: "command" }, runtime: "local",
   verification: [{ id: "tests" }], policy: { project_confidence: 0.8, execution_confidence: 0.9, allow_autonomous: true, shipping: "push_branch" } };
 const decision = { project: "example", project_confidence: 0.8, execution_confidence: 0.9, sufficient_context: true, safe_to_execute: true,
-  approval_required: false, decision: "execute", reason: "Known project and constrained scope.", question: "", dependencies: [], executor: "command", runtime: "local", shipping_policy: "push_branch", should_decompose: false,
+  approval_required: false, decision: "execute", reason: "Known project and constrained scope.", question: "", decision_key: null,
+  dependencies: [], executor: "command", runtime: "local", shipping_policy: "push_branch", should_decompose: false,
   work_items: [{ title: "Change", outcome: "Useful outcome", acceptance_criteria: [{ description: "Tests pass", verification_ids: ["tests"] }] }] };
 
 test("unit: every declared state edge succeeds and undeclared edges fail", () => {

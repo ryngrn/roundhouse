@@ -27,12 +27,19 @@ readiness evaluation; execution remains separately owned by the worker.
 
 The Codex decision provider returns structured JSON: likely project, project and
 execution confidence, context sufficiency, safety/approval judgments, dependencies,
-outcomes, executable acceptance criteria, runtime, executor, and shipping policy.
+outcomes, executable acceptance criteria, runtime, executor, shipping policy, and
+an optional stable `decision_key` for a clarification or review decision.
 Confidence is a model judgment, not a statistical guarantee. Deterministic policy
 enforces configurable thresholds, project matching, approval requirements, and
 permitted runtime/delivery choices. Neither input text nor a Notion Ready flag can
 override project policy. Only concise decision metadata is stored; Codex reasoning
 traces are discarded, and sessions use ephemeral mode.
+
+Answered questions are sent back to later decision passes as `resolved_decisions`,
+including the original prompt, answer, kind, and `decision_key`. Matching resolved
+decisions are authoritative context. If a provider asks for the same resolved
+decision again, Roundhouse blocks the item instead of opening another Needs You
+question. This guard is deliberately domain-level state, not only prompt wording.
 
 Acceptance criteria must name existing verification command IDs. Every configured
 verification command runs, even if only some IDs are referenced by the decision.
@@ -48,6 +55,7 @@ From this repository:
 npm install
 npm test
 npm run check
+npm run acceptance
 npm run demo
 ```
 
@@ -58,6 +66,16 @@ and `demo-result.json` for inspection. It never contacts a hosted Git provider.
 `npm run demo -- --live` exercises the same workflow using your authenticated
 Codex CLI for both interpretation and execution. It may use model quota. Set
 `ROUNDHOUSE_CODEX_BIN` if Codex is not on PATH.
+
+For the live acceptance path that uses the real local Codex executor against a
+disposable repository, run:
+
+```sh
+npm run acceptance:live
+```
+
+This command skips explicitly when the `codex` CLI is not installed or runnable.
+It does not touch configured projects, real repositories, or real deployments.
 
 ## Run a real request
 
@@ -176,11 +194,37 @@ recorded as intent before shipping and confirmed before Shipped is persisted.
 
 ## Tests as behavior contracts
 
-`npm test` runs the full suite; `npm run test:unit` covers policy/state/input contracts;
-`npm run test:e2e` runs integration and end-to-end repository scenarios. Tests use
-temporary repositories and local bare remotes, not real Notion pages or hosted repos.
-Coverage includes autonomous shipping, confidence routing, approval/resumption,
-verification failure/repair, queue continuation, stop-after-job, decomposition,
-duplicate ownership, stale approval, preserved source work, exact-commit checks,
-and separate CLI submit/run/status processes. Test providers exercise real local
-process execution while keeping model behavior deterministic.
+`npm test` runs the full suite; `npm run test:unit` covers policy/state/input
+contracts; `npm run test:e2e` runs integration and end-to-end repository
+scenarios. `npm run acceptance` is the safe deterministic acceptance harness for
+the complete local product workflow. It uses only disposable state, disposable
+configuration, temporary Git repositories and local bare remotes, deterministic
+fixture decision/execution providers, and the safe fixture deployment provider.
+It never uses the Inclusion repository, production deployment, hosted Git
+providers, or the normal `~/Library/Application Support/Roundhouse` state.
+
+The deterministic acceptance harness proves:
+
+- clean server startup using temporary state and configuration
+- browser-facing HTTP/API intake, config save, worker tick, questions, approval,
+  status, evidence, and restart reconstruction
+- Depot persistence, decision, one meaningful clarification, durable answer
+  context, human review, programmatic approval, execution, verification, fixture
+  shipping, and completed summary/evidence
+- the zero-human path `Depot -> Decision -> Ready -> Execute -> Verify -> Ship -> Completed`
+  with `allow_autonomous: true` and `approval_required: false`
+- decision-loop regression protection for the README inspection versus executable
+  verification question, including after reconstructing the store from disk
+- actual served browser JavaScript in Chrome on an insecure
+  `http://roundhouse-compatible` origin, including Enter/Shift+Enter/IME behavior,
+  preserved failed submissions, cleared successful submissions, draft preservation
+  across polling/rerendering, button submission, rapid double-submit protection,
+  configuration validation, and bucket movement
+
+Coverage also includes autonomous shipping, confidence routing,
+approval/resumption, verification failure/repair, queue continuation,
+stop-after-job, decomposition, duplicate ownership, stale approval, preserved
+source work, exact-commit checks, and separate CLI submit/run/status processes.
+Test providers exercise real local process execution while keeping model behavior
+deterministic. A change to the core Roundhouse workflow is not complete if
+`npm run acceptance` fails.

@@ -14,6 +14,7 @@ if (process.argv[2] === "decide") {
     sufficient_context: !low, safe_to_execute: true, approval_required: review,
     decision: low ? "clarify" : review ? "review" : "execute", reason: "Deterministic fixture with configured checks.",
     question: low ? "Which project and outcome?" : review ? "Approve this change?" : "",
+    decision_key: low ? "fixture:project-outcome" : review ? "fixture:approval" : null,
     dependencies: [], executor: project.executor.kind, runtime: project.runtime, shipping_policy: project.policy.shipping,
     should_decompose: titles.length > 1,
     work_items: titles.map((title) => ({ title, outcome: "Append the requested entry to the feature file.", acceptance_criteria: [{ description: "Feature file contains a valid implemented entry.", verification_ids: ["feature"] }] })),

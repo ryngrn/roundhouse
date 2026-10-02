@@ -82,7 +82,12 @@ export async function startRoundhouseServer({
   const loop = worker ?? new WorkerLoop({ service: roundhouse, eventBroker: events, intervalMs: workerIntervalMs, onError: (error) => process.stderr.write(`Worker: ${error.message}\n`) });
   loop.eventBroker ??= events;
   const allowed = new Set([host, "roundhouse", ...(host === "127.0.0.1" ? ["localhost", "::1"] : []), ...allowedHosts].map((value) => value.toLowerCase()));
-  const origins = new Set(["http://roundhouse", `http://${host}:${port}`, `http://localhost:${port}`]);
+  const origins = new Set([
+    "http://roundhouse",
+    `http://${host}:${port}`,
+    `http://localhost:${port}`,
+    ...allowedHosts.flatMap((allowedHost) => [`http://${allowedHost.toLowerCase()}`, `http://${allowedHost.toLowerCase()}:${port}`]),
+  ]);
   const httpServer = createServer(async (request, response) => {
     try {
       if (!allowed.has(hostname(request.headers.host))) return send(response, 403, "Forbidden Host", "text/plain; charset=utf-8");
@@ -169,6 +174,7 @@ export async function startRoundhouseServer({
     httpServer.listen(port, host, resolve);
   });
   const address = httpServer.address();
+  for (const allowedHost of allowedHosts) origins.add(`http://${allowedHost.toLowerCase()}:${address.port}`);
   if (autoStartWorker) loop.start();
   return {
     server: httpServer,

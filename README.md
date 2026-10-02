@@ -32,6 +32,7 @@ Requires Node.js 20.11+ and Git:
 npm install
 npm test
 npm run check
+npm run acceptance
 npm run demo
 ```
 
@@ -42,6 +43,13 @@ For a live model-backed demo using your authenticated Codex CLI:
 ```sh
 npm run demo -- --live
 ```
+
+`npm run acceptance` is the safe deterministic QA harness for the complete
+Roundhouse flow. It uses temporary state, temporary repositories, fixture
+deployment, and real browser/API paths without touching normal local Roundhouse
+state or real project data. `npm run acceptance:live` additionally tries the real
+local Codex executor against a disposable repository and reports an explicit skip
+when Codex is unavailable.
 
 ## Use a real project
 
