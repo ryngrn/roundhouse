@@ -1,6 +1,7 @@
 export class WorkerLoop {
-  constructor({ service, intervalMs = 2000, onError = () => {} }) {
+  constructor({ service, eventBroker = null, intervalMs = 2000, onError = () => {} }) {
     this.service = service;
+    this.eventBroker = eventBroker;
     this.intervalMs = intervalMs;
     this.onError = onError;
     this.running = null;
@@ -13,11 +14,11 @@ export class WorkerLoop {
     if (this.running) return this.running;
     this.running = (async () => {
       try {
-        if (!this.service.engine) return { executed: 0 };
-        const result = await this.service.engine.run();
+        const result = this.service.engine ? await this.service.engine.run() : { executed: 0 };
+        const events = this.eventBroker ? await this.eventBroker.drain() : { attempted: 0 };
         this.lastRun = new Date().toISOString();
         this.lastError = null;
-        return result;
+        return { ...result, event_deliveries_attempted: events.attempted };
       } catch (error) {
         if (!/^Locked:/.test(error.message)) {
           this.lastError = error.message;

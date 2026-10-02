@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Roundhouse is a local-first control plane for policy-controlled autonomous work.">
+  <meta name="theme-color" content="#171914">
+  <link rel="canonical" href="https://ryngrn.github.io/roundhouse/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <title>Roundhouse — a control plane for autonomous work</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="wordmark" href="./" aria-label="Roundhouse home">
+      <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>ROUNDHOUSE</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#workflow">Workflow</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#quick-start">Quick start</a>
+      <a href="#status">Status</a>
+    </nav>
+    <a class="button button-small" href="https://github.com/ryngrn/roundhouse">View repository</a>
+  </header>
+
+  <main id="main">
+    <section class="hero section-grid">
+      <div class="eyebrow">LOCAL-FIRST · POLICY-CONTROLLED · DURABLE</div>
+      <div class="hero-copy">
+        <h1>Keep autonomous work<br><em>on the rails.</em></h1>
+        <p class="lede">Roundhouse is a control plane for autonomous work. Drop an outcome into the Depot; Roundhouse resolves context, asks only material questions, runs bounded work, verifies the result, and ships under project policy.</p>
+        <div class="actions">
+          <a class="button" href="#quick-start">Run it locally</a>
+          <a class="text-link" href="https://github.com/ryngrn/roundhouse/blob/main/docs/architecture.md">Read the architecture <span aria-hidden="true">→</span></a>
+        </div>
+      </div>
+      <div class="signal-panel" role="group" aria-label="Illustrative work status">
+        <div class="signal-head"><span>DEPOT / 0142</span><span class="lamp amber"></span></div>
+        <ol class="route-list">
+          <li class="done"><span>01</span>Intent captured</li>
+          <li class="done"><span>02</span>Project resolved</li>
+          <li class="active"><span>03</span>Verification</li>
+          <li><span>04</span>Ship</li>
+        </ol>
+        <div class="track" aria-hidden="true"><span></span></div>
+        <p>Durable state. Explicit transitions. No silent replay.</p>
+      </div>
+    </section>
+
+    <section class="manifesto">
+      <p>Chat is an entrance, not the control plane.</p>
+      <p>Executors do the work, not the governing.</p>
+      <p>“Done” means verified and shipped.</p>
+    </section>
+
+    <section id="workflow" class="section">
+      <div class="section-label"><span>01</span> THE ROUTE</div>
+      <div class="section-intro">
+        <h2>From rough intent to a concise outcome.</h2>
+        <p>The happy path stays quiet. Roundhouse interrupts only when context, authority, or policy genuinely requires a person.</p>
+      </div>
+      <ol class="workflow" aria-label="Roundhouse workflow">
+        <li><b>Depot</b><span>Capture the user’s original words and context durably.</span></li>
+        <li><b>Clarify</b><span>Ask only when project, scope, safety, or authority is materially unclear.</span></li>
+        <li><b>Slice</b><span>Resolve the project, decompose useful work, and preserve queue priority.</span></li>
+        <li><b>Execute</b><span>Run the configured executor inside a bounded local work area.</span></li>
+        <li><b>Verify</b><span>Apply operator-owned checks to the exact candidate that may ship.</span></li>
+        <li><b>Ship</b><span>Use the project’s explicit push or deployment provider.</span></li>
+        <li><b>Report</b><span>Return a compact, evidence-backed outcome.</span></li>
+      </ol>
+    </section>
+
+    <section id="architecture" class="section architecture-section">
+      <div class="section-label"><span>02</span> THE BOUNDARIES</div>
+      <div class="section-intro">
+        <h2>One control plane. Replaceable edges.</h2>
+        <p>Roundhouse owns durable workflow, policy, questions, transitions, and evidence. Channels carry intent; runtimes provide capacity; executors change things; providers deliver them.</p>
+      </div>
+      <div class="diagram-wrap">
+        <svg class="architecture" viewBox="0 0 1120 500" role="img" aria-labelledby="diagram-title diagram-desc">
+          <title id="diagram-title">Roundhouse architecture boundaries</title>
+          <desc id="diagram-desc">ChatGPT, email, Slack, and browser adapters feed the Roundhouse control plane. It dispatches to local or Herdr runtimes, which use Codex, Claude, Hermes, or command executors, then shipping providers. Durable state and human review govern the flow.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#8c8f84"/></marker>
+          </defs>
+          <g class="rails" fill="none" stroke="#8c8f84" stroke-width="2" marker-end="url(#arrow)">
+            <path d="M238 135 H330"/><path d="M238 250 H330"/><path d="M238 365 H330"/>
+            <path d="M700 250 H790"/><path d="M940 190 V115"/><path d="M940 310 V385"/>
+          </g>
+          <g class="node adapters">
+            <rect x="28" y="78" width="210" height="114" rx="4"/><text x="52" y="111" class="cap">ADAPTERS</text><text x="52" y="146">ChatGPT MCP</text><text x="52" y="170" class="muted">Email / Slack planned</text>
+            <rect x="28" y="213" width="210" height="74" rx="4"/><text x="52" y="247">Local browser</text><text x="52" y="271" class="muted">http://roundhouse</text>
+            <rect x="28" y="308" width="210" height="114" rx="4"/><text x="52" y="341" class="cap">OPERATOR</text><text x="52" y="376">Menu bar helper</text><text x="52" y="400" class="muted">Status + service controls</text>
+          </g>
+          <g class="node core">
+            <rect x="330" y="58" width="370" height="384" rx="8"/><text x="370" y="105" class="cap">CONTROL PLANE</text><text x="370" y="156" class="big">ROUNDHOUSE</text>
+            <line x1="370" y1="185" x2="660" y2="185"/><text x="370" y="224">Depot + durable state</text><text x="370" y="260">Policy + project queues</text><text x="370" y="296">Questions + Needs You</text><text x="370" y="332">Verification evidence</text><text x="370" y="368">Shipping intent + audit</text>
+          </g>
+          <g class="node boundaries">
+            <rect x="790" y="78" width="300" height="114" rx="4"/><text x="818" y="111" class="cap">RUNTIME</text><text x="818" y="146">Local today</text><text x="818" y="170" class="muted">Herdr later: multi-machine</text>
+            <rect x="790" y="213" width="300" height="94" rx="4"/><text x="818" y="246" class="cap">EXECUTORS</text><text x="818" y="281">Codex · Claude · Hermes · command</text>
+            <rect x="790" y="328" width="300" height="94" rx="4"/><text x="818" y="361" class="cap">SHIPPING PROVIDERS</text><text x="818" y="396">Git push · deployment command</text>
+          </g>
+        </svg>
+      </div>
+      <div class="boundary-notes">
+        <article><h3>Channels</h3><p>ChatGPT is first through a thin MCP/plugin adapter. Email and Slack are planned adapters, not separate workflow engines.</p></article>
+        <article><h3>Runtime</h3><p>One machine works without Herdr. Herdr is the later boundary for multi-machine coordination—not a prerequisite.</p></article>
+        <article><h3>Human review</h3><p>Project policy decides where work can proceed and where it must enter <strong>Needs You</strong> for clarification or review.</p></article>
+      </div>
+    </section>
+
+    <section id="quick-start" class="section quick-start">
+      <div class="section-label"><span>03</span> FIRST DEPARTURE</div>
+      <div class="section-intro">
+        <h2>Run the complete local slice.</h2>
+        <p>Current developer setup targets macOS, Node.js 20.11+, and Git. Installation creates the local front door and private state/configuration directories.</p>
+      </div>
+      <div class="terminal" role="group" aria-label="Installation commands">
+        <div class="terminal-bar"><span></span><span></span><span></span><b>LOCAL SETUP</b></div>
+        <pre><code><span>$</span> git clone https://github.com/ryngrn/roundhouse.git
+<span>$</span> cd roundhouse
+<span>$</span> npm install
+<span>$</span> npm test
+<span>$</span> npm run check
+<span>$</span> ./scripts/macos/install.sh
+<span>$</span> open http://roundhouse
+<span>$</span> ./scripts/macos/menu-bar.sh install</code></pre>
+      </div>
+      <div class="walkthrough">
+        <article><span>1</span><h3>Configure a project</h3><p>Copy an example autonomy configuration or use the control room editor. Set repository, context, checks, executor, and shipping policy.</p></article>
+        <article><span>2</span><h3>Add a first task</h3><p>Open <code>http://roundhouse</code>, describe the outcome in ordinary language, and add it to the Depot.</p></article>
+        <article><span>3</span><h3>Watch the durable state</h3><p>The background worker routes and executes ready work. The menu bar helper shows status and gives quick service controls.</p></article>
+        <article><span>4</span><h3>Respond only when needed</h3><p>If policy or missing context requires a decision, answer the revision-bound question in Needs You. Otherwise, work continues.</p></article>
+        <article><span>5</span><h3>Inspect the outcome</h3><p>Roundhouse reports checks, commit and branch evidence, and deployment results when the project is actually shipped.</p></article>
+      </div>
+    </section>
+
+    <section class="section status-modes">
+      <div class="section-label"><span>04</span> CHATGPT STATUS</div>
+      <div class="section-intro">
+        <h2>Polling everywhere. Same-thread events where supported.</h2>
+      </div>
+      <div class="mode-grid">
+        <article>
+          <div class="mode-tag">UNIVERSAL FALLBACK</div>
+          <h3>Manual status tools</h3>
+          <p><code>get_work_status</code> and <code>get_needs_human</code> work wherever the Roundhouse MCP tools are available. Ask ChatGPT for status when you want it.</p>
+        </article>
+        <article>
+          <div class="mode-tag accent">SUPPORTED SURFACES</div>
+          <h3>MCP Events</h3>
+          <p>Subscribe a conversation to an item or project. Roundhouse sends Needs You, materially Blocked, and Shipped updates back to that thread. Progress is opt-in.</p>
+          <p class="fine">Current OpenAI support: Work chats on ChatGPT web; Work chats in the desktop app with Cloud selected; and dots. This is not a claim of universal mobile support.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="status" class="section status-section">
+      <div class="section-label"><span>05</span> CURRENT SIGNAL</div>
+      <div class="section-intro">
+        <h2>Working now, and what remains ahead.</h2>
+        <p>Roundhouse is an early public project. The line between implemented and planned is deliberate.</p>
+      </div>
+      <div class="status-board">
+        <article>
+          <h3><span class="lamp green"></span> Working</h3>
+          <ul>
+            <li>Local browser control room and <code>http://roundhouse</code> front door</li>
+            <li>Menu bar status and service helper</li>
+            <li>ChatGPT MCP intake, questions, polling, and MCP Events callbacks</li>
+            <li>Durable local state, outbox transitions, restart recovery, and no silent replay</li>
+            <li>Background worker, project queues, configuration editing, and policy gates</li>
+            <li>Local execution, verification, Git shipping, and deployment-provider boundary</li>
+            <li>Automated unit and end-to-end tests</li>
+          </ul>
+        </article>
+        <article>
+          <h3><span class="lamp amber"></span> Roadmap</h3>
+          <ul>
+            <li>Email and Slack intake/status adapters</li>
+            <li>Herdr-backed multi-machine runtime and reconciliation</li>
+            <li>Remote/cloud workers and broader executor adapters</li>
+            <li>Pull request creation, merging, and richer delivery providers</li>
+            <li>Production MCP hosting, OAuth, and multi-user operation</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section reliability">
+      <div class="section-label"><span>06</span> OPERATING PRINCIPLES</div>
+      <div class="principle-grid">
+        <article><h3>Durable before clever</h3><p>Intent, decisions, process boundaries, candidate commits, verification evidence, and delivery intent are persisted.</p></article>
+        <article><h3>Failures stay visible</h3><p>Interrupted or uncertain external actions become Blocked. Roundhouse does not quietly replay work it cannot prove safe.</p></article>
+        <article><h3>Shipping is controlled</h3><p>Models cannot inject verification commands or choose unconfigured delivery policy. Operators own those boundaries.</p></article>
+        <article><h3>Noise is not status</h3><p>Callbacks come from state transitions, never terminal logs. Default events are limited to human need, material failure, and completion.</p></article>
+      </div>
+    </section>
+
+    <section class="cta">
+      <p class="eyebrow">NEXT STOP</p>
+      <h2>Put one real outcome<br>through the Depot.</h2>
+      <div class="actions">
+        <a class="button button-light" href="https://github.com/ryngrn/roundhouse">Open the repository</a>
+        <a class="text-link light" href="https://github.com/ryngrn/roundhouse/issues">Browse issues <span aria-hidden="true">→</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <a class="wordmark footer-mark" href="./"><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span><span>ROUNDHOUSE</span></a>
+    <p>A local-first control plane for autonomous work.</p>
+    <nav aria-label="Project links">
+      <a href="https://github.com/ryngrn/roundhouse#readme">README</a>
+      <a href="https://github.com/ryngrn/roundhouse/tree/main/docs">Docs</a>
+      <a href="https://github.com/ryngrn/roundhouse/issues">Issues</a>
+    </nav>
+  </footer>
+</body>
+</html>

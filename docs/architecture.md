@@ -14,6 +14,7 @@ legacy manual-delivery adapter; it is not the autonomous workflow.
 | Verification | Configured argv commands plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | CLI approval/clarification, durable questions, and MCP answers | Revision-bound human response, durable audit record, immediate readiness reevaluation |
+| Status adapters | Browser polling, MCP status tools, and MCP Events webhooks | Project/item-scoped projection of durable outbox transitions |
 
 The Engine imports no Notion SDK and contains no Codex command-line flags. Those
 belong to adapters. Runtime state is distinct from product state: a process exiting
@@ -29,6 +30,15 @@ The combined local server owns the browser control room, JSON API, MCP endpoint,
 and a bounded worker loop. HTTP handlers contain no routing, approval, execution,
 or shipping policy. The loop calls the same Engine used by the CLI, so worker locks
 and conservative recovery continue to govern both paths.
+
+MCP Events is an outbound status adapter, not a second workflow. Subscriptions,
+verification records, delivery attempts, stable event IDs, and retry state are kept
+in the same private durable snapshot. The adapter scans committed outbox transitions
+and never executor stdout. It defaults to Needs You, Blocked, and completed Shipped
+outcomes; progress transitions require explicit subscription opt-in. A subscription
+starts at the current outbox position, preventing historical replay on creation or
+restart. Manual MCP status tools remain available when a client does not support
+Events.
 
 ## Durable ownership
 

@@ -60,7 +60,7 @@ export class Engine {
             }
           }
           const now = new Date().toISOString();
-          current.questions.push({
+          const question = {
             id: randomUUID(),
             decision_id: current.decision_id,
             item_id: current.id,
@@ -71,7 +71,13 @@ export class Engine {
             status: "open",
             created_at: now,
             updated_at: now,
-          });
+          };
+          current.questions.push(question);
+          const outbox = data.outbox.findLast((event) => event.entity_id === current.id && event.state === current.state);
+          if (outbox) {
+            outbox.question_id = question.id;
+            outbox.question_revision = question.revision;
+          }
         }
       });
     } catch (error) {

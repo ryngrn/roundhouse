@@ -2,7 +2,7 @@
   "name": "roundhouse",
   "version": "0.1.0",
   "private": true,
-  "description": "Generic Notion-to-executor orchestration for Roundhouse",
+  "description": "Local-first control plane for policy-controlled autonomous work",
   "type": "module",
   "bin": {
     "roundhouse": "./src/cli.js"
@@ -21,7 +21,10 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",
+    "ipaddr.js": "^2.5.0",
+    "standardwebhooks": "^1.1.1",
     "yaml": "^2.8.1",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   }
 }

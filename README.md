@@ -1,5 +1,7 @@
 # Roundhouse
 
+[Public documentation and onboarding](https://ryngrn.github.io/roundhouse/)
+
 Roundhouse turns incoming ideas in the **Depot** into policy-controlled work:
 interpret the request, resolve the project, execute, verify, ship, and optionally
 continue the project's queue. Review means a human decision is needed.

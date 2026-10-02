@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import YAML from "yaml";
 import { RoundhouseService } from "../workflow/service.js";
 import { handleMcpRequest } from "../mcp/http-server.js";
+import { McpEventBroker } from "../mcp/events.js";
 import { WorkerLoop } from "./worker.js";
 
 const webRoot = fileURLToPath(new URL("../web/", import.meta.url));
@@ -77,7 +78,9 @@ export async function startRoundhouseServer({
   const config = configFile ?? defaults.configFile;
   if (!service) ensureLocalConfig(config);
   const roundhouse = service ?? new RoundhouseService({ stateDirectory: state, configFile: config });
-  const loop = worker ?? new WorkerLoop({ service: roundhouse, intervalMs: workerIntervalMs, onError: (error) => process.stderr.write(`Worker: ${error.message}\n`) });
+  const events = new McpEventBroker({ service: roundhouse });
+  const loop = worker ?? new WorkerLoop({ service: roundhouse, eventBroker: events, intervalMs: workerIntervalMs, onError: (error) => process.stderr.write(`Worker: ${error.message}\n`) });
+  loop.eventBroker ??= events;
   const allowed = new Set([host, "roundhouse", ...(host === "127.0.0.1" ? ["localhost", "::1"] : []), ...allowedHosts].map((value) => value.toLowerCase()));
   const origins = new Set(["http://roundhouse", `http://${host}:${port}`, `http://localhost:${port}`]);
   const httpServer = createServer(async (request, response) => {
@@ -86,7 +89,7 @@ export async function startRoundhouseServer({
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? host}`);
       if (url.pathname === "/mcp") {
         if (!["POST", "GET", "DELETE", "OPTIONS"].includes(request.method ?? "")) return send(response, 405, { error: "Method Not Allowed" });
-        return await handleMcpRequest(request, response, roundhouse);
+        return await handleMcpRequest(request, response, roundhouse, events);
       }
       if (request.method === "GET" && assets.has(url.pathname)) {
         const [filename, type] = assets.get(url.pathname);

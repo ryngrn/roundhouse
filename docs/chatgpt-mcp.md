@@ -17,6 +17,75 @@ The server exposes four tools over MCP Streamable HTTP at `/mcp`:
 There is intentionally no `list_projects` tool. Roundhouse can infer a project from
 configured project context, while a user-supplied project value remains a hint.
 
+The endpoint is dual-era: it preserves the existing MCP 1.x handshake for current
+clients and implements stateless MCP 2.0 protocol version `2026-07-28` for current
+ChatGPT plugin discovery. MCP 2.0 requests receive `server/discover`, the same four
+tool schemas, and the Events methods described below.
+
+## Same-thread status with MCP Events
+
+Manual polling remains the fallback everywhere the tools work: use
+`get_work_status` and `get_needs_human`. On currently supported ChatGPT surfaces,
+a conversation can instead subscribe to `roundhouse.work.updated` with exactly one
+of these scopes:
+
+```json
+{
+  "name": "roundhouse.work.updated",
+  "arguments": { "item_id": "durable-item-id", "include_progress": false },
+  "delivery": {
+    "mode": "webhook",
+    "url": "https://callback-supplied-by-chatgpt.example/path",
+    "secret": "whsec_base64-signing-key"
+  },
+  "cursor": null
+}
+```
+
+Use `project_id` instead of `item_id` to watch a configured project. By default,
+Roundhouse emits only these durable state outcomes:
+
+- `Needs Clarification` or `Review`, when a current question actually needs a person
+- materially `Blocked` work
+- `Shipped`, once the complete Depot item is verified and shipped
+
+Set `include_progress: true` explicitly to also receive meaningful `Executing`,
+`Verification`, and `Rework` transitions. Process output and terminal noise never
+become events.
+
+Subscriptions and delivery attempts live in the private Roundhouse state file and
+survive restart. A new subscription begins at the current outbox position, so old
+transitions are not silently replayed. Each matching transition gets a stable event
+ID. Transient delivery failures use bounded backoff with that same ID; successful,
+permanent, and exhausted deliveries remain recorded for deduplication and audit.
+
+Roundhouse implements the current webhook subset documented by OpenAI:
+`server/discover`, `events/list`, `events/subscribe`, and `events/unsubscribe`.
+Subscription callbacks are verified before activation, require an HTTPS public
+address, do not follow redirects, are re-resolved and public-address checked for
+every delivery, and use Standard Webhooks signatures. The signing secret is stored
+in the private state file because it is required for later callbacks. Protect that
+file as a secret.
+
+The current local server has no built-in multi-user identity system. Behind an
+authenticated reverse proxy, set `ROUNDHOUSE_MCP_PRINCIPAL_HEADER` to the name of
+a proxy-injected header containing a stable account subject (for example,
+`x-roundhouse-principal`). The proxy must strip client-supplied copies. Roundhouse
+stores only a hash of that value as subscription ownership metadata. Without this
+setting it hashes the Authorization header when present and otherwise uses the
+single local identity; OAuth access-token rotation therefore requires the stable
+principal-header configuration for long-lived production subscriptions.
+
+OpenAI currently documents MCP Events on these surfaces only:
+
+- Work chats on ChatGPT web
+- Work chats in the desktop app with **Cloud** selected
+- dots
+
+Workspace plugin and event-trigger controls still apply. This is not universal
+mobile support. See OpenAI's current [MCP Events guide](https://developers.openai.com/plugins/build/mcp-events)
+and the MCP [`2026-07-28` specification](https://modelcontextprotocol.io/specification/2026-07-28/).
+
 ## Run locally
 
 Use a private Roundhouse state directory and an autonomy configuration. Both paths
@@ -73,9 +142,9 @@ this local vertical-slice test; no custom UI is required.
 
 OpenAI's current documentation demonstrates personal plugin testing in ChatGPT Work
 on the web and says developer-mode availability depends on account and workspace
-policy. It does not establish an equivalent write-capable mobile setup, so test this
-slice on the documented web Work surface and do not create a mobile-specific
-architecture workaround.
+policy. Events additionally support the desktop Work + Cloud surface and dots as
+listed above. It does not establish equivalent universal mobile support, so do not
+create a mobile-specific architecture workaround.
 
 This repository supplies no public MCP hosting or OAuth service. The server is
 bound to loopback by default. OpenAI's current guidance says write actions or
@@ -91,6 +160,7 @@ Official references verified for this implementation:
 
 - [MCP server and UI quickstart](https://developers.openai.com/plugins/build/app-quickstart)
 - [Build an MCP server](https://developers.openai.com/plugins/build/mcp-server)
+- [MCP Events](https://developers.openai.com/plugins/build/mcp-events)
 - [Connect and test your plugin](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 - [Package your plugin](https://developers.openai.com/plugins/build/plugins)
 - [Plugin authentication](https://developers.openai.com/plugins/build/auth)
@@ -108,3 +178,9 @@ In one ChatGPT Work conversation:
    and the response reports the state after reevaluation without a separate continue
    command.
 4. Ask for status. Restart the MCP process and ask again to confirm persistence.
+
+For Events on a supported surface, ask ChatGPT in the same conversation to monitor
+the returned item ID. Confirm callback verification and subscription persistence,
+then cause a Needs You or Shipped transition. The update should arrive in that
+conversation without calling a polling tool. Stop monitoring and confirm
+`events/unsubscribe` makes later matching transitions silent.
