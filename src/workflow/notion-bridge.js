@@ -34,7 +34,11 @@ export function updates(data, view) {
     const properties = {
       "Workflow State": item.state,
       "Roundhouse Job ID": item.id,
-      "Delivery Summary": JSON.stringify({ state: item.state, question: item.question, jobs: item.jobs }).slice(0, 18000),
+      "Delivery Summary": [
+        `State: ${item.state}`,
+        item.question ?? "",
+        ...item.jobs.map((job) => `${job.title}: ${job.state}. ${job.reason ?? ""}${job.shipping ? ` Delivery: ${JSON.stringify(job.shipping)}` : ""}`),
+      ].filter(Boolean).join("\n").slice(0, 18000),
     };
     const token = digest(properties);
     return stored.notion_sync_token === token ? [] : [{ page_id: stored.input.notion.page_id, item_id: item.id, token, properties }];

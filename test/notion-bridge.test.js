@@ -20,6 +20,7 @@ test("Notion pickup is opt-in, UUID-idempotent and sync receipts reject stale st
   assert.equal(pickup(store, batch, projects, notionInput)[0].duplicate, true);
   const first = updates(store.read(), statusView)[0];
   assert.equal(first.properties["Workflow State"], "Depot");
+  assert.match(first.properties["Delivery Summary"], /^State: Depot/);
   store.change((data) => store.move(data, data.items[first.item_id], "Decision", "Interpreting"));
   assert.throws(() => acknowledge(store, first, statusView), /Stale/);
   const next = updates(store.read(), statusView)[0];
