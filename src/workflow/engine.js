@@ -21,6 +21,8 @@ function executionProjectContext(project, role) {
   return { ...context, agent_profile: composeAgentRole(role, project) };
 }
 
+const itemPriority = (item) => Number.isFinite(item.priority_rank) ? item.priority_rank : 100;
+
 export class Engine {
   constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = new LocalRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery() }) {
     Object.assign(this, { store, config, decision, runtime, verifier, shipping });
@@ -191,15 +193,23 @@ export class Engine {
         if (matches.length !== 1) throw new Error("Question or decision id does not identify one durable question.");
         const { item, question } = matches[0];
         if (question.status !== "open" || question.revision !== expectedRevision) throw new Error("Answer is stale or this question was already resolved.");
-        if (!["Needs Clarification", "Review"].includes(item.state) || item.job_ids.length) throw new Error("Question cannot be answered in the item's current state.");
+        const importedDecision = item.state === "Imported Pending" && question.kind === "imported_decision" && item.requires_reevaluation;
+        if ((!importedDecision && !["Needs Clarification", "Review"].includes(item.state)) || item.job_ids.length) throw new Error("Question cannot be answered in the item's current state.");
         const now = new Date().toISOString();
         question.answer = { text: answer, actor, at: now };
         question.status = "answered";
         question.revision += 1;
         question.updated_at = now;
         item.clarifications.push({ text: answer, actor, question_id: question.id, decision_id: question.decision_id, decision_key: question.decision_key ?? null, at: now });
-        this.store.move(data, item, "Decision", "Human answer received; re-evaluating readiness.");
-        item.awaiting_decision = true;
+        if (importedDecision) {
+          item.reevaluation = { actor, at: now, trigger: "imported_decision_answer" };
+          item.requires_reevaluation = false;
+          item.execution_eligible = true;
+          this.store.move(data, item, "Depot", "Imported decision answered; explicit Roundhouse re-evaluation started.");
+        } else {
+          this.store.move(data, item, "Decision", "Human answer received; re-evaluating readiness.");
+          item.awaiting_decision = true;
+        }
         itemId = item.id;
       });
       await this.decide(itemId);
@@ -226,6 +236,25 @@ export class Engine {
         }
         this.store.move(data, item, "Decision", `Re-evaluating readiness after a Roundhouse capability update (${actor}).`);
         item.awaiting_decision = true;
+      });
+      await this.decide(id);
+      return this.store.read().items[id];
+    } finally { release(); }
+  }
+  async reevaluateImported(id, expectedRevision, actor = "local-user") {
+    if (!actor?.trim()) throw new Error("Imported work re-evaluation requires an actor.");
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new Error("Imported work re-evaluation requires a positive expected revision.");
+    const release = acquireLock(this.store.workerLock);
+    try {
+      this.store.change((data) => {
+        const item = data.items[id];
+        if (!item || item.state !== "Imported Pending" || !item.requires_reevaluation || item.revision !== expectedRevision || item.job_ids.length) {
+          throw new Error("Only the current unstarted Imported Pending revision can be re-evaluated.");
+        }
+        item.execution_eligible = true;
+        item.reevaluation = { actor, at: new Date().toISOString() };
+        this.store.move(data, item, "Depot", `Explicit Roundhouse re-evaluation requested by ${actor}.`);
+        item.requires_reevaluation = false;
       });
       await this.decide(id);
       return this.store.read().items[id];
@@ -320,8 +349,10 @@ export class Engine {
       if (projectId && !this.config.projects.some((p) => p.id === projectId)) throw new Error("Unknown project filter.");
       const snapshot = this.store.read();
       if ([...Object.values(snapshot.items), ...Object.values(snapshot.jobs)].some((j) => ["Executing", "Verification", "Rework"].includes(j.state) || (j.state === "Decision" && !j.awaiting_decision))) throw new Error("Interrupted work requires recovery, not automatic replay.");
-      for (const item of Object.values(snapshot.items)) {
-        if (item.state !== "Depot" && !item.awaiting_decision) continue;
+      const decisionCandidates = Object.values(snapshot.items)
+        .filter((item) => item.state === "Depot" || item.awaiting_decision)
+        .sort((a, b) => itemPriority(a) - itemPriority(b) || String(a.created_at).localeCompare(String(b.created_at)) || a.id.localeCompare(b.id));
+      for (const item of decisionCandidates) {
         if (projectId && item.input.project_id && item.input.project_id !== projectId) continue;
         await this.decide(item.id);
       }

@@ -12,6 +12,10 @@ browser control room, JSON API, MCP endpoint, and background worker run in one
 loopback service. Codex and trusted command executors are supported; deployments
 use an explicit fixture or operator-owned command provider.
 
+Roundhouse is the authoritative system for Depot intake and every downstream
+workflow state. The former Notion Roundhouse Depot is archive/reference only; new
+“add to Depot” requests go directly to Roundhouse.
+
 ## Install on one Mac
 
 ```sh
@@ -74,7 +78,7 @@ are repository-relative and contain no personal machine settings.
 
 - [Behavior, configuration, approvals, recovery, and test contracts](docs/autonomous-workflow.md)
 - [Architecture and adapter extension guide](docs/architecture.md)
-- [Notion Depot bridge and schema migration](docs/chatgpt-rdc-bridge.md)
+- [Notion Depot archive and one-time cutover](docs/chatgpt-rdc-bridge.md)
 - [ChatGPT MCP adapter setup and testing](docs/chatgpt-mcp.md)
 
 The worker has one local execution slot per state directory. It supports
@@ -89,7 +93,6 @@ the fixture provider for proof and a configurable command provider for real syst
 `config/intake-projects.example.yaml` and `config/intake.example.json`. It does not
 execute or approve work.
 
-`dispatch` remains the original Notion/RDC adapter, using
-`config/projects.example.yaml`. It requires a Ready item and clean mapped repository,
-creates a local commit, and stops at a human delivery gate. Use `depot` for the
-verified autonomous shipping workflow. Existing configuration formats remain intact.
+The original Notion/RDC `dispatch` prototype is retired and no longer exposed by
+the Roundhouse CLI. There is no supported Notion pickup, status write-back, or
+bidirectional sync path.

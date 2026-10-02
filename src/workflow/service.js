@@ -97,4 +97,10 @@ export class RoundhouseService {
     const item = await this.engine.reconsider(id, actor, expected_revision);
     return { item: itemView(this.store.read(), item), reconsidered: true };
   }
+
+  async reevaluateImportedItem({ id, expected_revision, actor = "local-user" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to re-evaluate imported work.");
+    const item = await this.engine.reevaluateImported(id, expected_revision, actor);
+    return { item: itemView(this.store.read(), item), reevaluated: true };
+  }
 }

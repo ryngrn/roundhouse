@@ -12,7 +12,7 @@
     "start": "node src/server/app-server.js",
     "mcp": "node src/mcp/http-server.js",
     "test": "node --test test/*.test.js",
-    "test:unit": "node --test test/item.test.js test/config.test.js test/intake.test.js test/codex-executor.test.js test/workflow-unit.test.js",
+    "test:unit": "node --test test/intake.test.js test/codex-executor.test.js test/workflow-unit.test.js test/notion-depot-migration.test.js",
     "test:e2e": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
     "acceptance": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
     "acceptance:live": "node --test test/acceptance-live.test.js",

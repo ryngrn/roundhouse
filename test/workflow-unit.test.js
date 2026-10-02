@@ -7,7 +7,6 @@ import { transitions, record, transition } from "../src/workflow/state.js";
 import { validateDecision, routeDecision } from "../src/workflow/decision.js";
 import { Store, acquireLock } from "../src/workflow/store.js";
 import { runProcess } from "../src/workflow/runtime.js";
-import { notionInput } from "../src/workflow/cli.js";
 
 const project = { id: "example", status: "active", executor: { kind: "command" }, runtime: "local",
   verification: [{ id: "tests" }], policy: { project_confidence: 0.8, execution_confidence: 0.9, allow_autonomous: true, shipping: "push_branch" } };
@@ -60,11 +59,4 @@ test("unit: process failure, timeout and non-shell argv remain bounded", async (
   assert.equal(timeout.passed, false);
   const missing = await runProcess(["roundhouse-missing-command"]);
   assert.equal(missing.passed, false);
-});
-test("unit: Notion is a source adapter, and Ready is never an authority grant", () => {
-  const input = notionInput({ url: "https://app.notion.com/p/abc", properties: { "Raw Intake": "Original request", Project: { select: { name: "Example" } }, Status: "Ready" } }, [{ id: "example", name: "Example" }]);
-  assert.equal(input.text, "Original request");
-  assert.equal(input.project_id, "example");
-  assert.equal(input.approved, undefined);
-  assert.throws(() => notionInput({ url: "https://app.notion.com/p/abc", Project: "Unknown" }, []), /map uniquely/);
 });

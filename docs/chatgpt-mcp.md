@@ -1,7 +1,7 @@
 # ChatGPT → Roundhouse Depot
 
-This slice adds a thin ChatGPT adapter over the same Roundhouse Depot, decision,
-question, and readiness state used by the CLI and Notion adapter. ChatGPT does not
+This slice adds a thin ChatGPT adapter over the same authoritative Roundhouse
+Depot, decision, question, and readiness state used by the CLI and browser. ChatGPT does not
 infer projects, decompose work, assign priority, approve policy, or execute jobs.
 
 The server exposes four tools over MCP Streamable HTTP at `/mcp`:

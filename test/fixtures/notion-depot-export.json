@@ -1,0 +1,87 @@
+{
+  "source": "Roundhouse Depot",
+  "rows": [
+    {
+      "Notion Page URL": "https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "Source ID": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "Roundhouse ID": 1,
+      "Item": "Historical shipped improvement",
+      "Project": "Inclusion",
+      "Priority": "P2",
+      "Raw Intake": "Ship the historical improvement",
+      "Normalized Brief": "Deliver a historical improvement",
+      "Outcome": "The historical improvement shipped.",
+      "Acceptance Criteria": "Production result was verified",
+      "Status": "Done",
+      "Workflow State": "Shipped",
+      "Delivery Summary": "Delivered from the prototype",
+      "Created": "2025-01-02T03:04:05.000Z",
+      "Updated": "2025-01-03T03:04:05.000Z"
+    },
+    {
+      "Notion Page URL": "https://www.notion.so/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "Source ID": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "Roundhouse ID": 2,
+      "Item": "Future product decision",
+      "Project": "Future Project",
+      "Priority": "P1",
+      "Raw Intake": "Choose the future product direction",
+      "Decisions Needed": "Choose audience before implementation",
+      "Status": "Inbox",
+      "Workflow State": "Needs Decisions",
+      "Agent Ready": false,
+      "Slice Ready": false,
+      "Created": "2025-02-01T00:00:00Z",
+      "Updated": "2025-02-02T00:00:00Z"
+    },
+    {
+      "Notion Page URL": "https://www.notion.so/cccccccccccccccccccccccccccccccc",
+      "Source ID": "cccccccccccccccccccccccccccccccc",
+      "Roundhouse ID": 3,
+      "Item": "Legacy ready item",
+      "Project": "Inclusion",
+      "Priority": "P2",
+      "Raw Intake": "A legacy item marked ready",
+      "Status": "Ready",
+      "Workflow State": "Ready",
+      "Agent Ready": true,
+      "Slice Ready": true
+    },
+    {
+      "Notion Page URL": "https://www.notion.so/dddddddddddddddddddddddddddddddd",
+      "Source ID": "dddddddddddddddddddddddddddddddd",
+      "Roundhouse ID": 4,
+      "Item": "Legacy running item",
+      "Project": "Inclusion",
+      "Priority": "P3",
+      "Raw Intake": "A legacy item once marked running",
+      "Status": "Running",
+      "Workflow State": "Executing"
+    },
+    {
+      "Notion Page URL": "https://www.notion.so/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "Source ID": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "Roundhouse ID": 5,
+      "Item": "Auto-subscribe originating ChatGPT thread to Roundhouse work",
+      "Project": "Roundhouse",
+      "Priority": "P0",
+      "Raw Intake": "Auto-subscribe the originating ChatGPT thread to Roundhouse work",
+      "Outcome": "Originating threads receive durable progress events",
+      "Acceptance Criteria": "Subscription is durable and idempotent",
+      "Status": "Inbox",
+      "Workflow State": "Depot"
+    },
+    {
+      "Notion Page URL": "https://www.notion.so/ffffffffffffffffffffffffffffffff",
+      "Source ID": "ffffffffffffffffffffffffffffffff",
+      "Roundhouse ID": 6,
+      "Item": "Native write-back",
+      "Project": "Inclusion",
+      "Priority": "P1",
+      "Raw Intake": "This row was written back by Roundhouse",
+      "Status": "Running",
+      "Workflow State": "Executing",
+      "Roundhouse Job ID": "NATIVE_ITEM_ID"
+    }
+  ]
+}

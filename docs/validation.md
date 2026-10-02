@@ -33,6 +33,7 @@ credentials and meaningful verification
 commands. The portable Roundhouse self-development configuration is included;
 other projects use private manifests.
 
-The existing Notion database and intake view were renamed Roundhouse Depot/Depot.
+The former Notion Roundhouse Depot is archive-only. One-time import validation uses
+local JSON fixtures and never reads or modifies Notion.
 Workflow State, Roundhouse Job ID, and Delivery Summary were added without removing
 legacy planning fields or changing existing tasks' execution authority.

@@ -112,8 +112,8 @@ export async function startRoundhouseServer({
           counts: {
             needs_you: needs.questions.length,
             active: status.items.filter((item) => ["Decision", "Executing", "Verification", "Rework"].includes(item.state)).length,
-            queued: status.items.filter((item) => ["Depot", "Ready"].includes(item.state)).length,
-            completed: status.items.filter((item) => item.state === "Shipped").length,
+            queued: status.items.filter((item) => ["Depot", "Ready", "Imported Pending"].includes(item.state)).length,
+            completed: status.items.filter((item) => ["Shipped", "Imported History"].includes(item.state)).length,
             blocked: status.items.filter((item) => item.state === "Blocked").length,
           },
           connection: {
@@ -163,6 +163,14 @@ export async function startRoundhouseServer({
         verifyOrigin(request, origins);
         const input = await jsonBody(request);
         const result = await roundhouse.reconsiderItem({ id: decodeURIComponent(reconsider[1]), expected_revision: input.expected_revision, actor: "local-user" });
+        loop.wake();
+        return send(response, 200, result);
+      }
+      const reevaluateImport = url.pathname.match(/^\/api\/items\/([^/]+)\/reevaluate-import$/);
+      if (request.method === "POST" && reevaluateImport) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.reevaluateImportedItem({ id: decodeURIComponent(reevaluateImport[1]), expected_revision: input.expected_revision, actor: "local-user" });
         loop.wake();
         return send(response, 200, result);
       }

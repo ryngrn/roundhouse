@@ -1,9 +1,0 @@
-projects:
-  Example Project:
-    repo: /absolute/path/to/example-project
-
-execution:
-  codex_bin: ~/.local/bin/codex
-  state_dir: ~/.local/state/roundhouse
-  timeout_minutes: 120
-  require_clean_worktree: true

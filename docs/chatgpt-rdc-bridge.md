@@ -1,76 +1,52 @@
-# Notion Depot control surface
+# Notion Depot archive and one-time cutover
 
-The existing ChatGPT Notion connector can continue to fetch work and show results.
-Remote Desktop Commander can transport files/commands where available. Neither
-connector is embedded into the generic workflow engine.
+Roundhouse is the authoritative operational system for Depot intake, projects,
+priorities, workflow state, Needs You, execution, verification, shipping, and
+outcomes. The historical Notion **Roundhouse Depot** was a prototype and is now an
+archive/reference only. Roundhouse never polls it, writes status back to it, or
+uses a Notion value as execution authority.
 
-## Schema migration
+## One-time import
 
-The existing Roundhouse Inbox database/data source was renamed **Roundhouse Depot**.
-Its ID is unchanged. Existing planning properties and records are preserved.
-Three additive properties support the autonomous workflow:
-
-- `Workflow State`: Depot, Decision, Needs Clarification, Ready, Executing,
-  Verification, Rework, Review, Blocked, Shipped.
-- `Roundhouse Job ID`: text containing the local item/job identity.
-- `Delivery Summary`: text with delivery refs and verification summary.
-
-The old `Status` select and its values remain for historical planning and the
-legacy adapter. Do not infer execution approval from either Status or Agent Ready.
-For new engine-managed work, use Workflow State. Old planning records are not
-automatically executed or bulk reclassified by this migration.
-
-## Submit a fetched page
-
-Export a fetched page into JSON with a source `url`, `properties`, and optional
-`content`. Flat MCP and REST rich-text/select properties are accepted:
-
-```json
-{
-  "url": "https://app.notion.com/p/PAGE_ID",
-  "properties": {
-    "Item": "Improve the homepage",
-    "Project": "Example",
-    "Raw Intake": "The homepage explanation is confusing; make it clearer.",
-    "Outcome": "Visitors understand the product.",
-    "Acceptance Criteria": "Project-specific checks and approval policy apply."
-  }
-}
-```
+Export the prototype rows as JSON, then run:
 
 ```sh
-node src/cli.js depot submit --state-dir STATE --config CONFIG --notion page.json
-node src/cli.js depot run --state-dir STATE --config CONFIG
-node src/cli.js depot outbox --state-dir STATE
+roundhouse migrate notion-depot /absolute/path/to/export.json
 ```
 
-The page source URL is the default idempotency key. Reimporting unchanged content
-does not create a duplicate; changed content under the same key is rejected. Use
-clarification for an existing pending request or an explicit new key for new work.
-The original Raw Intake is preferred, then Normalized Brief, then Item title.
-Other supplied fields become decision context. Project names must map uniquely to
-configured IDs; unmapped names fail visibly.
+The installed Studio defaults are
+`~/Library/Application Support/Roundhouse/state` and `projects.yaml` in the parent
+directory. Tests and alternate installations can pass `--state-dir` and
+`--config` explicitly.
 
-## Returning results
+The export can be an array or an object containing `rows`, `pages`, `records`,
+`items`, or `results`. Each record needs a Notion page URL or source ID. The
+importer understands plain exported values and common Notion API property values.
+It retains the legacy Roundhouse ID, raw intake, brief, outcome, acceptance
+criteria, decisions, status/workflow, delivery summary, timestamps, priority,
+project label, and the other prototype fields.
 
-The persistent outbox contains source URLs and transition events. Its `current`
-projection contains aggregate item state and per-job delivery evidence. The bridge
-should use that current projection, not blindly replay an old event, when updating
-Workflow State. For decomposed requests, the parent becomes Shipped only when all
-its jobs have shipped. Populate Roundhouse Job ID and Delivery Summary using the
-returned IDs, branch, commit and verification evidence. Surface the decision's
-question only for Needs Clarification or Review. Record human answers through
-`depot clarify` or revision-bound `depot approve`, then run again.
+Completed records become terminal `Imported History`. Unfinished records become
+non-executable `Imported Pending` and require explicit Roundhouse re-evaluation:
 
-This preserves the existing connector-driven architecture: importing/exporting is
-an explicit bridge action. There is no unattended Notion polling service or stored
-Notion credential in the engine. CLI input works without Notion. Local workflow
-state is authoritative; a connector update failure does not rerun shipped work.
+```sh
+roundhouse depot reevaluate-import \
+  --state-dir "/absolute/path/to/state" \
+  --config "/absolute/path/to/projects.yaml" \
+  --id ITEM_ID --revision REVISION --actor OPERATOR
+```
 
-## Legacy dispatch
+Answering an imported Needs Decisions prompt through the normal Needs You API is
+also an explicit re-evaluation. Import itself never creates a job, calls the
+decision provider, or wakes the worker.
 
-The older `roundhouse dispatch --item page.json` path is retained for compatibility.
-It accepts only Status Ready, resolves a repository from the legacy YAML mapping,
-and asks the bridge for Running, Review, or Blocked. Its Review is a human delivery
-approval gate because that adapter neither verifies through the new policy engine
-nor pushes. It never marks Done. It should not be used for new autonomous work.
+Unknown projects are retained as non-executable project candidates. Exact Notion
+source identity and exact native item/job IDs are used for reconciliation; text
+similarity is deliberately not used. Re-running identical export bytes is a
+state-level no-op. A later changed source record is reported as a conflict and
+does not overwrite native or already imported history.
+
+`state.json` records `system_metadata.notion_depot_cutover`, including completion
+time, archive-only mode, export SHA-256 digest/count, and row results. The command
+prints totals for imported history, imported pending, reconciled, already
+imported, conflicts, and errors.

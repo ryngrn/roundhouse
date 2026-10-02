@@ -33,7 +33,8 @@ function renderNeeds(questions) {
   if (!questions.length) return list.append(node("p", "Nothing needs you."));
   for (const question of questions) {
     const card = node("article", undefined, "card attention");
-    card.append(node("span", question.kind === "review" ? "Approval" : "Clarification", "pill"), node("h3", question.prompt));
+    const label = question.kind === "review" ? "Approval" : question.kind === "imported_decision" ? "Imported decision" : "Clarification";
+    card.append(node("span", label, "pill"), node("h3", question.prompt));
     const form = node("form", undefined, "answer-form");
     const input = node("textarea"); input.required = true; input.placeholder = "Your answer…";
     const button = node("button", "Answer");
@@ -76,7 +77,8 @@ function renderNeeds(questions) {
 function workCard(item) {
   const card = node("article", undefined, "work-card");
   const top = node("div", undefined, "work-top");
-  top.append(node("span", formatState(item.state), `pill state-${item.state.toLowerCase().replaceAll(" ", "-")}`), node("span", item.project || "Unassigned", "project-label"));
+  top.append(node("span", formatState(item.state), `pill state-${item.state.toLowerCase().replaceAll(" ", "-")}`), node("span", item.project || item.project_candidate?.name || "Unassigned", "project-label"));
+  if (item.priority) top.append(node("span", item.priority, "pill"));
   card.append(top, node("h3", item.summary));
   if (item.outcome) card.append(node("p", item.outcome, "outcome"));
   else if (item.reason) card.append(node("p", item.reason, "hint"));
@@ -89,15 +91,56 @@ function workCard(item) {
       : `${delivery.pushed ? "Pushed" : "Committed"} · ${delivery.branch} · ${delivery.commit?.slice(0, 9)}`;
     card.append(node("p", detail, "evidence"));
   }
+  if (item.imported) {
+    const details = node("details", undefined, "provenance");
+    details.append(node("summary", "Imported from archived Notion Depot"));
+    const source = item.provenance?.source_page_url;
+    if (source && /^https?:\/\//i.test(source)) {
+      const link = node("a", "Open archived source");
+      link.href = source; link.target = "_blank"; link.rel = "noreferrer";
+      details.append(link);
+    }
+    const facts = [
+      item.provenance?.source_id ? `Source ID: ${item.provenance.source_id}` : "",
+      item.provenance?.legacy_roundhouse_id ? `Legacy Roundhouse ID: ${item.provenance.legacy_roundhouse_id}` : "",
+      item.legacy?.["Workflow State"] ? `Legacy workflow: ${item.legacy["Workflow State"]}` : "",
+      item.legacy?.Status ? `Legacy status: ${item.legacy.Status}` : "",
+      item.legacy?.["Decisions Needed"] ? `Decisions needed: ${item.legacy["Decisions Needed"]}` : "",
+      item.legacy?.["Acceptance Criteria"] ? `Acceptance criteria: ${item.legacy["Acceptance Criteria"]}` : "",
+      item.legacy?.["Delivery Summary"] ? `Delivery summary: ${item.legacy["Delivery Summary"]}` : "",
+    ].filter(Boolean);
+    for (const fact of facts) details.append(node("p", fact, "hint"));
+    if (item.requires_reevaluation) {
+      details.append(node("p", "Execution disabled until an explicit Roundhouse re-evaluation.", "evidence"));
+      const reevaluate = node("button", "Re-evaluate in Roundhouse", "secondary");
+      reevaluate.type = "button";
+      reevaluate.addEventListener("click", async () => {
+        if (!window.confirm("Re-evaluate this imported item now? If Roundhouse finds it ready, the worker may execute it.")) return;
+        reevaluate.disabled = true;
+        try {
+          await api(`/api/items/${encodeURIComponent(item.id)}/reevaluate-import`, {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ expected_revision: item.revision }),
+          });
+          await load();
+        } catch (error) {
+          window.alert(error.message);
+          reevaluate.disabled = false;
+        }
+      });
+      details.append(reevaluate);
+    }
+    card.append(details);
+  }
   return card;
 }
 
 function renderBoard(items) {
   const board = $("#work-board"); board.replaceChildren();
   const groups = [
-    ["Incoming", ["Depot", "Decision", "Needs Clarification", "Review"]],
+    ["Incoming", ["Depot", "Decision", "Needs Clarification", "Review", "Imported Pending"]],
     ["Active / queued", ["Ready", "Executing", "Verification", "Rework"]],
-    ["Completed", ["Shipped"]],
+    ["Completed", ["Shipped", "Imported History"]],
     ["Blocked", ["Blocked"]],
   ];
   for (const [name, states] of groups) {

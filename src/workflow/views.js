@@ -28,22 +28,34 @@ export function itemView(data, item) {
   }));
   const completionReports = completedJobs.map((job) => job.attempts.at(-1)?.execution?.report).filter(Boolean);
   const deliveryUrls = deliveries.map((delivery) => delivery.deployment?.url ?? delivery.deployment?.deploy_url).filter(Boolean);
+  const importedOutcome = item.legacy_depot?.Outcome || item.legacy_depot?.["Delivery Summary"] || null;
   const outcome = state === "Shipped"
     ? [completionReports.map((report) => report.summary).join(" "),
         `${completedJobs.length} work item${completedJobs.length === 1 ? "" : "s"} verified and shipped by Roundhouse.`,
         deliveryUrls.length ? `Delivery: ${deliveryUrls.join(", ")}` : ""].filter(Boolean).join(" ")
-    : blockedJob ? `Blocked: ${blockedJob.history.at(-1)?.reason ?? "attention required"}` : null;
+    : state === "Imported History" ? importedOutcome ?? "Imported completed history from the archived Notion Depot."
+      : blockedJob ? `Blocked: ${blockedJob.history.at(-1)?.reason ?? "attention required"}` : null;
+  const provenance = item.provenance ?? item.legacy_sources?.at(-1) ?? null;
   return {
     id: item.id,
     state,
     revision: item.revision,
     project: item.project_id ?? null,
+    project_candidate: item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id] ?? null : null,
+    priority: item.priority ?? null,
     summary: item.input.text.slice(0, 240),
     reason: currentJob?.history.at(-1)?.reason ?? item.history.at(-1)?.reason ?? null,
     question: openQuestion?.prompt ?? null,
     question_id: openQuestion?.id ?? null,
     question_revision: openQuestion?.revision ?? null,
     outcome,
+    imported: Boolean(provenance?.source_system === "notion"),
+    provenance,
+    legacy: item.legacy_depot ?? item.legacy_depot_records?.at(-1) ?? null,
+    requires_reevaluation: item.requires_reevaluation === true,
+    execution_eligible: item.execution_eligible !== false,
+    created_at: item.created_at ?? null,
+    updated_at: item.updated_at ?? null,
     evidence: { checks, deliveries, completion_reports: completionReports },
     jobs: jobs.map((job) => ({
       id: job.id,
@@ -61,8 +73,10 @@ export function statusView(data, filters = {}) {
   const items = Object.values(data.items)
     .filter((item) => !filters.item_id || item.id === filters.item_id)
     .filter((item) => !filters.project_id || item.project_id === filters.project_id || item.input.project_hint === filters.project_id)
-    .map((item) => itemView(data, item));
-  return { items, projects: data.projects };
+    .map((item) => itemView(data, item))
+    .sort((a, b) => (data.items[a.id].priority_rank ?? 100) - (data.items[b.id].priority_rank ?? 100)
+      || String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")) || a.id.localeCompare(b.id));
+  return { items, projects: data.projects, project_candidates: data.project_candidates ?? {}, system_metadata: data.system_metadata ?? {} };
 }
 
 export function needsHumanView(data, filters = {}) {

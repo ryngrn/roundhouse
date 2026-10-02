@@ -1,7 +1,7 @@
 # Depot to delivery
 
-Depot holds incoming requests in their original wording. Submit an idea as text,
-JSON, or an exported Notion page, then run the worker. The same workflow interprets
+Depot holds incoming requests in their original wording. Submit an idea through
+Roundhouse as text or JSON, then run the worker. The same workflow interprets
 the request, creates executable work, verifies it, and delivers it. No manual
 status movement is required for a successful autonomous job.
 
@@ -31,7 +31,7 @@ outcomes, executable acceptance criteria, runtime, executor, shipping policy, an
 an optional stable `decision_key` for a clarification or review decision.
 Confidence is a model judgment, not a statistical guarantee. Deterministic policy
 enforces configurable thresholds, project matching, approval requirements, and
-permitted runtime/delivery choices. Neither input text nor a Notion Ready flag can
+permitted runtime/delivery choices. Neither input text nor an imported legacy Ready flag can
 override project policy. Only concise decision metadata is stored; Codex reasoning
 traces are discarded, and sessions use ephemeral mode.
 

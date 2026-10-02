@@ -46,7 +46,7 @@ export class Store {
     this.workerLock = path.join(this.directory, "worker.lock");
   }
   read() {
-    if (!fs.existsSync(this.file)) return { schema_version: 1, items: {}, jobs: {}, projects: {}, outbox: [] };
+    if (!fs.existsSync(this.file)) return { schema_version: 1, items: {}, jobs: {}, projects: {}, project_candidates: {}, system_metadata: {}, outbox: [] };
     const data = JSON.parse(fs.readFileSync(this.file, "utf8"));
     if (data.schema_version !== 1) throw new Error("Unsupported state version.");
     return data;

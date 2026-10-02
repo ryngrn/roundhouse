@@ -1,12 +1,12 @@
 # Autonomous workflow architecture
 
 The executable entry point is `roundhouse depot`. The earlier `capture` command
-remains a lightweight intake prototype. The earlier `dispatch` command remains a
-legacy manual-delivery adapter; it is not the autonomous workflow.
+remains a lightweight intake prototype. Roundhouse is authoritative; the former
+Notion prototype is available only through the one-time archive importer.
 
 | Boundary | Current implementation | Replacement contract |
 | --- | --- | --- |
-| Depot source | CLI JSON/text, exported Notion page, and ChatGPT MCP | Submit immutable normalized input with a stable key |
+| Depot source | Roundhouse browser/API, CLI JSON/text, and ChatGPT MCP | Submit immutable normalized input with a stable key |
 | Project/context store | Private YAML/JSON manifest plus local context files | Validated project policy and context snapshot |
 | Decision provider | Structured Codex response or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
 | Agent-role composer | Role manifest plus bounded Markdown skills and project context | General or Designer execution context and required evidence |
@@ -17,8 +17,7 @@ legacy manual-delivery adapter; it is not the autonomous workflow.
 | Human feedback | CLI approval/clarification, durable questions, and MCP answers | Revision-bound human response, durable audit record, immediate readiness reevaluation |
 | Status adapters | Browser polling, MCP status tools, and MCP Events webhooks | Project/item-scoped projection of durable outbox transitions |
 
-The Engine imports no Notion SDK and contains no Codex command-line flags. Those
-belong to adapters. Runtime state is distinct from product state: a process exiting
+The Engine imports no Notion SDK and contains no Codex command-line flags. Runtime state is distinct from product state: a process exiting
 does not decide that work is Shipped or needs Review.
 
 `RoundhouseService` is the reusable external-adapter boundary. It normalizes intake,
@@ -50,6 +49,11 @@ directory. An invocation-wide worker lease serializes claims. A repository lease
 prevents another state directory from modifying the same Git common directory
 concurrently. Only the owner releases a lease. Contention fails visibly; callers
 may retry instead of silently stealing ownership.
+
+One-time Notion Depot imports add immutable provenance, legacy metadata,
+non-executable project candidates, and a durable cutover marker. `Imported History`
+and `Imported Pending` are never worker candidates. A pending record must first be
+explicitly re-evaluated into the native decision lifecycle.
 
 Claim intent, runtime process IDs, candidate commits, verification evidence, and
 delivery intent are persisted at their boundaries. A restart never assumes an
