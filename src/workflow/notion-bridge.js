@@ -37,7 +37,13 @@ export function updates(data, view) {
       "Delivery Summary": [
         `State: ${item.state}`,
         item.question ?? "",
-        ...item.jobs.map((job) => `${job.title}: ${job.state}. ${job.reason ?? ""}${job.shipping ? ` Delivery: ${JSON.stringify(job.shipping)}` : ""}`),
+        ...item.jobs.map((job) => {
+          const delivery = job.shipping;
+          if (!delivery) return `${job.title}: ${job.state}. ${job.reason ?? ""}`;
+          const remote = delivery.remote?.replace(/\.git$/, "");
+          const link = remote?.startsWith("https://github.com/") ? `${remote}/commit/${delivery.commit}` : delivery.commit;
+          return `${job.title}: ${job.state}. Commit: ${link}. Branch: ${delivery.branch}. Pushed: ${delivery.pushed === true}. Checks: ${(delivery.verification?.checks ?? []).map((check) => `${check.id}=${check.passed ? "passed" : "failed"}`).join(", ")}.`;
+        }),
       ].filter(Boolean).join("\n").slice(0, 18000),
     };
     const token = digest(properties);
