@@ -27,8 +27,11 @@ export function itemView(data, item) {
     timestamp: job.shipping?.timestamp ?? null,
   }));
   const completionReports = completedJobs.map((job) => job.attempts.at(-1)?.execution?.report).filter(Boolean);
+  const deliveryUrls = deliveries.map((delivery) => delivery.deployment?.url ?? delivery.deployment?.deploy_url).filter(Boolean);
   const outcome = state === "Shipped"
-    ? completionReports.map((report) => report.summary).join(" ") || `${completedJobs.map((job) => job.work.title).join("; ")} — ${completedJobs.length} work item${completedJobs.length === 1 ? "" : "s"} verified and shipped.`
+    ? [completionReports.map((report) => report.summary).join(" "),
+        `${completedJobs.length} work item${completedJobs.length === 1 ? "" : "s"} verified and shipped by Roundhouse.`,
+        deliveryUrls.length ? `Delivery: ${deliveryUrls.join(", ")}` : ""].filter(Boolean).join(" ")
     : blockedJob ? `Blocked: ${blockedJob.history.at(-1)?.reason ?? "attention required"}` : null;
   return {
     id: item.id,

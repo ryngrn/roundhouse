@@ -1,6 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { notificationView } from "../src/workflow/views.js";
+import { itemView, notificationView } from "../src/workflow/views.js";
+
+test("completed Designer outcome appends Roundhouse delivery evidence to the executor summary", () => {
+  const item = { id: "item", state: "Ready", revision: 1, project_id: "example", input: { text: "Design" }, history: [], questions: [], job_ids: ["job"] };
+  const data = { items: { item }, jobs: { job: {
+    id: "job", parent_id: "item", state: "Shipped", agent_role: "designer", history: [], work: { title: "Improve hero" },
+    attempts: [{ execution: { report: { summary: "Implemented the hero; deployment is owned by Roundhouse.", design_decisions: [], evidence: [] } } }],
+    shipping: { commit: "abc", branch: "preview", pushed: false, timestamp: "2026-01-01T00:00:00Z", verification: { checks: [] }, deployment: { deploy_url: "https://preview.example" } },
+  } }, projects: {}, outbox: [] };
+  const view = itemView(data, item);
+  assert.match(view.outcome, /verified and shipped by Roundhouse/);
+  assert.match(view.outcome, /https:\/\/preview\.example/);
+});
 
 test("notification projection keeps only meaningful events and deduplicates event IDs", () => {
   const events = [
