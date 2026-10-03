@@ -8,8 +8,26 @@ export const shippingModes = ["commit_only", "push_branch", "create_pull_request
 const check = (value, message) => { if (!value) throw new Error(message); };
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 export const commandValid = (command) => Array.isArray(command) && command.length > 0 && command.every((value) => nonempty(value));
+const plainObject = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+const contractKey = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
 
-function normalizeProjects(raw, root) {
+function stringSet(value, field) {
+  check(Array.isArray(value), `${field} must be an array.`);
+  check(value.every((entry) => nonempty(entry) && contractKey.test(entry)), `${field} must contain stable lowercase identifiers.`);
+  check(new Set(value).size === value.length, `${field} must be unique.`);
+  return [...value];
+}
+
+function resourceMap(value, field) {
+  check(plainObject(value), `${field} must be an object.`);
+  for (const [resource, amount] of Object.entries(value)) {
+    check(contractKey.test(resource), `${field} keys must be stable lowercase identifiers.`);
+    check(Number.isInteger(amount) && amount > 0, `${field}.${resource} must be a positive integer.`);
+  }
+  return { ...value };
+}
+
+function normalizeProjects(raw, root, execution) {
   check(Array.isArray(raw?.projects), "Manifest must contain a projects array.");
   const ids = new Set();
   return raw.projects.map((project) => {
@@ -23,6 +41,16 @@ function normalizeProjects(raw, root) {
     const max_concurrent_runs = project.max_concurrent_runs ?? 1;
     check(Number.isFinite(weight) && weight > 0, "Project weight must be positive.");
     check(Number.isInteger(max_concurrent_runs) && max_concurrent_runs > 0, "Project concurrency must be a positive integer.");
+    check(max_concurrent_runs <= execution.capacity, `Project ${project.id} concurrency cannot exceed global execution capacity.`);
+    const required_capabilities = stringSet(project.required_capabilities ?? [], `Project ${project.id} required_capabilities`);
+    for (const capability of required_capabilities) {
+      check(execution.capabilities.includes(capability), `Project ${project.id} requires undeclared execution capability: ${capability}`);
+    }
+    const resource_requirements = resourceMap(project.resource_requirements ?? {}, `Project ${project.id} resource_requirements`);
+    for (const [resource, amount] of Object.entries(resource_requirements)) {
+      check(execution.resource_limits[resource] !== undefined, `Project ${project.id} requires resource without a global limit: ${resource}`);
+      check(amount <= execution.resource_limits[resource], `Project ${project.id} requires more ${resource} than the global limit.`);
+    }
     const metric_definitions = project.metric_definitions ?? [];
     check(Array.isArray(metric_definitions), "Metric definitions must be an array.");
     const metricKeys = new Set();
@@ -139,7 +167,7 @@ function normalizeProjects(raw, root) {
       check(deployment && typeof deployment === "object" && !Array.isArray(deployment), "Invalid deployment configuration.");
     }
     return {
-      ...project, repository, weight, max_concurrent_runs, metric_definitions, policy, executor,
+      ...project, repository, weight, max_concurrent_runs, required_capabilities, resource_requirements, metric_definitions, policy, executor,
       runtime, ...(herdr ? { herdr } : {}), timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
       ...(deployment ? { deployment } : {}),
@@ -150,7 +178,16 @@ function normalizeProjects(raw, root) {
 export function validateWorkflowConfig(raw, filename) {
   check(raw && typeof raw === "object" && !Array.isArray(raw), "Configuration must be an object.");
   const absolute = path.resolve(filename);
-  const projects = normalizeProjects(raw, path.dirname(absolute));
+  check(raw.execution === undefined || plainObject(raw.execution), "execution must be an object.");
+  for (const key of Object.keys(raw.execution ?? {})) check(["capacity", "capabilities", "resource_limits"].includes(key), `Unknown execution setting: ${key}`);
+  const suppliedExecution = raw.execution ?? {};
+  const execution = {
+    capacity: suppliedExecution.capacity ?? 1,
+    capabilities: stringSet(suppliedExecution.capabilities ?? [], "execution.capabilities"),
+    resource_limits: resourceMap(suppliedExecution.resource_limits ?? {}, "execution.resource_limits"),
+  };
+  check(Number.isInteger(execution.capacity) && execution.capacity > 0 && execution.capacity <= 256, "execution.capacity must be 1–256.");
+  const projects = normalizeProjects(raw, path.dirname(absolute), execution);
   const decision = raw.decision ?? { kind: "codex", bin: "codex" };
   check(["codex", "command"].includes(decision.kind), "Unknown decision provider.");
   if (decision.kind === "command") check(commandValid(decision.command), "Decision provider requires an argv array.");
@@ -169,7 +206,7 @@ export function validateWorkflowConfig(raw, filename) {
   check(Number.isInteger(triage.max_concurrent) && triage.max_concurrent > 0 && triage.max_concurrent <= 8, "triage.max_concurrent must be 1–8.");
   check(Number.isInteger(triage.base_backoff_ms) && triage.base_backoff_ms > 0, "triage.base_backoff_ms must be positive.");
   check(Number.isInteger(triage.max_backoff_ms) && triage.max_backoff_ms >= triage.base_backoff_ms, "triage.max_backoff_ms must be at least the base backoff.");
-  return { projects, decision, max_jobs_per_run, triage, filename: absolute };
+  return { projects, decision, execution, max_jobs_per_run, triage, filename: absolute };
 }
 
 export function loadWorkflowConfig(filename) {
