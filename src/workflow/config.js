@@ -160,12 +160,29 @@ export function validateWorkflowConfig(raw, filename) {
   check(raw && typeof raw === "object" && !Array.isArray(raw), "Configuration must be an object.");
   const absolute = path.resolve(filename);
   check(raw.execution === undefined || plainObject(raw.execution), "execution must be an object.");
-  for (const key of Object.keys(raw.execution ?? {})) check(["capacity", "capabilities", "resource_limits"].includes(key), `Unknown execution setting: ${key}`);
+  for (const key of Object.keys(raw.execution ?? {})) check(["capacity", "capabilities", "resource_limits", "providers"].includes(key), `Unknown execution setting: ${key}`);
   const suppliedExecution = raw.execution ?? {};
+  const capabilities = stringSet(suppliedExecution.capabilities ?? [], "execution.capabilities");
+  const suppliedProviders = suppliedExecution.providers;
+  check(suppliedProviders === undefined || Array.isArray(suppliedProviders), "execution.providers must be an array.");
+  const providers = (suppliedProviders ?? [{ id: "local-project", kind: "project", capabilities }]).map((provider) => {
+    check(plainObject(provider), "Execution provider must be an object.");
+    for (const key of Object.keys(provider)) check(["id", "kind", "capabilities", "command"].includes(key), `Unknown execution provider setting: ${key}`);
+    check(nonempty(provider.id) && contractKey.test(provider.id), "Execution provider id must be a stable lowercase identifier.");
+    check(["project", "command"].includes(provider.kind), `Execution provider ${provider.id} kind must be project or command.`);
+    const declared = stringSet(provider.capabilities ?? [], `Execution provider ${provider.id} capabilities`);
+    check(declared.every((capability) => capabilities.includes(capability)), `Execution provider ${provider.id} declares a capability unavailable on this installation.`);
+    if (provider.kind === "command") check(commandValid(provider.command), `Execution provider ${provider.id} requires an argv array.`);
+    else check(provider.command === undefined, `Project execution provider ${provider.id} cannot define a command.`);
+    return { ...provider, capabilities: declared };
+  });
+  check(new Set(providers.map((provider) => provider.id)).size === providers.length, "Execution provider ids must be unique.");
+  check(providers.length > 0, "At least one execution provider is required.");
   const execution = {
     capacity: suppliedExecution.capacity ?? 1,
-    capabilities: stringSet(suppliedExecution.capabilities ?? [], "execution.capabilities"),
+    capabilities,
     resource_limits: resourceMap(suppliedExecution.resource_limits ?? {}, "execution.resource_limits"),
+    providers,
   };
   check(Number.isInteger(execution.capacity) && execution.capacity > 0 && execution.capacity <= 256, "execution.capacity must be 1–256.");
   const projects = normalizeProjects(raw, path.dirname(absolute), execution);
