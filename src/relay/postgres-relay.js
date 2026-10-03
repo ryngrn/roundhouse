@@ -46,9 +46,13 @@ export class PostgresRelay {
   static create({ connectionString, allowInsecure = false, ca = null, pool } = {}) {
     if (pool) return new PostgresRelay({ pool });
     if (!connectionString) throw new Error("ROUNDHOUSE_RELAY_DATABASE_URL is required.");
+    const parsed = new URL(connectionString);
+    const tls = tlsFor(connectionString, allowInsecure, ca);
+    parsed.searchParams.delete("sslmode");
+    parsed.searchParams.delete("uselibpqcompat");
     return new PostgresRelay({ pool: new Pool({
-      connectionString,
-      ssl: tlsFor(connectionString, allowInsecure, ca),
+      connectionString: parsed.toString(),
+      ssl: tls,
       max: 1,
       idleTimeoutMillis: 1_000,
       allowExitOnIdle: true,
