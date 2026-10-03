@@ -255,6 +255,7 @@ test("acceptance: real browser UI works on insecure roundhouse-compatible HTTP",
   t.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(`http://roundhouse-compatible:${new URL(running.url).port}/`, { waitUntil: "networkidle" });
+  assert.equal(await page.locator('[data-filter-key="needs"]').getAttribute("aria-pressed"), "true");
   assert.equal(await page.evaluate(() => window.isSecureContext), false);
   assert.equal(await page.evaluate(() => typeof crypto.randomUUID), "undefined");
 
@@ -284,6 +285,7 @@ test("acceptance: real browser UI works on insecure roundhouse-compatible HTTP",
   assert.equal(Object.values(new Store(fixture.stateDirectory).read().items).length, 1);
   await postJson(running.url, "/api/worker/tick", {});
   await page.locator("#refresh").click();
+  await page.locator('[data-filter-key="all"]').click();
   await expectText(page, "#project-board", /Reached the station\s*1/);
   await expectText(page, "#project-board", /autonomous acceptance/);
 
@@ -322,6 +324,7 @@ test("acceptance: real browser Needs a signal drafts and approvals survive polli
   t.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(`http://roundhouse-compatible:${new URL(running.url).port}/`, { waitUntil: "networkidle" });
+  assert.equal(await page.locator('[data-filter-key="needs"]').getAttribute("aria-pressed"), "true");
   await page.getByRole("button", { name: /Open human review acceptance, Needs a signal/ }).click();
   const answer = page.locator("#decision-answer");
   await answer.fill("Manual README inspection");
@@ -339,6 +342,7 @@ test("acceptance: real browser Needs a signal drafts and approvals survive polli
   await page.getByRole("button", { name: "Submit 1 answer" }).click();
   await postJson(running.url, "/api/worker/tick", {});
   await page.locator("#refresh").click();
+  await page.locator('[data-filter-key="all"]').click();
   await expectText(page, "#project-board", /Reached the station\s*1/);
   assert.equal(Object.values(new Store(fixture.stateDirectory).read().jobs)[0].state, "Shipped");
 });
@@ -401,12 +405,12 @@ test("acceptance: project-first dashboard runs seven-question atomic sessions wi
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.goto(`http://roundhouse-compatible:${new URL(running.url).port}/`, { waitUntil: "networkidle" });
 
-  await expectText(page, "#project-board", /Inclusion/);
+  assert.equal(await page.locator('[data-filter-key="needs"]').getAttribute("aria-pressed"), "true");
   await expectText(page, "#project-board", /iPad Monitor/);
   await expectText(page, "#project-board", /Unknown \/ Unassigned/);
-  await expectText(page, "#project-board", /Designer homepage work/);
+  assert.equal((await page.locator("#project-board").innerText()).includes("Designer homepage work"), false);
   assert.equal((await page.locator("body").innerText()).includes("Oldest iPad/iPadOS target"), false);
-  const rows = page.locator(".work-row"); assert.ok(await rows.count() >= 4);
+  const rows = page.locator(".work-row"); assert.ok(await rows.count() >= 3);
 
   await page.getByRole("button", { name: /Open iPad Monitor — one-cable old iPad display, Needs a signal/ }).click();
   await expectText(page, ".progress-label", /Question 1 of 7/);
@@ -455,6 +459,7 @@ test("acceptance: project-first dashboard runs seven-question atomic sessions wi
   assert.equal(store.read().items[remote.id].clarifications.length, 0);
   page.once("dialog", (dialog) => dialog.dismiss()); await page.locator("#close-work").click(); assert.equal(await page.locator("#work-dialog").evaluate((dialog) => dialog.open), true);
   page.once("dialog", (dialog) => dialog.accept()); await page.locator("#close-work").click();
+  await page.locator('[data-filter-key="all"]').click();
   await expectText(page, "#project-board", /Background update is visible/);
 
   await page.getByRole("button", { name: /Open Drummer You Aren’t — establish new project, Needs a signal/ }).click();

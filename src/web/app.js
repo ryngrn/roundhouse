@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 let configuration = { projects: [] };
 let currentOverview = null;
 let activeSession = null;
-let dashboardFilters = { status: "all", project: null, search: "", sort: "priority", show: "active", view: "list" };
+let dashboardFilters = { status: "needs", project: null, search: "", sort: "priority", show: "active", view: "list" };
 
 const TRAIN_LANGUAGE = Object.freeze({
   needs: "Needs a signal",
