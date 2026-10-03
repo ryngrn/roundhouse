@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { loadProjects, createCapture, saveCapture } from "../src/intake.js";
+import { appendBriefRevision, createCapture, loadCapture, loadProjects, saveCapture } from "../src/intake.js";
 
 const projects = loadProjects(new URL("../config/intake-projects.example.yaml", import.meta.url));
 const input = { text: "  Roundhouse idea\nOriginal wording.  ", actor: "operator", source: "chat:test" };
@@ -17,33 +17,69 @@ function temporary(t) {
 test("capture survives reload with original words and immutable context snapshot", (t) => {
   const dir = temporary(t);
   const record = createCapture({ ...input, project_id: "roundhouse", metric_keys: ["slice_ready_rate"] }, projects);
-  const file = saveCapture(dir, record);
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), record);
+  const files = saveCapture(dir, record);
+  assert.deepEqual(JSON.parse(fs.readFileSync(files.intake_file, "utf8")), record.intake);
+  assert.deepEqual(JSON.parse(fs.readFileSync(files.brief_file, "utf8")), record.brief);
+  assert.deepEqual(loadCapture(dir, record.intake.id).brief, record.brief);
   assert.equal(record.intake.text, input.text);
   assert.equal(record.brief.project_context.weight, 1);
   assert.equal(record.brief.project_context.max_concurrent_runs, 1);
   assert.equal(record.brief.status, "draft");
   record.intake.text = "overwrite attempt";
-  assert.throws(() => saveCapture(dir, record), { code: "EEXIST" });
-  assert.equal(JSON.parse(fs.readFileSync(file)).intake.text, input.text);
+  assert.throws(() => saveCapture(dir, record), /Intake already exists/);
+  assert.equal(loadCapture(dir, record.intake.id).intake.text, input.text);
   assert.equal(fs.readdirSync(dir).length, 1);
 });
 
+test("Brief revisions append separately without changing the original Intake", (t) => {
+  const dir = temporary(t);
+  const record = createCapture({ ...input, project_id: "roundhouse" }, projects);
+  saveCapture(dir, record);
+  const revision = appendBriefRevision(dir, record.intake.id, { outcome: "A refined outcome." });
+  const reloaded = loadCapture(dir, record.intake.id);
+  assert.equal(revision.revision, 2);
+  assert.equal(reloaded.brief.outcome, "A refined outcome.");
+  assert.deepEqual(reloaded.brief_revisions.map((brief) => brief.revision), [1, 2]);
+  assert.equal(reloaded.brief_revisions[0].outcome, null);
+  assert.equal(reloaded.intake.text, input.text);
+  assert.deepEqual(fs.readdirSync(path.join(dir, record.intake.id, "briefs")), ["000001.json", "000002.json"]);
+  assert.throws(() => appendBriefRevision(dir, record.intake.id, { project_id: "family-history" }), /cannot be revised directly/);
+});
+
 test("explicit selection wins; inference is conservative and permits repository-free work", () => {
-  assert.equal(createCapture({ ...input, project_id: "family-history" }, projects).brief.project_id, "family-history");
-  assert.equal(createCapture(input, projects).brief.project_id, "roundhouse");
+  const repositoryFree = createCapture({ ...input, project_id: "family-history" }, projects).brief;
+  assert.equal(repositoryFree.project_id, "family-history");
+  assert.equal(repositoryFree.project_context.repository, undefined);
+  const inferred = createCapture(input, projects).brief;
+  assert.equal(inferred.project_id, "roundhouse");
+  assert.ok(inferred.project_context.purpose);
+  assert.ok(inferred.project_context.success_state);
   for (const text of ["Something new", "Roundhouse and Family History", "NotRoundhouse"]) {
     const brief = createCapture({ ...input, text }, projects).brief;
     assert.equal(brief.project_id, null);
     assert.equal(brief.status, "needs_clarification");
     assert.ok(brief.clarification);
+    assert.match(brief.classification.rationale, /human clarification required/);
   }
 });
 
+test("ambiguous inference persists its visible assignment reason", (t) => {
+  const dir = temporary(t);
+  const record = createCapture({ ...input, text: "Roundhouse and Family History" }, projects);
+  saveCapture(dir, record);
+  const reloaded = loadCapture(dir, record.intake.id);
+  assert.equal(reloaded.brief.project_id, null);
+  assert.equal(reloaded.brief.status, "needs_clarification");
+  assert.deepEqual(reloaded.brief.classification.candidate_ids, ["roundhouse", "family-history"]);
+  assert.match(reloaded.brief.classification.rationale, /human clarification required/);
+  assert.equal(reloaded.brief.clarification, "Which project should this idea belong to?");
+});
+
 test("invalid inputs and metric references fail before persistence", () => {
-  for (const value of [null, [], { ...input, text: " " }, { ...input, actor: "" }, { ...input, project_id: "missing" }, { ...input, metric_keys: ["unknown"] }, { ...input, metric_keys: "bad" }]) {
+  for (const value of [null, [], { ...input, text: " " }, { ...input, actor: "" }, { ...input, project_id: "missing" }, { ...input, metric_keys: ["unknown"] }, { ...input, metric_keys: ["bad-key"] }, { ...input, metric_keys: ["slice_ready_rate", "slice_ready_rate"], project_id: "roundhouse" }, { ...input, metric_keys: "bad" }]) {
     assert.throws(() => createCapture(value, projects));
   }
+  assert.throws(() => createCapture({ ...input, project_id: "roundhouse", metric_keys: ["unknown"] }, projects), /Unknown metric reference for project roundhouse: unknown/);
 });
 
 test("malformed project manifests fail clearly", (t) => {
@@ -61,12 +97,18 @@ test("CLI captures and reloads a complete record; malformed requests produce no 
   const result = spawnSync(process.execPath, args, { cwd: root, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   const event = JSON.parse(result.stdout);
-  const persisted = JSON.parse(fs.readFileSync(event.file));
+  const persisted = loadCapture(path.join(dir, "intakes"), event.intake_id);
   assert.equal(persisted.intake.id, event.intake_id);
   assert.equal(persisted.brief.project_id, "roundhouse");
   assert.equal(persisted.brief.metric_keys[0], "slice_ready_rate");
   const bad = spawnSync(process.execPath, [...args, "--unknown", "x"], { cwd: root, encoding: "utf8" });
   assert.notEqual(bad.status, 0);
   assert.match(bad.stderr, /Invalid capture option/);
+  const malformedInput = path.join(dir, "malformed.json");
+  fs.writeFileSync(malformedInput, "{not-json");
+  const malformed = spawnSync(process.execPath, args.with(3, malformedInput), { cwd: root, encoding: "utf8" });
+  assert.notEqual(malformed.status, 0);
+  assert.ok(malformed.stderr.trim());
   assert.equal(fs.readdirSync(path.join(dir, "intakes")).length, 1);
+  assert.equal(event.brief_file, path.join(dir, "intakes", event.intake_id, "briefs", "000001.json"));
 });

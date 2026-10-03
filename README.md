@@ -107,7 +107,8 @@ the fixture provider for proof and a configurable command provider for real syst
 
 `capture` remains a local Intake/Brief prototype, using
 `config/intake-projects.example.yaml` and `config/intake.example.json`. It does not
-execute or approve work.
+execute or approve work. Each capture atomically stores an immutable `intake.json`
+and append-only, numbered Brief revisions under `intakes/<intake-id>/briefs/`.
 
 The original Notion/RDC `dispatch` prototype is retired and no longer exposed by
 the Roundhouse CLI. There is no supported Notion pickup, status write-back, or
