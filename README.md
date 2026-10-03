@@ -110,6 +110,13 @@ the fixture provider for proof and a configurable command provider for real syst
 `config/intake-projects.example.yaml` and `config/intake.example.json`. It does not
 execute or approve work. Each capture atomically stores an immutable `intake.json`
 and append-only, numbered Brief revisions under `intakes/<intake-id>/briefs/`.
+Every revision persists derived readiness with stable, human-readable reasons. A
+Brief is `slice_ready` only when outcome, scope, acceptance criteria, project
+context, same-revision decision references and approval, and any project-required
+design artifacts are valid. Revising material content makes copied approval,
+decision references, and required artifacts stale; capture records remain
+`execution_eligible: false` even when ready, so this prototype cannot create or
+dispatch executable work.
 
 The original Notion/RDC `dispatch` prototype is retired and no longer exposed by
 the Roundhouse CLI. There is no supported Notion pickup, status write-back, or
