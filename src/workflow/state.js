@@ -9,7 +9,7 @@ export const transitions = {
   Verification: ["Shipped", "Rework", "Review"],
   Rework: ["Executing"],
   Review: ["Ready", "Decision"],
-  Blocked: ["Decision"],
+  Blocked: ["Decision", "Shipped"],
   Archived: [],
   Reconciled: [],
   Shipped: [],

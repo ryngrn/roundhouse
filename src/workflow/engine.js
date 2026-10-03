@@ -5,7 +5,7 @@ import { record } from "./state.js";
 import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
 import { LocalRuntime, CommandVerifier } from "./runtime.js";
-import { GitDelivery } from "./delivery.js";
+import { GitDelivery, git } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
@@ -681,6 +681,49 @@ export class Engine {
       }
       if (projectLease) await this.store.releaseLease(projectLease).catch(() => {});
     }
+  }
+  async reconcileJob(id, { actor, note, commit, branch }) {
+    for (const [name, value] of Object.entries({ actor, note, commit, branch })) {
+      if (typeof value !== "string" || !value.trim()) throw new Error(`Job reconciliation requires ${name}.`);
+    }
+    const snapshot = await this.store.read();
+    const job = snapshot.jobs[id];
+    if (!job || job.state !== "Blocked") throw new Error("Only a Blocked job can be reconciled.");
+    const project = this.config.projects.find((candidate) => candidate.id === job.project_id);
+    if (!project?.repository) throw new Error("Job reconciliation requires a configured project repository.");
+    const expectedBranch = job.prepared?.branch ?? `codex/roundhouse-${job.id}`;
+    if (branch !== expectedBranch) throw new Error(`Reconciliation branch must be ${expectedBranch}.`);
+    const resolvedCommit = git(project.repository, ["rev-parse", "--verify", `${commit}^{commit}`]);
+    if (resolvedCommit !== commit) throw new Error("Reconciliation requires the full exact commit SHA.");
+    const branchCommit = git(project.repository, ["rev-parse", "--verify", `${branch}^{commit}`]);
+    if (branchCommit !== resolvedCommit) throw new Error("Reconciliation branch does not resolve to the supplied commit.");
+    const priorCommit = snapshot.projects[job.project_id]?.last_commit;
+    if (priorCommit) git(project.repository, ["merge-base", "--is-ancestor", priorCommit, resolvedCommit]);
+    let remote = null;
+    let pushed = false;
+    if (project.policy.shipping === "push_branch" || (project.policy.shipping === "deploy" && project.deployment?.push_branch)) {
+      remote = git(project.repository, ["remote", "get-url", "--push", project.remote]);
+      const confirmed = git(project.repository, ["ls-remote", project.remote, `refs/heads/${branch}`]);
+      if (confirmed.split(/\s+/)[0] !== resolvedCommit) throw new Error("Remote branch does not match the supplied commit.");
+      pushed = true;
+    }
+    const at = new Date().toISOString();
+    return await this.store.change((data) => {
+      const current = data.jobs[id];
+      if (!current || current.state !== "Blocked") throw new Error("Job changed while reconciliation was being verified.");
+      const verification = { commit: resolvedCommit, at, passed: true, checks: [{ id: "operator-reconciliation", source: "operator", passed: true, summary: note.trim() }] };
+      current.reconciliation = { status: "completed", actor: actor.trim(), note: note.trim(), commit: resolvedCommit, branch, verified_at: at };
+      const attempt = current.attempts?.at(-1);
+      if (attempt) attempt.reconciliation = current.reconciliation;
+      current.shipping = { repository: project.repository, branch, commit: resolvedCommit, policy: project.policy.shipping, remote, pr_url: null, deployment: null, verification, timestamp: at, pushed };
+      current.processes = [];
+      this.store.move(data, current, "Shipped", `Operator reconciled retained delivery: ${note.trim()}`);
+      data.projects[current.project_id] = { ...data.projects[current.project_id], last_commit: resolvedCommit, blocked: false, active: false,
+        resume_approval: { actor: actor.trim(), note: note.trim(), at } };
+      const parent = data.items[current.parent_id];
+      if (parent?.job_ids?.every((key) => data.jobs[key]?.state === "Shipped")) parent.completed_at = at;
+      return current;
+    });
   }
   block(id, reason) {
     return this.store.change((data) => {
