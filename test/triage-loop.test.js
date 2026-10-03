@@ -64,6 +64,29 @@ test("Imported Pending is explicitly released, audited and triaged but never exe
   assert.ok(current.history.some((event) => event.from === "Depot" && event.to === "Decision"));
 });
 
+test("dispatch waits until the imported migration wave has completed triage", async () => {
+  const h = harness();
+  const ready = h.submit("already ready", "ready");
+  const imported = h.submit("still needs safe imported triage", "imported");
+  h.store.change((data) => {
+    data.items[ready.id].state = "Ready";
+    data.items[ready.id].job_ids = [`${ready.id}-1`];
+    data.jobs[`${ready.id}-1`] = { id: `${ready.id}-1`, parent_id: ready.id, project_id: "example", state: "Ready", revision: 1,
+      work: { title: "ready" }, dependencies: [], attempts: [], history: [], created_at: new Date().toISOString(), priority_rank: 0, position: 0 };
+    Object.assign(data.items[imported.id], { state: "Imported Pending", requires_reevaluation: true,
+      provenance: { source_system: "notion", source_id: "source-2" }, legacy_depot: { Status: "Ready" } });
+  });
+  let executions = 0;
+  const engine = engineWith(h, async ({ projects }) => executable(projects[0]), {
+    runtime: { execute: async () => { executions += 1; return { passed: true }; } },
+  });
+  const result = await engine.runDispatch();
+  assert.equal(result.executed, 0);
+  assert.equal(result.triage_barrier, true);
+  assert.equal(executions, 0);
+  assert.equal(h.store.read().jobs[`${ready.id}-1`].state, "Ready");
+});
+
 test("triage prioritizes P0 and preserves weighted fairness across retry candidates", async () => {
   const h = harness();
   const p2 = h.submit("P2", "p2");

@@ -8,7 +8,7 @@ import { LocalRuntime, CommandVerifier } from "./runtime.js";
 import { GitDelivery } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
-import { exactReconciliationTarget, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
+import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
@@ -701,6 +701,7 @@ export class Engine {
     try {
       if (projectId && !this.config.projects.some((p) => p.id === projectId)) throw new Error("Unknown project filter.");
       const snapshot = await this.store.read();
+      if (hasImportedTriageBarrier(snapshot)) return { executed: 0, triage_barrier: true, ...snapshot };
       if (Object.values(snapshot.jobs).some((job) => ["Executing", "Verification", "Rework"].includes(job.state))) throw new Error("Interrupted execution requires recovery, not automatic replay.");
       const stopped = new Set();
       while (executed < this.config.max_jobs_per_run) {
@@ -745,6 +746,7 @@ export class Engine {
     const stopped = new Set();
     while (executed < this.config.max_jobs_per_run) {
       snapshot = await this.store.read();
+      if (hasImportedTriageBarrier(snapshot)) break;
       const candidates = this.config.projects.filter((project) => (!projectId || project.id === projectId)
         && project.status === "active" && !stopped.has(project.id) && !snapshot.projects[project.id]?.blocked
         && !snapshot.projects[project.id]?.stop && !snapshot.projects[project.id]?.review_required

@@ -40,6 +40,18 @@ export function isTriageCandidate(item, { now, fingerprint }) {
   return Boolean(item.triage?.retry_requested_at) || item.triage?.blocked_fingerprint !== fingerprint;
 }
 
+export function hasImportedTriageBarrier(data) {
+  return Object.values(data.items ?? {}).some((item) => {
+    const imported = Boolean(item.provenance || item.legacy_depot || item.imported_release);
+    if (!imported || ["Imported History", "Archived", "Reconciled", "Shipped"].includes(item.state)) return false;
+    if (["Imported Pending", "Depot", "Decision"].includes(item.state)) return true;
+    if (item.triage?.status === "interrupted" || item.triage?.status === "backoff" || item.triage?.status === "evaluating") return true;
+    // Older imported failures predate durable triage metadata. They must receive
+    // one explicit control-plane evaluation before the migration wave can run.
+    return item.state === "Blocked" && !item.triage?.last_evaluated_revision;
+  });
+}
+
 export function selectTriageCandidates(data, config, store, { now = Date.now(), limit = Infinity, projectId } = {}) {
   return Object.values(data.items)
     .map((item) => ({ item, fingerprint: triageFingerprint(item, data, config, store) }))
