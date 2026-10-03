@@ -3,32 +3,6 @@ let configuration = { projects: [] };
 let currentOverview = null;
 let activeSession = null;
 
-const TRAIN_LANGUAGE = Object.freeze({
-  needs: "Needs a signal",
-  active: "Chugging along",
-  queued: "Ready to depart",
-  shipped: "Reached the station",
-  blocked: "Held up",
-  depot: "Depot",
-  next: "Next departure",
-});
-
-const trainState = (state) => {
-  if (["Needs You", "Needs Clarification", "Review"].includes(state)) return TRAIN_LANGUAGE.needs;
-  if (["Decision", "Executing", "Verification", "Rework"].includes(state)) return TRAIN_LANGUAGE.active;
-  if (state === "Ready") return TRAIN_LANGUAGE.queued;
-  if (["Shipped", "Imported History"].includes(state)) return TRAIN_LANGUAGE.shipped;
-  if (state === "Blocked") return TRAIN_LANGUAGE.blocked;
-  if (["Depot", "Imported Pending"].includes(state)) return TRAIN_LANGUAGE.depot;
-  return state;
-};
-
-function renderTrainLanguage() {
-  for (const element of document.querySelectorAll?.("[data-train-label]") || []) {
-    element.textContent = TRAIN_LANGUAGE[element.dataset.trainLabel] || element.textContent;
-  }
-}
-
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json();
@@ -66,6 +40,8 @@ function renderConnection(overview) {
   $("#connection").className = "connection connected";
   const countIds = { needs_you: "needs", active: "active", queued: "queued", completed: "completed", blocked: "blocked" };
   for (const [key, id] of Object.entries(countIds)) $(`#count-${id}`).textContent = overview.counts[key];
+  const next = overview.next_departure;
+  $("#next-departure").textContent = next ? `Next departure · ${next.title}${next.priority ? ` · ${next.priority}` : ""}` : "Next departure · none ready";
 }
 
 function rowMeta(label, value, className = "") {
@@ -80,11 +56,9 @@ function workRow(item) {
   button.setAttribute("aria-label", `Open ${item.title}, ${item.display_state}`);
   const identity = node("span", undefined, "row-identity");
   const kicker = node("span", undefined, "row-kicker");
-  const state = node("span", trainState(item.display_state), `state state-${slug(item.display_state)}`);
-  state.title = item.display_state;
-  kicker.append(state);
+  kicker.append(node("span", item.display_state, `state state-${slug(item.display_state)}`));
   if (item.priority) kicker.append(node("span", item.priority, "priority"));
-  identity.append(kicker, node("strong", item.title), node("span", item.reason || item.brief || item.summary, "row-reason"));
+  identity.append(kicker, node("strong", item.title), node("span", item.triage?.reason || item.reason || item.brief || item.summary, "row-reason"));
   const facts = node("span", undefined, "row-facts");
   facts.append(
     rowMeta("Role", item.agent_role || "Unassigned"),
@@ -103,9 +77,9 @@ function workRow(item) {
 function groupStatus(items) {
   return {
     needs: items.filter((item) => item.needs_you).length,
-    active: items.filter((item) => ["Decision", "Executing", "Verification", "Rework"].includes(item.state)).length,
-    queued: items.filter((item) => ["Depot", "Ready", "Imported Pending"].includes(item.state) && !item.needs_you).length,
-    shipped: items.filter((item) => ["Shipped", "Imported History"].includes(item.state)).length,
+    active: items.filter((item) => ["Executing", "Verification", "Rework"].includes(item.state)).length,
+    queued: items.filter((item) => item.state === "Ready" && !item.needs_you).length,
+    shipped: items.filter((item) => ["Shipped", "Imported History", "Archived", "Reconciled"].includes(item.state)).length,
     blocked: items.filter((item) => item.state === "Blocked").length,
   };
 }
@@ -131,9 +105,8 @@ function renderBoard(overview) {
     const title = node("div"); title.append(node("span", group.type === "project" ? "Project" : group.type === "candidate" ? "Candidate" : "Intake", "eyebrow"), node("h3", group.name), node("p", group.detail || "", "project-detail"));
     const counts = groupStatus(group.items);
     const atGlance = node("dl", undefined, "project-counts");
-    for (const [label, canonical, value] of [[TRAIN_LANGUAGE.needs, "Needs You", counts.needs], [TRAIN_LANGUAGE.active, "Active", counts.active], [TRAIN_LANGUAGE.queued, "Queued", counts.queued], [TRAIN_LANGUAGE.shipped, "Shipped", counts.shipped], [TRAIN_LANGUAGE.blocked, "Blocked", counts.blocked]]) {
-      const term = node("dt"); term.append(node("span", label), node("span", ` ${canonical} `, "sr-only"));
-      const cell = node("div"); cell.append(term, node("dd", String(value))); atGlance.append(cell);
+    for (const [label, value] of [["Needs a signal", counts.needs], ["Chugging along…", counts.active], ["Ready to depart", counts.queued], ["Reached the station", counts.shipped], ["Held up", counts.blocked]]) {
+      const cell = node("div"); cell.append(node("dt", label), node("dd", String(value))); atGlance.append(cell);
     }
     heading.append(title, atGlance); section.append(heading);
     const labels = node("div", undefined, "row-labels");
@@ -157,7 +130,7 @@ function detailSection(title, value, className = "") {
 
 function renderOverview(item) {
   const root = node("div", undefined, "detail-grid");
-  for (const section of [detailSection("Outcome", item.outcome || item.brief || "Outcome is still being defined.", "featured"), detailSection("Brief", item.brief), detailSection("Context", item.context), detailSection("Acceptance criteria", item.acceptance_criteria)]) if (section) root.append(section);
+  for (const section of [detailSection("Outcome", item.outcome || item.brief || "Outcome is still being defined.", "featured"), detailSection("Triage activity", item.triage), detailSection("Brief", item.brief), detailSection("Context", item.context), detailSection("Acceptance criteria", item.acceptance_criteria)]) if (section) root.append(section);
   const raw = node("details", undefined, "raw-details"); raw.append(node("summary", "Raw intake"), node("p", item.raw_intake)); root.append(raw);
   if (item.legacy) { const legacy = node("details", undefined, "raw-details"); legacy.append(node("summary", "Imported record fields"), node("pre", JSON.stringify(item.legacy, null, 2))); root.append(legacy); }
   return root;
@@ -259,7 +232,7 @@ function openWork(itemId) {
   activeSession = { item: structuredClone(item), questions: structuredClone(item.questions || []), drafts: new Map(), index: 0, stale: false, tab: item.needs_you ? "decisions" : "overview" };
   $("#work-project").textContent = projectLabel(item); $("#work-dialog-title").textContent = item.title; $("#work-outcome").textContent = item.outcome || item.brief || item.summary;
   const strip = $("#work-status-strip"); strip.replaceChildren();
-  for (const value of [`${trainState(item.display_state)} · ${item.display_state}`, item.priority, item.agent_role ? `Role · ${item.agent_role}` : null, item.owning_node ? `Node · ${item.owning_node}` : null, `Verify · ${item.verification_status}`, `Ship · ${item.shipping_status}`].filter(Boolean)) strip.append(node("span", value));
+  for (const value of [item.display_state, item.priority, item.agent_role ? `Role · ${item.agent_role}` : null, item.owning_node ? `Node · ${item.owning_node}` : null, `Verify · ${item.verification_status}`, `Ship · ${item.shipping_status}`].filter(Boolean)) strip.append(node("span", value));
   $("#decision-count").textContent = item.questions.length ? String(item.questions.length) : "";
   renderActiveTab(); $("#work-dialog").showModal();
 }
@@ -305,4 +278,4 @@ $("#config-form").addEventListener("submit", async (event) => {
   catch (error) { $("#config-message").textContent = error.message; }
 });
 
-renderTrainLanguage(); load(); setInterval(load, 5000);
+load(); setInterval(load, 5000);
