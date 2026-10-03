@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { harness, provider } from "./support/harness.js";
@@ -10,6 +11,34 @@ import { git } from "../src/workflow/delivery.js";
 import { GitDelivery } from "../src/workflow/delivery.js";
 import { statusView } from "../src/workflow/cli.js";
 import { once } from "node:events";
+
+function schedulingProject(id, weight = 1) {
+  return {
+    id, status: "active", weight, max_concurrent_runs: 1, required_capabilities: [], resource_requirements: {},
+    policy: { continuation: "continue_project_queue" },
+  };
+}
+
+function schedulingJob(id, projectId, position, { state = "Ready", dependencies = [], priority = 100 } = {}) {
+  return { id, project_id: projectId, position, state, dependencies, priority_rank: priority, attempts: [], processes: [], history: [] };
+}
+
+function schedulingEngine(store, projects, selected, maxJobs = 1) {
+  const engine = new Engine({
+    store,
+    config: { projects, max_jobs_per_run: maxJobs, execution: { capacity: 1, capabilities: [], resource_limits: {} }, triage: {} },
+    shipping: { canDispatch: () => true },
+  });
+  engine.execute = async (id, project) => {
+    selected.push(id);
+    store.change((data) => {
+      data.jobs[id].state = "Shipped";
+      data.projects[project.id] = { ...data.projects[project.id], active: false };
+    });
+    return true;
+  };
+  return engine;
+}
 
 test("e2e: autonomous Depot request creates actual change, verifies exact commit, pushes, and never enters Review", async () => {
   const h = harness();
@@ -87,6 +116,71 @@ test("e2e: stop-after-job leaves the second ready job untouched", async () => {
   assert.equal(result.executed, 1);
   assert.deepEqual(Object.values(result.jobs).map((j) => j.state), ["Shipped", "Ready"]);
   assert.equal(Object.values(result.jobs)[1].attempts.length, 0);
+});
+
+test("integration: dispatch preserves project order and skips an ineligible head for independent work", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-dispatch-heads-"));
+  const store = new Store(directory);
+  const projects = [schedulingProject("alpha"), schedulingProject("beta")];
+  store.change((data) => {
+    data.projects.alpha = {};
+    data.projects.beta = {};
+    data.jobs["alpha-head"] = schedulingJob("alpha-head", "alpha", 0, { dependencies: ["blocked-dependency"] });
+    data.jobs["alpha-later"] = schedulingJob("alpha-later", "alpha", 1, { priority: 0 });
+    data.jobs["blocked-dependency"] = schedulingJob("blocked-dependency", "external", 0, { state: "Blocked" });
+    data.jobs["beta-head"] = schedulingJob("beta-head", "beta", 2);
+  });
+  const selected = [];
+
+  const result = await schedulingEngine(store, projects, selected).runDispatch();
+
+  assert.equal(result.executed, 1);
+  assert.deepEqual(selected, ["beta-head"]);
+  assert.equal(result.jobs["alpha-head"].state, "Ready");
+  assert.equal(result.jobs["alpha-later"].state, "Ready");
+});
+
+test("integration: persisted weighted fairness survives bounded worker invocations", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-dispatch-fairness-"));
+  const projects = [schedulingProject("alpha", 3), schedulingProject("beta", 1)];
+  const store = new Store(directory);
+  store.change((data) => {
+    data.projects.alpha = {};
+    data.projects.beta = {};
+    for (let index = 0; index < 8; index++) {
+      data.jobs[`alpha-${index}`] = schedulingJob(`alpha-${index}`, "alpha", index * 2);
+      data.jobs[`beta-${index}`] = schedulingJob(`beta-${index}`, "beta", index * 2 + 1);
+    }
+  });
+  const selected = [];
+
+  for (let invocation = 0; invocation < 8; invocation++) {
+    const restarted = new Store(directory);
+    await schedulingEngine(restarted, projects, selected).runDispatch();
+  }
+
+  assert.deepEqual(selected, ["alpha-0", "beta-0", "alpha-1", "alpha-2", "alpha-3", "beta-1", "alpha-4", "alpha-5"]);
+  const scheduler = new Store(directory).read().system_metadata.execution_scheduler;
+  assert.equal(scheduler.projects.alpha.allocations, 6);
+  assert.equal(scheduler.projects.beta.allocations, 2);
+});
+
+test("integration: an existing running slice is never preempted", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-dispatch-running-"));
+  const store = new Store(directory);
+  store.change((data) => {
+    data.projects.alpha = { active: true };
+    data.projects.beta = {};
+    data.jobs.running = schedulingJob("running", "alpha", 0, { state: "Executing" });
+    data.jobs.independent = schedulingJob("independent", "beta", 1);
+  });
+  const selected = [];
+
+  await assert.rejects(() => schedulingEngine(store, [schedulingProject("alpha"), schedulingProject("beta")], selected).runDispatch(), /recovery/);
+  const state = store.read();
+  assert.deepEqual(selected, []);
+  assert.equal(state.jobs.running.state, "Executing");
+  assert.equal(state.jobs.independent.state, "Ready");
 });
 test("e2e: decomposed work executes sequentially with dependency links", async () => {
   const h = harness(); h.submit("decompose this request");

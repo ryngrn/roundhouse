@@ -9,7 +9,7 @@ import { GitDelivery } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
-import { projectExecutionEligible, recordAllocation, schedulerState, weightedAllocation } from "./scheduler.js";
+import { eligibleProjectHead, projectExecutionEligible, recordAllocation, schedulerState, weightedAllocation } from "./scheduler.js";
 
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
@@ -712,16 +712,13 @@ export class Engine {
         const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review")
           && projectExecutionEligible(p, this.config.execution)
           && (this.shipping.canDispatch?.(p) ?? true)
-          && Object.values(state.jobs).filter((job) => job.project_id === p.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < p.max_concurrent_runs);
-        // Weighted turns across projects; each project's own order is preserved.
+          && Object.values(state.jobs).filter((job) => job.project_id === p.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < p.max_concurrent_runs)
+          .map((project) => ({ project, job: eligibleProjectHead(state, project.id) }))
+          .filter(({ job }) => job);
+        // Weighted turns across projects; only each project's queue head may compete.
         const scheduler = state.system_metadata.execution_scheduler;
-        candidates.sort((a, b) => weightedAllocation(scheduler, a) - weightedAllocation(scheduler, b) || a.id.localeCompare(b.id));
-        let selected;
-        for (const project of candidates) {
-          const job = Object.values(state.jobs).filter((j) => j.project_id === project.id && j.state === "Ready" && j.dependencies.every((id) => state.jobs[id]?.state === "Shipped"))
-            .sort((a, b) => priorityRank(a) - priorityRank(b) || a.position - b.position)[0];
-          if (job) { selected = { project, job }; break; }
-        }
+        candidates.sort((a, b) => weightedAllocation(scheduler, a.project) - weightedAllocation(scheduler, b.project) || a.project.id.localeCompare(b.project.id));
+        const selected = candidates[0];
         if (!selected) break;
         const { project, job } = selected;
         await this.store.change((data) => {
@@ -760,13 +757,16 @@ export class Engine {
         && !Object.values(snapshot.items).some((item) => item.project_id === project.id && item.state === "Review")
         && projectExecutionEligible(project, this.config.execution)
         && (this.shipping.canDispatch?.(project) ?? true)
-        && Object.values(snapshot.jobs).filter((job) => job.project_id === project.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < project.max_concurrent_runs);
+        && Object.values(snapshot.jobs).filter((job) => job.project_id === project.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < project.max_concurrent_runs)
+        .map((project) => ({ project, job: eligibleProjectHead(snapshot, project.id) }))
+        .filter(({ job }) => job);
       const scheduler = snapshot.system_metadata.execution_scheduler;
-      candidates.sort((a, b) => weightedAllocation(scheduler, a) - weightedAllocation(scheduler, b) || a.id.localeCompare(b.id));
+      candidates.sort((a, b) => weightedAllocation(scheduler, a.project) - weightedAllocation(scheduler, b.project) || a.project.id.localeCompare(b.project.id));
       if (!candidates.length) break;
-      const claim = await this.store.claimJob(candidates.map((project) => project.id));
+      const claim = await this.store.claimJob(candidates.map(({ job }) => job.id));
       if (!claim) break;
-      const project = candidates.find((candidate) => candidate.id === claim.job.project_id);
+      const project = candidates.find(({ job }) => job.id === claim.job.id)?.project;
+      if (!project) throw new Error("Claimed job was not an eligible project queue head.");
       try {
         await this.store.change((data) => {
           data.projects[project.id] = { ...data.projects[project.id], active: true };

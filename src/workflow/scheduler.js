@@ -31,6 +31,23 @@ export function weightedAllocation(scheduler, project) {
   return (scheduler.projects?.[project.id]?.allocations ?? 0) / project.weight;
 }
 
+/**
+ * A project queue is strictly ordered by its durable position. Only its first
+ * unfinished slice may be considered for dispatch; priority is an intake
+ * concern and must not let later work overtake an existing project slice.
+ */
+export function projectQueueHead(data, projectId) {
+  return Object.values(data.jobs ?? {})
+    .filter((job) => job.project_id === projectId && job.state !== "Shipped")
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id))[0] ?? null;
+}
+
+export function eligibleProjectHead(data, projectId) {
+  const head = projectQueueHead(data, projectId);
+  if (!head || head.state !== "Ready") return null;
+  return (head.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped") ? head : null;
+}
+
 export function recordAllocation(data, project, capacity = 1, at = new Date().toISOString()) {
   const scheduler = schedulerState(data, capacity);
   scheduler.sequence += 1;

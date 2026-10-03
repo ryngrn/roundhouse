@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { Store } from "../src/workflow/store.js";
-import { projectExecutionEligible, recordAllocation, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
+import { eligibleProjectHead, projectExecutionEligible, projectQueueHead, recordAllocation, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
 
 function manifest(repository, changes = {}) {
   return {
@@ -56,4 +56,19 @@ test("scheduler contract: weighted allocation state is durable across store reco
     last_selected_sequence: 1,
     last_selected_at: "2026-01-01T00:00:00.000Z",
   });
+});
+
+test("scheduler contract: only the earliest unfinished project slice can be eligible", () => {
+  const data = { jobs: {
+    later: { id: "later", project_id: "alpha", state: "Ready", position: 2, priority_rank: 0, dependencies: [] },
+    head: { id: "head", project_id: "alpha", state: "Ready", position: 1, priority_rank: 100, dependencies: ["dependency"] },
+    dependency: { id: "dependency", project_id: "other", state: "Blocked", position: 0, dependencies: [] },
+  } };
+
+  assert.equal(projectQueueHead(data, "alpha").id, "head");
+  assert.equal(eligibleProjectHead(data, "alpha"), null);
+  data.jobs.dependency.state = "Shipped";
+  assert.equal(eligibleProjectHead(data, "alpha").id, "head");
+  data.jobs.head.state = "Executing";
+  assert.equal(eligibleProjectHead(data, "alpha"), null);
 });
