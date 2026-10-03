@@ -64,7 +64,10 @@ export async function runProcess(command, { cwd, input = "", timeout = 120000, o
 export class LocalRuntime {
   async execute({ project, job, workspace, directory, previous_failure, onStart }) {
     const { agent_profile: agentProfile, ...boundedProjectContext } = job.project_context;
-    const packet = { work: job.work, project_context: boundedProjectContext, previous_failure };
+    const packet = {
+      work: job.work, project_context: boundedProjectContext, previous_failure,
+      authority: { workspace_changes_only: true, commit: false, push: false, deploy: false, mark_shipped: false },
+    };
     const executor = project.executor;
     if (executor.kind === "command") {
       return runProcess(executor.command, { cwd: workspace, input: JSON.stringify(packet), timeout: project.timeout_ms, onStart });

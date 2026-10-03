@@ -14,26 +14,30 @@ Notion prototype is available only through the one-time archive importer.
 | Triage control plane | Independent bounded worker pass with durable attempts/backoff | Release imported work safely, classify, reconcile exact identities, slice, question, block, or make Ready |
 | Execution runtime | Capability-selected provider over local Codex, project command, or registered command adapters | Providers declare stable IDs/capabilities; `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
-| Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
-| Repository provisioning | Registered repository adapters plus durable repository/action/workspace records | `create`, `connect`, and `inspect` return an opaque provider repository identity |
+| Shipping provider | Policy coordinator over repository adapters plus fixture or command deployment | Authorize only configured delivery of the exact verified candidate |
+| Repository operations | Registered repository adapters plus durable repository/action/workspace records | Provision with `create`, `connect`, and `inspect`; execute with `lock`, `prepare`, `snapshot`, `unchanged`, and `push` |
 | Human feedback | Batched browser decision sessions, CLI approval/clarification, durable questions, and MCP answers | Revision-bound atomic response set, durable audit record, exactly one readiness reevaluation |
 | Status adapters | Explicit/lifecycle browser reads, local cached menu status, MCP status tools, and MCP Events webhooks | Project/item-scoped projection of durable outbox transitions |
 
 The Engine imports no Notion SDK and contains no Codex command-line flags. Runtime state is distinct from product state: a process exiting
 does not decide that work is Shipped or needs Review.
 
-Repository provisioning is also distinct from execution and delivery. A
-`RepositoryAdapter` creates, connects, and inspects repositories, while the domain
-stores only its stable adapter ID and the provider's opaque repository ID. Hosted
+Repository provisioning authority remains distinct from execution and delivery
+policy, while both use the same `RepositoryAdapter` boundary. An adapter can create,
+connect, and inspect repositories; a delivery-capable adapter also owns routine
+branch, isolated-worktree, candidate-commit, mapping validation, unchanged-version,
+and push mechanics. The domain stores only its stable adapter ID and the provider's opaque repository ID. Hosted
 provider concepts such as owners, installations, organizations, and API node IDs
 remain private to the adapter. Roundhouse persists an idempotency key, request
 digest, actor/node provenance, lifecycle result, inspection evidence, and local
 project/workspace mapping. Mutating intent is committed before the provider call;
 an uncertain create/connect is marked `reconciliation_required` and is not replayed
-under the same key. This boundary grants no push, merge, deployment, or execution
-authority. Existing project repository paths and `GitDelivery` policy remain the
-only installed code-delivery path. Adapter credentials are process-owned and must
-not be included in the durable provisioning request.
+under the same key. Adapter methods do not grant shipping authority: `GitDelivery`
+checks configured policy and passing exact-commit verification before it invokes
+an adapter push, then records delivery only after the adapter confirms the remote
+branch SHA. Executor output cannot select an adapter, authorize a push, or mark a
+job Shipped. Adapter credentials are process-owned and must not be included in the
+durable provisioning request.
 
 The initial `github` adapter creates private repositories or connects repositories
 identified by `owner/name` (or a normal GitHub URL). Requests provide a repository
@@ -156,8 +160,10 @@ and delivery remain Roundhouse-owned boundaries.
 
 For a new CLI executor, configure `executor.kind: command` with an argv array.
 It receives JSON on stdin containing `work`, `project_context`, and
-`previous_failure`, runs with the isolated worktree as cwd, and returns exit 0 on
-completion. Roundhouse owns verification and shipping. This supports wrapping
+`previous_failure`, plus an explicit workspace-only authority record. It runs with
+the isolated worktree as cwd and returns exit 0 on completion. The record denies
+commit, push, deploy, and Shipped-state authority; Roundhouse owns those operations
+regardless of executor output. This supports wrapping
 another installed agent today without changing the engine. Commands must remain
 foreground and return when their work is done.
 
@@ -171,9 +177,11 @@ adapters are extension boundaries, not claimed working integrations.
 
 ## Extending delivery
 
-The Git delivery adapter owns worktree preparation, candidate commits, optional
-branch push, and unchanged-version checks. For `shipping: deploy`, it invokes a
-configured deployment provider only after verification. The deterministic fixture
+The default `local-git` repository adapter owns worktree preparation, candidate
+commits, local/remote mapping checks, optional branch push, and unchanged-version
+checks. `GitDelivery` coordinates that adapter under project policy. For
+`shipping: deploy`, it invokes a configured deployment provider only after
+verification. The deterministic fixture
 provider has no external effect. The command provider receives a commit-bound JSON
 packet and is the real integration path for an operator-owned deployment CLI.
 

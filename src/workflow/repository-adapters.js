@@ -1,7 +1,9 @@
 import path from "node:path";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { digest } from "../storage/repository.js";
+import { acquireLock } from "../storage/file-lock.js";
 import { runProcess } from "./runtime.js";
 import { projectContext, validateWorkflowConfig } from "./config.js";
 
@@ -78,6 +80,17 @@ export class RepositoryAdapter {
   create() { throw new Error("create() is not implemented."); }
   connect() { throw new Error("connect() is not implemented."); }
   inspect() { throw new Error("inspect() is not implemented."); }
+
+  // Execution/delivery methods are optional because some provider adapters
+  // only provision repositories. Delivery coordinators must use
+  // RepositoryAdapterRegistry.requireDelivery() before invoking them.
+  canDispatch() { return false; }
+  supportsDelivery() { return false; }
+  lock() { throw new Error("lock() is not implemented."); }
+  prepare() { throw new Error("prepare() is not implemented."); }
+  snapshot() { throw new Error("snapshot() is not implemented."); }
+  unchanged() { throw new Error("unchanged() is not implemented."); }
+  push() { throw new Error("push() is not implemented."); }
 }
 
 export class RepositoryAdapterRegistry {
@@ -99,6 +112,16 @@ export class RepositoryAdapterRegistry {
   require(id) {
     const adapter = this.adapters.get(id);
     if (!adapter) throw new Error(`Repository adapter is not installed: ${id}`);
+    return adapter;
+  }
+
+  requireDelivery(id) {
+    const adapter = this.require(id);
+    for (const method of ["canDispatch", "supportsDelivery", "lock", "prepare", "snapshot", "unchanged", "push"]) {
+      if (typeof adapter[method] !== "function" || adapter[method] === RepositoryAdapter.prototype[method]) {
+        throw new Error(`Repository adapter ${id} does not provide delivery operation ${method}().`);
+      }
+    }
     return adapter;
   }
 }
@@ -527,6 +550,123 @@ function branchName(value = "main") {
     throw new Error("initial_branch must be a valid Git branch name.");
   }
   return branch;
+}
+
+/**
+ * Run Git without a shell. This helper is exported for diagnostics and tests;
+ * production branch/worktree/commit/push calls are owned by the adapter below.
+ */
+export function git(cwd, args, optional = false) {
+  const result = spawnSync("git", ["-C", cwd, ...args], {
+    encoding: "utf8", timeout: 30_000, maxBuffer: 4_000_000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+  if (result.status !== 0 && !optional) throw new Error(`Git ${args[0]} failed: ${result.stderr || result.error?.message}`);
+  return optional ? result : result.stdout.trim();
+}
+
+/**
+ * Repository adapter for an already-connected local Git repository. It owns
+ * routine source-control mechanics, but deliberately does not decide whether a
+ * push or deployment is authorized; GitDelivery remains the policy boundary.
+ */
+export class LocalGitRepositoryAdapter extends RepositoryAdapter {
+  constructor({ run = runProcess } = {}) {
+    super({ id: "local-git" });
+    this.run = run;
+  }
+
+  canDispatch(project) {
+    if (!project.repository) return false;
+    if (!project.self_hosting) return true;
+    if (git(project.repository, ["status", "--porcelain"])) return false;
+    const common = git(project.repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    return !fs.existsSync(path.join(common, "roundhouse-worker.lock"));
+  }
+
+  supportsDelivery(project) {
+    return Boolean(project.repository);
+  }
+
+  lock(project) {
+    const common = git(project.repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    return acquireLock(path.join(common, "roundhouse-worker.lock"));
+  }
+
+  prepare({ project, job, directory, base, push }) {
+    if (!this.supportsDelivery(project)) throw new Error("Local Git repository adapter requires a configured repository.");
+    if (git(project.repository, ["status", "--porcelain"])) {
+      throw new Error("Source repository has uncommitted changes; preserve them before running.");
+    }
+    const relative = path.relative(project.repository, directory);
+    if (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) {
+      throw new Error("State/workspace directory must be outside the target repository.");
+    }
+    const remote = push ? git(project.repository, ["remote", "get-url", "--push", project.remote]) : null;
+    const commit = git(project.repository, ["rev-parse", "--verify", `${base ?? project.base_ref}^{commit}`]);
+    const branch = `codex/roundhouse-${job.id}`;
+    const workspace = path.join(directory, job.id);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    git(project.repository, ["worktree", "add", "-b", branch, workspace, commit]);
+    return {
+      adapter_id: this.id, workspace, branch, base: commit, remote,
+      remote_name: push ? project.remote : null, repository: project.repository,
+      mapping: { repository: project.repository, workspace, remote_name: push ? project.remote : null, remote_url: remote },
+    };
+  }
+
+  snapshot({ job, prepared }) {
+    const { workspace, branch } = prepared;
+    this.#assertMapping(prepared);
+    if (git(workspace, ["branch", "--show-current"]) !== branch) throw new Error("Executor changed the delivery branch.");
+    git(workspace, ["merge-base", "--is-ancestor", prepared.base, "HEAD"]);
+    git(workspace, ["add", "--all"]);
+    if (git(workspace, ["diff", "--cached", "--quiet"], true).status !== 0) {
+      git(workspace, ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-m", `Roundhouse: ${job.work.title}`]);
+    }
+    const commit = git(workspace, ["rev-parse", "HEAD"]);
+    if (commit === prepared.base) throw new Error("Executor produced no delivery change.");
+    if (git(workspace, ["status", "--porcelain"])) throw new Error("Worktree is not clean after committing.");
+    const changed_files = git(workspace, ["diff", "--name-only", prepared.base, commit]).split("\n").filter(Boolean);
+    return { commit, changed_files, adapter_id: this.id };
+  }
+
+  unchanged(prepared, commit) {
+    try {
+      this.#assertMapping(prepared);
+      return git(prepared.workspace, ["rev-parse", "HEAD"]) === commit &&
+        git(prepared.workspace, ["branch", "--show-current"]) === prepared.branch &&
+        git(prepared.workspace, ["status", "--porcelain"]) === "";
+    } catch {
+      return false;
+    }
+  }
+
+  async push({ project, prepared, commit, onStart }) {
+    this.#assertMapping(prepared);
+    if (!prepared.remote || !prepared.remote_name) throw new Error("Repository adapter has no authorized remote mapping for this delivery.");
+    const pushed = await this.run(["git", "-c", "core.hooksPath=/dev/null", "-C", prepared.workspace, "push", prepared.remote_name,
+      `${commit}:refs/heads/${prepared.branch}`], { cwd: prepared.workspace, timeout: project.timeout_ms, onStart });
+    if (!pushed.passed) throw new Error(`Push failed: ${pushed.stderr}`);
+    const confirmed = await this.run(["git", "-C", prepared.workspace, "ls-remote", prepared.remote_name,
+      `refs/heads/${prepared.branch}`], { cwd: prepared.workspace, timeout: project.timeout_ms, onStart });
+    if (!confirmed.passed || confirmed.stdout.split(/\s+/)[0] !== commit) {
+      throw new Error("Could not confirm remote delivery; reconcile before retrying.");
+    }
+    return { pushed: true, remote: prepared.remote };
+  }
+
+  #assertMapping(prepared) {
+    if (prepared.adapter_id !== this.id) throw new Error("Prepared workspace belongs to a different repository adapter.");
+    const mapping = prepared.mapping;
+    if (!mapping || mapping.repository !== prepared.repository || mapping.workspace !== prepared.workspace ||
+      mapping.remote_name !== prepared.remote_name || mapping.remote_url !== prepared.remote) {
+      throw new Error("Prepared repository workspace mapping changed.");
+    }
+    if (prepared.remote && git(prepared.repository, ["remote", "get-url", "--push", prepared.remote_name]) !== prepared.remote) {
+      throw new Error("Executor changed the remote configuration.");
+    }
+  }
 }
 
 function githubRepository(value) {

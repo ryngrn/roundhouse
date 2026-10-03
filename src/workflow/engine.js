@@ -645,7 +645,7 @@ export class Engine {
           });
           const verification = await this.verifier.verify({ project, job: current, workspace: prepared.workspace, commit: snapshot.commit, snapshot, execution,
             directory: path.join(this.store.directory, "evidence", id, String(attempt + 1)), onStart: this.processRecorder("jobs", id) });
-          if (!this.shipping.unchanged(prepared, snapshot.commit)) {
+          if (!this.shipping.unchanged(prepared, snapshot.commit, project)) {
             verification.passed = false;
             verification.checks.push({ id: "unchanged-tested-version", passed: false, stderr: "Verification modified the tested version or left uncommitted changes." });
           }

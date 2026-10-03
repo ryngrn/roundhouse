@@ -6,7 +6,8 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { saveWorkflowConfig } from "../src/workflow/config.js";
 import { Store } from "../src/workflow/store.js";
-import { GitHubRepositoryAdapter, ProjectBootstrapError, ProjectBootstrapper, RepositoryAdapterRegistry, RepositoryProvisioner, repositoryIdentity } from "../src/workflow/repository-adapters.js";
+import { GitDelivery } from "../src/workflow/delivery.js";
+import { GitHubRepositoryAdapter, LocalGitRepositoryAdapter, ProjectBootstrapError, ProjectBootstrapper, RepositoryAdapter, RepositoryAdapterRegistry, RepositoryProvisioner, repositoryIdentity } from "../src/workflow/repository-adapters.js";
 
 function adapter(overrides = {}) {
   return {
@@ -34,6 +35,49 @@ test("repository adapters: contract requires stable identity and create, connect
     display_name: "Example", owner: "octocat", github_node_id: "MDQ6" }), {
     adapter_id: "fixture-repositories", provider_repository_id: "opaque-17", display_name: "Example",
   });
+});
+
+test("repository delivery: coordinator routes routine work through an adapter and alone authorizes push", async () => {
+  const calls = [];
+  const adapter = {
+    id: "fixture-delivery", create() {}, connect() {}, inspect() {},
+    canDispatch: () => true,
+    supportsDelivery: () => true,
+    lock() { calls.push(["lock"]); return () => calls.push(["unlock"]); },
+    prepare(args) {
+      calls.push(["prepare", args.push]);
+      return { adapter_id: this.id, workspace: "/workspace", branch: "codex/job", base: "base", remote: "remote",
+        remote_name: "origin", repository: "/repo", mapping: {} };
+    },
+    snapshot() { calls.push(["snapshot"]); return { commit: "verified", changed_files: ["feature.txt"] }; },
+    unchanged(_prepared, commit) { calls.push(["unchanged", commit]); return commit === "verified"; },
+    async push({ commit }) { calls.push(["push", commit]); return { pushed: true, remote: "remote" }; },
+  };
+  const delivery = new GitDelivery({ adapters: [adapter] });
+  const project = { repository: "/repo", repository_adapter: adapter.id, remote: "origin", timeout_ms: 1000,
+    policy: { shipping: "push_branch" } };
+  const job = { id: "job", work: { title: "change" } };
+  const release = delivery.lock(project);
+  release();
+  const prepared = delivery.prepare({ project, job, directory: "/state/workspaces" });
+  const snapshot = delivery.snapshot({ project, job, prepared });
+  assert.equal(delivery.unchanged(prepared, snapshot.commit, project), true);
+  await assert.rejects(delivery.ship({ project, prepared,
+    verification: { commit: snapshot.commit, passed: false, checks: [{ passed: false }] } }), /passing verification/);
+  assert.equal(calls.some(([name]) => name === "push"), false);
+  const shipped = await delivery.ship({ project, prepared,
+    verification: { commit: snapshot.commit, passed: true, checks: [{ passed: true }] } });
+  assert.equal(shipped.repository_adapter, adapter.id);
+  assert.equal(shipped.commit, "verified");
+  assert.deepEqual(calls, [["lock"], ["unlock"], ["prepare", true], ["snapshot"], ["unchanged", "verified"],
+    ["unchanged", "verified"], ["push", "verified"]]);
+});
+
+test("repository delivery: local Git implementation is a RepositoryAdapter and is required for delivery operations", () => {
+  const local = new LocalGitRepositoryAdapter();
+  assert.ok(local instanceof RepositoryAdapter);
+  assert.equal(new RepositoryAdapterRegistry([local]).requireDelivery("local-git"), local);
+  assert.throws(() => new RepositoryAdapterRegistry([adapter()]).requireDelivery("fixture-repositories"), /delivery operation/);
 });
 
 test("repository provisioning: identities, lifecycle, actions, and workspace mappings survive restart", async () => {

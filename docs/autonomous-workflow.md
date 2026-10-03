@@ -171,10 +171,13 @@ the decision provider infers a project from the configured project context.
 
 ## Shipping and verification
 
-The engine creates an isolated worktree on `codex/roundhouse-<job-id>`, executes the
-work there, commits a candidate, and tests that exact commit. Changes made during
-verification invalidate it. Failed candidates are retained locally but not shipped.
-The execution runtime is instructed not to push; delivery belongs to Roundhouse.
+The engine coordinates the configured repository adapter to create an isolated
+worktree on `codex/roundhouse-<job-id>`, executes the work there, commits a candidate,
+and tests that exact commit. The default `local-git` adapter preserves and rechecks
+the source/worktree/remote mapping at each boundary. Changes made during verification
+invalidate the candidate. Failed candidates are retained locally but not shipped.
+The execution runtime is instructed not to commit, push, or deploy; executor output
+cannot authorize delivery or mark work Shipped. Delivery policy belongs to Roundhouse.
 
 Implemented delivery policies:
 
@@ -188,7 +191,7 @@ Implemented delivery policies:
 `create_pull_request` and `merge_to_main` are recognized policy values
 but block before execution until their provider is implemented. They never fall
 back silently to another delivery mode. Git commit and push hooks are disabled for
-engine-owned delivery; declare required checks explicitly in verification policy.
+adapter-owned delivery; declare required checks explicitly in verification policy.
 
 Delivery evidence includes repository, remote, branch, commit, verification command
 arguments, output, exit codes, timestamps, and nullable PR/deployment fields.

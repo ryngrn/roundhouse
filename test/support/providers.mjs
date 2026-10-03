@@ -26,6 +26,11 @@ if (process.argv[2] === "decide") {
     provider_reference: `fixture-${packet.commit.slice(0, 12)}`,
   }));
 } else {
+  if (packet.authority?.workspace_changes_only !== true || packet.authority.commit !== false ||
+    packet.authority.push !== false || packet.authority.deploy !== false || packet.authority.mark_shipped !== false) {
+    process.stderr.write("Executor did not receive workspace-only authority.\n");
+    process.exit(8);
+  }
   if (packet.work.title.includes("executor fails")) process.exit(7);
   if (packet.work.title.includes("slow")) await new Promise((resolve) => setTimeout(resolve, 1500));
   const value = packet.work.title.includes("repair") && !packet.previous_failure ? "invalid" : `implemented: ${packet.work.title}`;

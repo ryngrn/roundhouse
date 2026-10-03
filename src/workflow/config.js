@@ -99,6 +99,8 @@ function normalizeProjects(raw, root, execution) {
     check(typeof repository_required === "boolean", `Project ${project.id} repository_required must be boolean.`);
     check(!repository_required || nonempty(project.repository), `Project ${project.id} requires a repository.`);
     const repository = nonempty(project.repository) ? fs.realpathSync(path.resolve(root, project.repository)) : undefined;
+    const repository_adapter = project.repository_adapter ?? "local-git";
+    check(nonempty(repository_adapter) && contractKey.test(repository_adapter), `Project ${project.id} repository_adapter must be a stable lowercase identifier.`);
     let lifecycle = project.lifecycle;
     if (lifecycle !== undefined) {
       check(plainObject(lifecycle), `Project ${project.id} lifecycle must be an object.`);
@@ -190,7 +192,7 @@ function normalizeProjects(raw, root, execution) {
       check(deployment && typeof deployment === "object" && !Array.isArray(deployment), "Invalid deployment configuration.");
     }
     return {
-      ...project, ...(repository ? { repository } : {}), ...(lifecycle ? { lifecycle } : {}), repository_required, verification, weight, max_concurrent_runs, required_capabilities, resource_requirements, metric_definitions, policy, executor,
+      ...project, ...(repository ? { repository } : {}), ...(lifecycle ? { lifecycle } : {}), repository_required, repository_adapter, verification, weight, max_concurrent_runs, required_capabilities, resource_requirements, metric_definitions, policy, executor,
       runtime: "local", timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
       ...(deployment ? { deployment } : {}),
