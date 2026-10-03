@@ -9,7 +9,10 @@
 </head>
 <body>
   <header class="app-header">
-    <div class="brand"><span class="mark" aria-hidden="true">R</span><div><h1>Roundhouse</h1><p>Control room · local operations</p></div></div>
+    <div class="header-left">
+      <a class="brand" href="/" aria-label="Roundhouse home"><img class="brand-logo" src="/favicon.svg" alt=""><span class="brand-name">Roundhouse</span></a>
+      <button id="open-intake" class="add-button" type="button">Add something</button>
+    </div>
     <div class="header-actions"><div id="connection" class="connection" role="status">Connecting…</div><button id="refresh" class="header-button" type="button">Refresh</button></div>
   </header>
   <main>
@@ -36,21 +39,31 @@
       </div>
     </section>
 
-    <details class="intake-panel">
-      <summary><span><span class="eyebrow" data-train-label="depot">Depot</span><strong><span data-train-label="next">Next departure</span> · send in new work</strong></span><span class="summary-plus" aria-hidden="true">＋</span></summary>
-      <form id="intake-form">
-        <label for="intake-content">Requested outcome</label>
-        <textarea id="intake-content" required placeholder="Describe the outcome you want…"></textarea>
-        <div class="form-row"><div><label for="project-hint">Project hint <span>(optional)</span></label><input id="project-hint"></div><button type="submit">Add to Depot</button></div>
-      </form>
-      <p id="intake-message" class="message" role="status"></p>
-    </details>
-
     <section aria-labelledby="projects-heading">
       <div class="section-title"><div><span class="eyebrow">Live portfolio</span><h2 id="projects-heading">Projects</h2></div><div class="section-actions"><button id="clear-filter" class="secondary filter-clear" type="button" hidden>Clear filter</button><button id="edit-config" class="secondary" type="button">Project configuration</button></div></div>
       <div id="project-board" class="project-board" aria-live="polite"></div>
     </section>
   </main>
+
+  <dialog id="intake-dialog" class="intake-dialog" aria-labelledby="intake-dialog-title">
+    <form id="intake-form">
+      <header class="intake-dialog-header">
+        <div><span class="eyebrow" data-train-label="depot">Depot</span><h2 id="intake-dialog-title">Add something</h2><p>Send an idea, task, or outcome into Roundhouse.</p></div>
+        <button id="close-intake" class="icon-button" type="button" aria-label="Close Add something">×</button>
+      </header>
+      <div class="intake-dialog-body">
+        <label for="intake-content">What should Roundhouse do?</label>
+        <textarea id="intake-content" required placeholder="Describe the outcome you want…"></textarea>
+        <label for="project-hint">Project hint <span>(optional)</span></label>
+        <input id="project-hint" placeholder="Roundhouse, GrowthPath, Inclusion…">
+        <p id="intake-message" class="message" role="status"></p>
+      </div>
+      <footer class="intake-dialog-actions">
+        <button id="cancel-intake" class="secondary" type="button">Cancel</button>
+        <button type="submit">Add to Depot</button>
+      </footer>
+    </form>
+  </dialog>
 
   <dialog id="work-dialog" class="work-dialog" aria-labelledby="work-dialog-title">
     <div class="dialog-shell">

@@ -447,7 +447,16 @@ async function load() {
   } catch (error) { $("#connection").textContent = `● App unavailable · ${error.message}`; $("#connection").className = "connection failed"; }
 }
 
+const intakeDialog = $("#intake-dialog");
 const intakeForm = $("#intake-form"); const intakeContent = $("#intake-content"); submitOnEnter(intakeContent, intakeForm);
+function openIntakeDialog() {
+  $("#intake-message").textContent = "";
+  intakeDialog.showModal();
+  setTimeout(() => intakeContent.focus(), 0);
+}
+$("#open-intake").addEventListener("click", openIntakeDialog);
+$("#close-intake").addEventListener("click", () => intakeDialog.close());
+$("#cancel-intake").addEventListener("click", () => intakeDialog.close());
 let intakeSubmitting = false;
 intakeForm.addEventListener("submit", async (event) => {
   event.preventDefault(); if (intakeSubmitting) return; intakeSubmitting = true;
@@ -455,7 +464,10 @@ intakeForm.addEventListener("submit", async (event) => {
   try {
     const input = { content: intakeContent.value }; if ($("#project-hint").value.trim()) input.project_hint = $("#project-hint").value.trim();
     const result = await api("/api/intake", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
-    message.textContent = `Saved ${result.item.id}. The local worker will pick it up.`; intakeContent.value = ""; $("#project-hint").value = ""; setTimeout(load, 500);
+    message.textContent = `Saved ${result.item.id}. The local worker will pick it up.`;
+    intakeContent.value = ""; $("#project-hint").value = "";
+    setTimeout(load, 250);
+    setTimeout(() => { intakeDialog.close(); message.textContent = ""; }, 550);
   } catch (error) { message.textContent = error.message; } finally { intakeSubmitting = false; }
 });
 

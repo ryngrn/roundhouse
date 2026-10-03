@@ -259,7 +259,16 @@ test("acceptance: real browser UI works on insecure roundhouse-compatible HTTP",
   assert.equal(await page.evaluate(() => window.isSecureContext), false);
   assert.equal(await page.evaluate(() => typeof crypto.randomUUID), "undefined");
 
-  await page.locator(".intake-panel > summary").click();
+  assert.equal(await page.locator(".brand-name").evaluate((element) => getComputedStyle(element).opacity), "0");
+  await page.locator(".brand").hover();
+  await page.waitForFunction(() => Number(getComputedStyle(document.querySelector(".brand-name")).opacity) > 0.9);
+  await page.locator("#open-intake").click();
+  assert.equal(await page.locator("#intake-dialog").evaluate((dialog) => dialog.open), true);
+  await page.waitForFunction(() => document.activeElement === document.querySelector("#intake-content"));
+  await page.setViewportSize({ width: 390, height: 844 });
+  const intakeBounds = await page.locator("#intake-dialog").boundingBox();
+  assert.deepEqual({ x: Math.round(intakeBounds.x), y: Math.round(intakeBounds.y), width: Math.round(intakeBounds.width), height: Math.round(intakeBounds.height) }, { x: 0, y: 0, width: 390, height: 844 });
+  await page.setViewportSize({ width: 1280, height: 720 });
   const intake = page.locator("#intake-content");
   await intake.fill("first line");
   await intake.press("Shift+Enter");
@@ -279,7 +288,7 @@ test("acceptance: real browser UI works on insecure roundhouse-compatible HTTP",
   await Promise.all([
     page.waitForResponse((response) => response.url().endsWith("/api/intake") && response.status() === 201),
     intake.press("Enter"),
-    page.locator("#intake-form button").click(),
+    page.getByRole("button", { name: "Add to Depot" }).click(),
   ]);
   assert.equal(await intake.inputValue(), "");
   assert.equal(Object.values(new Store(fixture.stateDirectory).read().items).length, 1);

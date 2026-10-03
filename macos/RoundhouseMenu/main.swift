@@ -36,9 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var servicePlist: String {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/io.roundhouse.service.plist").path
     }
+    private lazy var lightStatusImage = loadStatusImage(named: "status-light")
+    private lazy var darkStatusImage = loadStatusImage(named: "status-dark")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        item.button?.title = "R"
+        applyStatusIcon()
+        item.button?.title = ""
         item.button?.toolTip = "Roundhouse"
         let menu = NSMenu()
         health.isEnabled = false
@@ -60,7 +63,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.poll() }
     }
 
+    private func loadStatusImage(named name: String) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "svg"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        image.size = NSSize(width: 18, height: 18)
+        image.isTemplate = false
+        return image
+    }
+
+    private func applyStatusIcon() {
+        let appearance = item.button?.effectiveAppearance ?? NSApp.effectiveAppearance
+        let match = appearance.bestMatch(from: [.darkAqua, .aqua])
+        item.button?.image = match == .darkAqua ? darkStatusImage : lightStatusImage
+        item.button?.imageScaling = .scaleProportionallyDown
+        item.button?.imagePosition = .imageLeft
+    }
+
     private func poll() {
+        DispatchQueue.main.async { self.applyStatusIcon() }
         URLSession.shared.dataTask(with: directBase.appendingPathComponent("api/overview")) { [weak self] data, response, error in
             guard let self else { return }
             guard let data, error == nil, (response as? HTTPURLResponse)?.statusCode == 200,
@@ -68,7 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 DispatchQueue.main.async {
                     self.health.title = "● App service unavailable"
                     self.counts.title = "Counts unavailable"
-                    self.item.button?.title = "R!"
+                    self.applyStatusIcon()
+                    self.item.button?.title = "!"
                 }
                 return
             }
@@ -77,7 +98,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 DispatchQueue.main.async {
                     self.health.title = frontHealthy ? "● App and front door healthy" : "● Front door unavailable · app healthy"
                     self.counts.title = "Needs a signal \(overview.counts.needsYou) · Chugging along \(overview.counts.active) · Held up \(overview.counts.blocked)"
-                    self.item.button?.title = !frontHealthy ? "R!" : overview.counts.needsYou > 0 || overview.counts.blocked > 0 ? "R•" : "R"
+                    self.applyStatusIcon()
+                    self.item.button?.title = !frontHealthy ? "!" : overview.counts.needsYou > 0 || overview.counts.blocked > 0 ? "•" : ""
                 }
             }.resume()
         }.resume()

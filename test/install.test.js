@@ -32,6 +32,15 @@ test("menu bar companion remains a thin native HTTP client with service controls
   assert.match(source, /App service unavailable/);
   assert.match(source, /Front door unavailable/);
   assert.match(source, /Counts unavailable/);
+  assert.match(source, /status-light/);
+  assert.match(source, /status-dark/);
+  assert.match(source, /effectiveAppearance/);
+  assert.ok(fs.existsSync("macos/RoundhouseMenu/status-light.svg"));
+  assert.ok(fs.existsSync("macos/RoundhouseMenu/status-dark.svg"));
+  const menuBuild = fs.readFileSync("scripts/macos/menu-bar.sh", "utf8");
+  assert.match(menuBuild, /Contents\/Resources/);
+  assert.match(menuBuild, /status-light\.svg/);
+  assert.match(menuBuild, /status-dark\.svg/);
   assert.doesNotMatch(source, /Electron|terminal output/i);
 });
 
