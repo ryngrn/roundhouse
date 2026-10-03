@@ -11,6 +11,7 @@ import { git } from "../src/workflow/delivery.js";
 import { GitDelivery } from "../src/workflow/delivery.js";
 import { statusView } from "../src/workflow/cli.js";
 import { once } from "node:events";
+import { validateWorkflowConfig } from "../src/workflow/config.js";
 
 function schedulingProject(id, weight = 1) {
   return {
@@ -396,6 +397,8 @@ test("integration: push failure blocks without repeating execution or marking Sh
   assert.equal(job.state, "Blocked");
   assert.equal(job.attempts.length, 1);
   assert.ok(job.delivery_intent.commit);
+  assert.equal(job.reconciliation.status, "required");
+  assert.equal(job.attempts[0].run.reconciliation.status, "required");
   assert.equal(job.shipping, undefined);
   assert.equal((await h.engine.run()).executed, 0);
 });
@@ -418,6 +421,7 @@ test("integration: crash-like persistence failure after a successful push never 
   assert.equal(job.state, "Blocked");
   assert.equal(job.attempts.length, 1);
   assert.equal(git(h.remote, ["rev-parse", job.delivery_intent.branch]), job.delivery_intent.commit);
+  assert.equal(job.reconciliation.status, "required");
   assert.equal((await engine.run()).executed, 0);
 });
 
@@ -480,4 +484,98 @@ test("e2e: independent CLI worker is excluded, crash recovery blocks interrupted
   assert.equal(recovered.projects.example.blocked, true);
   assert.equal((await h.engine.run()).executed, 0);
   assert.equal(h.store.read().jobs[executing.id].attempts.length, 1);
+});
+
+test("e2e: repository-free work persists versioned outputs, provenance, and status across restart", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-output-"));
+  const execute = [process.execPath, "-e", `
+    const fs = require("fs");
+    let input = "";
+    process.stdin.on("data", (chunk) => input += chunk);
+    process.stdin.on("end", () => {
+      const packet = JSON.parse(input);
+      fs.writeFileSync("brief.md", "# Sourced brief\\n\\nDurable finding.\\n");
+      process.stdout.write(JSON.stringify({ summary: "Produced a sourced brief.",
+        findings: [{ claim: "Durable finding", source: "fixture://source" }],
+        next_action: { kind: "review", prompt: "Review the finding." }, run_id: packet.run.id }));
+    });
+  `];
+  const config = validateWorkflowConfig({
+    execution: { capabilities: ["research", "artifact"], providers: [
+      { id: "research-fixture", kind: "project", capabilities: ["research", "artifact"] },
+    ] },
+    projects: [{ id: "research", name: "Research", purpose: "Produce sourced findings",
+      success_state: "A durable brief exists", status: "active", repository_required: false,
+      required_capabilities: ["research", "artifact"], verification: [],
+      executor: { kind: "command", command: execute },
+      policy: { allow_autonomous: true, max_rework_attempts: 0, continuation: "continue_project_queue" },
+    }],
+  }, path.join(root, "config.json"));
+  const store = new Store(path.join(root, "state"));
+  const decision = { decide: async ({ projects }) => ({
+    project: "research", project_confidence: 1, execution_confidence: 1,
+    sufficient_context: true, safe_to_execute: true, approval_required: false,
+    decision: "execute", reason: "Fixture request is complete.", questions: [], question: null, decision_key: null,
+    dependencies: [], executor: "command", runtime: "local", shipping_policy: projects[0].policy.shipping,
+    should_decompose: false, reconcile_with: null, blocked_on: [],
+    work_items: [{ title: "Research durable lifecycle", outcome: "A sourced brief and next action are inspectable.",
+      repository_required: false, required_capabilities: ["research", "artifact"],
+      acceptance_criteria: [{ description: "A versioned sourced brief is retained.", verification_ids: [] }] }],
+  }) };
+  store.submit({ text: "Research and produce a sourced brief", project_id: "research", source: "fixture", actor: "test" }, "durable-output");
+  const result = await new Engine({ store, config, decision }).run();
+  const job = Object.values(result.jobs)[0];
+  assert.equal(job.state, "Shipped");
+  assert.equal(job.shipping.commit, null);
+  assert.match(job.shipping.reference, /^roundhouse-output:/);
+  assert.equal(job.shipping.outputs[0].path, "brief.md");
+  assert.match(Buffer.from(job.shipping.outputs[0].content, "base64").toString(), /Durable finding/);
+  assert.equal(job.shipping.result.next_action.kind, "review");
+  assert.equal(job.shipping.provenance.provider.id, "research-fixture");
+  assert.equal(job.attempts[0].run.id, job.shipping.result.run_id);
+  assert.equal(job.shipping.provenance.run_id, job.attempts[0].run.id);
+  assert.equal(job.attempts[0].snapshot.manifest.run.id, job.attempts[0].run.id);
+  assert.equal(job.attempts[0].status, "completed");
+  assert.equal(job.delivery_intent.reconciliation.status, "confirmed");
+
+  const restarted = new Store(store.directory);
+  const view = statusView(restarted.read()).items[0];
+  assert.equal(view.state, "Shipped");
+  assert.equal(view.shipping_status, "Delivered");
+  assert.match(view.outcome, /Produced a sourced brief/);
+  assert.equal(view.evidence.outputs[0].sha256, job.shipping.outputs[0].sha256);
+  assert.equal(view.jobs[0].latest_run.provider_id, "research-fixture");
+  assert.equal(view.jobs[0].reconciliation.status, "confirmed");
+  assert.ok(fs.existsSync(path.join(store.directory, "outputs", job.id, job.shipping.version, "manifest.json")));
+});
+
+test("integration: interrupted non-code run retains identity, failure, and reconciliation metadata", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-output-recovery-"));
+  const store = new Store(directory);
+  store.change((data) => {
+    data.projects.research = { id: "research", active: true };
+    data.items.item = { id: "item", state: "Ready", revision: 1, input: { text: "Research" },
+      job_ids: ["item-0"], questions: [], history: [] };
+    data.jobs["item-0"] = { id: "item-0", parent_id: "item", project_id: "research", state: "Executing", revision: 2,
+      work: { title: "Research", repository_required: false }, history: [], processes: [], attempts: [{ number: 1,
+        status: "executing", started_at: new Date().toISOString(), run: { id: "run-1", provider_id: "research-fixture",
+          status: "executing", inputs: { work: { title: "Research" } }, reconciliation: { required: false, status: "not_required" } } }] };
+  });
+  store.acquireWorkerLease();
+  const ownerFile = path.join(store.workerLock, "owner.json");
+  const owner = JSON.parse(fs.readFileSync(ownerFile, "utf8"));
+  fs.writeFileSync(ownerFile, JSON.stringify({ ...owner, pid: 2_147_483_647 }));
+
+  const recovered = new Store(directory).recover();
+  const job = recovered.jobs["item-0"];
+  assert.equal(job.state, "Blocked");
+  assert.equal(job.attempts[0].run.id, "run-1");
+  assert.equal(job.attempts[0].run.provider_id, "research-fixture");
+  assert.equal(job.attempts[0].status, "blocked");
+  assert.equal(job.attempts[0].run.status, "blocked");
+  assert.match(job.attempts[0].failure, /Interrupted attempt/);
+  assert.equal(job.reconciliation.status, "required");
+  assert.equal(job.reconciliation.run_id, "run-1");
+  assert.equal(job.reconciliation.intent, null);
+  assert.equal(job.attempts[0].run.reconciliation.status, "required");
 });

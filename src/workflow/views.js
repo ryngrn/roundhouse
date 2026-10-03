@@ -23,17 +23,25 @@ export function itemView(data, item) {
   }));
   const deliveries = completedJobs.map((job) => ({
     job_id: job.id,
+    provider: job.shipping?.provider ?? null,
     commit: job.shipping?.commit ?? null,
     branch: job.shipping?.branch ?? null,
     pushed: job.shipping?.pushed ?? false,
+    version: job.shipping?.version ?? null,
+    reference: job.shipping?.reference ?? null,
+    outputs: job.shipping?.outputs ?? [],
+    result: job.shipping?.result ?? null,
+    provenance: job.shipping?.provenance ?? null,
     deployment: job.shipping?.deployment ?? null,
     timestamp: job.shipping?.timestamp ?? null,
   }));
   const completionReports = completedJobs.map((job) => job.attempts.at(-1)?.execution?.report).filter(Boolean);
+  const completionResults = completedJobs.map((job) => job.shipping?.result).filter(Boolean);
   const deliveryUrls = deliveries.map((delivery) => delivery.deployment?.url ?? delivery.deployment?.deploy_url).filter(Boolean);
   const importedOutcome = item.legacy_depot?.Outcome || item.legacy_depot?.["Delivery Summary"] || null;
   const outcome = state === "Shipped"
     ? [completionReports.map((report) => report.summary).join(" "),
+        completionResults.map((result) => result.summary).filter(Boolean).join(" "),
         `${completedJobs.length} work item${completedJobs.length === 1 ? "" : "s"} verified and shipped by Roundhouse.`,
         deliveryUrls.length ? `Delivery: ${deliveryUrls.join(", ")}` : ""].filter(Boolean).join(" ")
     : state === "Imported History" ? importedOutcome ?? "Imported completed history from the archived Notion Depot."
@@ -90,16 +98,21 @@ export function itemView(data, item) {
     agent_role: currentJob?.agent_role ?? item.agent_role ?? null,
     owning_node: currentJob?.owning_node ?? item.owning_node ?? data.projects?.[item.project_id]?.owning_node ?? null,
     verification_status: checks.length ? (checks.every((check) => check.passed) ? "Passed" : "Failed") : (state === "Verification" ? "Running" : "Not run"),
-    shipping_status: deliveries.length ? (deliveries.every((delivery) => delivery.deployment?.status === "succeeded" || delivery.pushed || delivery.commit) ? "Delivered" : "Pending") : (state === "Shipped" ? "Shipped" : "Not shipped"),
+    shipping_status: deliveries.length ? (deliveries.every((delivery) => delivery.deployment?.status === "succeeded" || delivery.pushed || delivery.commit || delivery.reference) ? "Delivered" : "Pending") : (state === "Shipped" ? "Shipped" : "Not shipped"),
     prior_decisions: answeredQuestions,
     history: (item.history ?? []).map((event) => ({ from: event.from ?? null, to: event.to, reason: event.reason, at: event.at })),
-    evidence: { checks, deliveries, completion_reports: completionReports },
+    evidence: { checks, deliveries, completion_reports: completionReports, completion_results: completionResults,
+      outputs: deliveries.flatMap((delivery) => delivery.outputs.map((output) => ({ ...output,
+        reference: `${delivery.reference}/${encodeURIComponent(output.path)}` }))) },
     jobs: jobs.map((job) => ({
       id: job.id,
       title: job.work.title,
       state: job.state,
       reason: job.history.at(-1)?.reason ?? null,
       attempts: job.attempts.length,
+      latest_run: job.attempts.at(-1)?.run ?? null,
+      latest_failure: job.attempts.at(-1)?.failure ?? null,
+      reconciliation: job.reconciliation ?? job.delivery_intent?.reconciliation ?? null,
       agent_role: job.agent_role ?? "general",
       shipping: job.shipping ?? null,
       allocation: allocationDecisions.findLast((decision) => decision.job_id === job.id) ?? null,

@@ -69,9 +69,12 @@ commands; each generated slice then records its own `repository_required` value 
 scheduling, artifact production, external actions, human tasks, or installation-
 specific facilities. Requirements do not need to be currently available in
 `execution.capabilities`: unavailable requirements keep the slice unallocated and
-produce durable, specific readiness and scheduler evidence. The installed delivery
-adapter is still Git-only, so repository-free execution also remains ineligible until
-a repository-independent delivery provider is installed.
+produce durable, specific readiness and scheduler evidence. Repository-free projects
+use `shipping: durable_output` (their default). That provider versions structured
+results and workspace files, records hashes and provenance in authoritative state,
+and writes a local inspection manifest. File bodies stay in the durable record so a
+PostgreSQL reader does not depend on the originating worker filesystem. `artifact`
+is accepted as a compatibility alias.
 
 `execution.providers` registers replaceable execution adapters. Every provider has a
 stable ID and declares the capability combinations it can handle. `kind: project`
@@ -83,6 +86,10 @@ silently composed, so unsupported combinations remain Ready but unallocated with
 durable `provider_unavailable` evidence. Research, connected-source work, scheduling,
 artifact persistence, external actions, and human-task handling are ordinary
 capability identifiers; the workflow contains no policy specific to any provider.
+Repository-free command providers may return a summary and other JSON records and
+may write artifact files in their workspace. At least one structured result or file
+is required. Roundhouse records a run UUID, provider ID, input digest, attempt state,
+failures, evidence, immutable output reference, and reconciliation state.
 
 ## Agent roles and skills
 

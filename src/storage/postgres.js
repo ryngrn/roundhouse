@@ -475,6 +475,20 @@ export class PostgresStorageRepository extends StorageRepository {
         this.move(data, job, "Blocked", job.delivery_intent
           ? "Expired owner lease after delivery intent; reconcile the remote before replacement work."
           : "Expired owner lease interrupted execution; inspect the workspace before replacement work.");
+        const attempt = job.attempts?.at(-1);
+        if (attempt) {
+          const recordedAt = new Date().toISOString();
+          attempt.status = "blocked";
+          attempt.failure ??= job.history.at(-1).reason;
+          attempt.finished_at ??= recordedAt;
+          job.reconciliation = { required: true, status: "required", reason: job.history.at(-1).reason,
+            intent: job.delivery_intent ? structuredClone(job.delivery_intent) : null,
+            run_id: attempt.run?.id ?? null, recorded_at: recordedAt };
+          if (attempt.run) {
+            attempt.run.status = "blocked";
+            attempt.run.reconciliation = job.reconciliation;
+          }
+        }
         data.projects[job.project_id] = { ...data.projects[job.project_id], active: false, blocked: true };
       }
       for (const { id } of expiredItems) {

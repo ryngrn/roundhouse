@@ -84,6 +84,20 @@ export class Store extends StorageRepository {
         for (const entity of [...Object.values(state.items), ...Object.values(state.jobs)]) {
           if (["Decision", "Executing", "Verification", "Rework"].includes(entity.state)) {
             this.move(state, entity, "Blocked", "Interrupted attempt: inspect workspace and remote delivery before submitting replacement work.");
+            const attempt = entity.attempts?.at(-1);
+            if (attempt) {
+              const recordedAt = new Date().toISOString();
+              attempt.status = "blocked";
+              attempt.failure ??= entity.history.at(-1).reason;
+              attempt.finished_at ??= recordedAt;
+              entity.reconciliation = { required: true, status: "required", reason: entity.history.at(-1).reason,
+                intent: entity.delivery_intent ? structuredClone(entity.delivery_intent) : null,
+                run_id: attempt.run?.id ?? null, recorded_at: recordedAt };
+              if (attempt.run) {
+                attempt.run.status = "blocked";
+                attempt.run.reconciliation = entity.reconciliation;
+              }
+            }
           }
         }
         for (const project of Object.values(state.projects)) if (project.active) { project.blocked = true; project.active = false; }
