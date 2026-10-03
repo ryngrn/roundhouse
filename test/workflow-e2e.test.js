@@ -138,6 +138,9 @@ test("integration: dispatch preserves project order and skips an ineligible head
   assert.deepEqual(selected, ["beta-head"]);
   assert.equal(result.jobs["alpha-head"].state, "Ready");
   assert.equal(result.jobs["alpha-later"].state, "Ready");
+  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.reason.code, "dependencies");
+  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.queue.slice_position, 0);
+  assert.equal(result.system_metadata.execution_scheduler.latest.beta.result, "allocated");
 });
 
 test("integration: compatible projects use available execution slots concurrently", async () => {
@@ -146,7 +149,7 @@ test("integration: compatible projects use available execution slots concurrentl
   const projects = [schedulingProject("alpha"), schedulingProject("beta"), schedulingProject("gamma")];
   store.change((data) => {
     for (const [index, project] of projects.entries()) {
-      data.projects[project.id] = {};
+      data.projects[project.id] = { turns: index };
       data.jobs[`${project.id}-job`] = schedulingJob(`${project.id}-job`, project.id, index);
     }
   });
@@ -157,7 +160,9 @@ test("integration: compatible projects use available execution slots concurrentl
   });
   let active = 0;
   let maximum = 0;
+  const started = [];
   engine.execute = async (id, project) => {
+    started.push(project.id);
     active += 1;
     maximum = Math.max(maximum, active);
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -172,7 +177,79 @@ test("integration: compatible projects use available execution slots concurrentl
   const result = await engine.runDispatch();
   assert.equal(result.executed, 3);
   assert.equal(maximum, 2);
+  assert.deepEqual(started, ["alpha", "beta", "gamma"]);
   assert.ok(Object.values(result.jobs).every((job) => job.state === "Shipped"));
+  assert.deepEqual(new Set(result.system_metadata.execution_scheduler.decisions
+    .filter((decision) => decision.result === "allocated").map((decision) => decision.project_id)), new Set(["alpha", "beta", "gamma"]));
+  assert.ok(projects.every((project) => result.system_metadata.execution_scheduler.latest[project.id].result === "allocated"));
+  assert.ok(result.system_metadata.execution_scheduler.decisions.some((decision) =>
+    decision.project_id === "gamma" && decision.result === "deferred" && decision.reason.code === "capacity_exhausted"
+      && decision.constraints.capacity.used === 2 && decision.constraints.capacity.limit === 2));
+});
+
+test("integration: deterministic allocation fixture exposes lock deferral before compatible retry", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-dispatch-lock-"));
+  const store = new Store(directory);
+  const projects = [schedulingProject("alpha"), schedulingProject("beta")].map((project) => ({
+    ...project, repository: "/repos/shared", remote: "origin", policy: { ...project.policy, shipping: "push_branch" },
+  }));
+  store.change((data) => {
+    for (const [index, project] of projects.entries()) {
+      data.projects[project.id] = {};
+      data.jobs[`${project.id}-job`] = schedulingJob(`${project.id}-job`, project.id, index);
+    }
+  });
+  const engine = new Engine({
+    store,
+    config: { projects, max_jobs_per_run: 2, execution: { capacity: 2, capabilities: [], resource_limits: {} }, triage: {} },
+    shipping: { canDispatch: () => true },
+  });
+  let active = 0;
+  let maximum = 0;
+  engine.execute = async (id, project) => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    store.change((data) => {
+      data.jobs[id].state = "Shipped";
+      data.projects[project.id].active = false;
+    });
+    active -= 1;
+    return true;
+  };
+
+  const result = await engine.runDispatch();
+  const betaEvidence = result.system_metadata.execution_scheduler.decisions.filter((decision) => decision.project_id === "beta");
+  assert.equal(maximum, 1);
+  assert.ok(betaEvidence.some((decision) => decision.reason.code === "lock_conflict"));
+  assert.equal(betaEvidence.at(-1).result, "allocated");
+});
+
+test("integration: omitted execution configuration retains deterministic one-slot dispatch", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-dispatch-default-slot-"));
+  const store = new Store(directory);
+  const projects = [schedulingProject("alpha"), schedulingProject("beta")];
+  store.change((data) => {
+    for (const [index, project] of projects.entries()) {
+      data.projects[project.id] = {};
+      data.jobs[`${project.id}-job`] = schedulingJob(`${project.id}-job`, project.id, index);
+    }
+  });
+  const engine = new Engine({ store, config: { projects, max_jobs_per_run: 2, triage: {} }, shipping: { canDispatch: () => true } });
+  let active = 0;
+  let maximum = 0;
+  engine.execute = async (id, project) => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    store.change((data) => { data.jobs[id].state = "Shipped"; data.projects[project.id].active = false; });
+    active -= 1;
+    return true;
+  };
+
+  const result = await engine.runDispatch();
+  assert.equal(maximum, 1);
+  assert.equal(result.system_metadata.execution_scheduler.capacity, 1);
 });
 
 test("integration: persisted weighted fairness survives bounded worker invocations", async () => {
@@ -198,6 +275,7 @@ test("integration: persisted weighted fairness survives bounded worker invocatio
   const scheduler = new Store(directory).read().system_metadata.execution_scheduler;
   assert.equal(scheduler.projects.alpha.allocations, 6);
   assert.equal(scheduler.projects.beta.allocations, 2);
+  assert.ok(scheduler.decisions.some((decision) => decision.project_id === "beta" && decision.result === "deferred" && decision.reason.code === "fairness_order"));
 });
 
 test("integration: an existing running slice is never preempted", async () => {

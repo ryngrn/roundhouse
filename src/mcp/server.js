@@ -11,6 +11,7 @@ const filterSchema = z.object(filterShape).strict();
 
 const jobSchema = z.object({
   id: z.string(), title: z.string(), state: z.string(), reason: z.string().nullable(), attempts: z.number(), agent_role: z.string(), shipping: z.unknown().nullable(),
+  allocation: z.unknown().nullable(), allocation_history: z.array(z.unknown()),
 });
 const completionReportSchema = z.object({
   summary: z.string(), design_decisions: z.array(z.string()),
@@ -39,6 +40,13 @@ const questionSchema = z.object({
 });
 const nextDepartureSchema = z.object({
   item_id: z.string(), job_id: z.string(), project_id: z.string(), title: z.string(), priority: z.string().nullable(),
+});
+const allocationsSchema = z.object({
+  capacity: z.number().int().positive().nullable(),
+  allocation_sequence: z.number().int().nonnegative(),
+  decision_sequence: z.number().int().nonnegative(),
+  latest: z.record(z.string(), z.unknown()),
+  decisions: z.array(z.unknown()),
 });
 const followSchema = z.object({
   event: z.literal("roundhouse.work.updated"),
@@ -111,7 +119,8 @@ const toolSpecs = [
     title: "Get Roundhouse work status",
     description: "Get compact durable status for Roundhouse Depot items and their work. Use this for progress or outcome questions; it does not change or advance work.",
     input: filterSchema,
-    output: z.object({ items: z.array(itemSchema), next_departure: nextDepartureSchema.nullable(), projects: z.record(z.string(), z.unknown()),
+    output: z.object({ items: z.array(itemSchema), next_departure: nextDepartureSchema.nullable(), allocations: allocationsSchema,
+      projects: z.record(z.string(), z.unknown()),
       project_candidates: z.record(z.string(), z.unknown()), system_metadata: z.record(z.string(), z.unknown()) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async (service, filters) => {

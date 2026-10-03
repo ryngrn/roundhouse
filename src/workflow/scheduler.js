@@ -1,8 +1,11 @@
 const emptyScheduler = (capacity) => ({
-  version: 1,
+  version: 2,
   capacity,
   sequence: 0,
+  decision_sequence: 0,
   projects: {},
+  decisions: [],
+  latest: {},
 });
 
 /**
@@ -12,10 +15,13 @@ const emptyScheduler = (capacity) => ({
 export function schedulerState(data, capacity = 1) {
   data.system_metadata ??= {};
   const scheduler = data.system_metadata.execution_scheduler ?? emptyScheduler(capacity);
-  scheduler.version = 1;
+  scheduler.version = 2;
   scheduler.capacity = capacity;
   scheduler.sequence = Number.isSafeInteger(scheduler.sequence) && scheduler.sequence >= 0 ? scheduler.sequence : 0;
+  scheduler.decision_sequence = Number.isSafeInteger(scheduler.decision_sequence) && scheduler.decision_sequence >= 0 ? scheduler.decision_sequence : 0;
   scheduler.projects ??= {};
+  scheduler.decisions ??= [];
+  scheduler.latest ??= {};
   for (const [projectId, runtime] of Object.entries(data.projects ?? {})) {
     scheduler.projects[projectId] ??= {
       allocations: Number.isSafeInteger(runtime.turns) && runtime.turns >= 0 ? runtime.turns : 0,
@@ -92,14 +98,139 @@ export function executionReservation(project) {
 }
 
 export function reservationFits(active, candidate, execution, capabilities = execution.capabilities) {
-  if ((candidate.required_capabilities ?? []).some((capability) => !capabilities.includes(capability))) return false;
+  return reservationAssessment(active, candidate, execution, capabilities).fits;
+}
+
+export function reservationAssessment(active, candidate, execution, capabilities = execution.capabilities) {
+  const missingCapabilities = (candidate.required_capabilities ?? []).filter((capability) => !capabilities.includes(capability));
   const capacityUsed = active.reduce((sum, reservation) => sum + (reservation.capacity_units ?? 1), 0);
-  if (capacityUsed + (candidate.capacity_units ?? 1) > execution.capacity) return false;
-  if (active.filter((reservation) => reservation.project_id === candidate.project_id).length >= (candidate.project_limit ?? 1)) return false;
+  const projectUsed = active.filter((reservation) => reservation.project_id === candidate.project_id).length;
   const activeLocks = new Set(active.flatMap((reservation) => reservation.locks ?? []));
-  if ((candidate.locks ?? []).some((lock) => activeLocks.has(lock))) return false;
-  return Object.entries(candidate.resources ?? {}).every(([resource, amount]) => {
+  const lockConflicts = (candidate.locks ?? []).filter((lock) => activeLocks.has(lock));
+  const resources = Object.entries(candidate.resources ?? {}).map(([resource, amount]) => {
     const used = active.reduce((sum, reservation) => sum + (reservation.resources?.[resource] ?? 0), 0);
-    return used + amount <= (execution.resource_limits[resource] ?? 0);
+    const limit = execution.resource_limits[resource] ?? 0;
+    return { resource, requested: amount, used, limit, fits: used + amount <= limit };
   });
+  const constraints = {
+    capability: { required: [...(candidate.required_capabilities ?? [])], available: [...capabilities], missing: missingCapabilities, fits: !missingCapabilities.length },
+    capacity: { requested: candidate.capacity_units ?? 1, used: capacityUsed, limit: execution.capacity, fits: capacityUsed + (candidate.capacity_units ?? 1) <= execution.capacity },
+    project: { project_id: candidate.project_id, active: projectUsed, limit: candidate.project_limit ?? 1, fits: projectUsed < (candidate.project_limit ?? 1) },
+    resources,
+    locks: { requested: [...(candidate.locks ?? [])], conflicts: lockConflicts, fits: !lockConflicts.length },
+  };
+  return { fits: constraints.capability.fits && constraints.capacity.fits && constraints.project.fits
+    && constraints.resources.every((resource) => resource.fits) && constraints.locks.fits, constraints };
+}
+
+function deferralReason(checks, reservation) {
+  const failed = Object.entries(checks).find(([, value]) => !value.passed);
+  if (failed) return { code: failed[0], message: failed[1].reason };
+  if (!reservation.constraints.capability.fits) return { code: "capability_mismatch", message: `Missing capabilities: ${reservation.constraints.capability.missing.join(", ")}.` };
+  if (!reservation.constraints.capacity.fits) return { code: "capacity_exhausted", message: `Execution capacity ${reservation.constraints.capacity.used}/${reservation.constraints.capacity.limit} is in use.` };
+  if (!reservation.constraints.project.fits) return { code: "project_limit", message: `Project concurrency ${reservation.constraints.project.active}/${reservation.constraints.project.limit} is in use.` };
+  const resource = reservation.constraints.resources.find((entry) => !entry.fits);
+  if (resource) return { code: "resource_limit", message: `${resource.resource} capacity would exceed ${resource.used}/${resource.limit}.` };
+  if (!reservation.constraints.locks.fits) return { code: "lock_conflict", message: `Conflicting locks: ${reservation.constraints.locks.conflicts.join(", ")}.` };
+  return { code: "fairness_order", message: "Another eligible slice ranked first by durable weighted allocation." };
+}
+
+/**
+ * Explain one scheduling round before any work is started. The returned records
+ * contain only durable domain facts, so the same explanation can be shown after
+ * a worker restart without relying on process logs.
+ */
+export function dispatchConsiderations(data, projects, execution, {
+  projectId, stopped = new Set(), activeReservations = [], canDispatch = () => true,
+} = {}) {
+  const scheduler = schedulerState(data, execution.capacity);
+  return projects
+    .filter((project) => !projectId || project.id === projectId)
+    .map((project) => {
+      const queue = Object.values(data.jobs ?? {})
+        .filter((job) => job.project_id === project.id && job.state !== "Shipped")
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id));
+      const job = queue[0];
+      if (!job) return null;
+      // An owned or active queue head is already consuming its allocation; it
+      // is not a fresh dispatch candidate and must not overwrite that allocation
+      // with a later "deferred" explanation while it runs.
+      if (job.owning_node_id || ["Executing", "Verification", "Rework"].includes(job.state)) return null;
+      const runtime = data.projects?.[project.id] ?? {};
+      const dependencies = (job.dependencies ?? []).map((id) => ({ id, state: data.jobs[id]?.state ?? "Missing" }));
+      const running = Object.values(data.jobs ?? {}).filter((candidate) => candidate.project_id === project.id
+        && ["Executing", "Verification", "Rework"].includes(candidate.state)).length;
+      const projectGateReason = runtime.blocked ? "Project is blocked." : runtime.stop ? "Project is stopped."
+        : runtime.review_required ? "Project awaits post-shipping review." : "Project gates are open.";
+      const waitingDependencies = dependencies.filter((dependency) => dependency.state !== "Shipped");
+      const itemAwaitsReview = Object.values(data.items ?? {}).some((item) => item.project_id === project.id && item.state === "Review");
+      const shippingSupported = canDispatch(project);
+      const checks = {
+        project_active: { passed: project.status === "active", reason: project.status === "active" ? "Project is active." : `Project status is ${project.status}.` },
+        continuation: { passed: !stopped.has(project.id), reason: stopped.has(project.id)
+          ? "This worker invocation already allocated the project's stop-after-job slice." : "Project continuation policy permits an allocation." },
+        project_gate: { passed: !runtime.blocked && !runtime.stop && !runtime.review_required,
+          reason: projectGateReason },
+        item_review: { passed: !itemAwaitsReview, reason: itemAwaitsReview ? "A project item awaits review." : "No project item awaits review." },
+        shipping: { passed: shippingSupported, reason: shippingSupported
+          ? "The delivery provider supports this project." : "The delivery provider cannot dispatch this project." },
+        configured_project_limit: { passed: project.max_concurrent_runs <= execution.capacity,
+          reason: project.max_concurrent_runs <= execution.capacity
+            ? `Configured project concurrency ${project.max_concurrent_runs} is within global capacity ${execution.capacity}.`
+            : `Project concurrency ${project.max_concurrent_runs} exceeds global capacity ${execution.capacity}.` },
+        project_concurrency: { passed: running < project.max_concurrent_runs,
+          reason: running < project.max_concurrent_runs ? `Project has ${running}/${project.max_concurrent_runs} active runs; a slot is available.`
+            : `Project concurrency ${running}/${project.max_concurrent_runs} is in use.` },
+        slice_ready: { passed: job.state === "Ready", reason: job.state === "Ready" ? "Queue head is Ready." : `Queue head is ${job.state}, not Ready.` },
+        dependencies: { passed: dependencies.every((dependency) => dependency.state === "Shipped"),
+          reason: waitingDependencies.length ? `Queue head is waiting for: ${waitingDependencies.map((dependency) => `${dependency.id} (${dependency.state})`).join(", ")}.`
+            : dependencies.length ? "All queue-head dependencies are shipped." : "Queue head has no dependencies." },
+      };
+      const reservation = reservationAssessment(activeReservations, executionReservation(project), execution);
+      const eligible = Object.values(checks).every((check) => check.passed) && reservation.fits;
+      const fairness = {
+        weight: project.weight,
+        allocations_before: scheduler.projects[project.id]?.allocations ?? 0,
+        weighted_allocation: weightedAllocation(scheduler, project),
+      };
+      return {
+        project, job, eligible, checks, reservation, fairness,
+        queue: { position: 1, length: queue.length, slice_position: job.position ?? 0 },
+        reason: eligible ? null : deferralReason(checks, reservation),
+      };
+    })
+    .filter(Boolean);
+}
+
+export function recordDispatchRound(data, considerations, selectedJobId, capacity = 1, at = new Date().toISOString(), fallbackReason = null) {
+  const scheduler = schedulerState(data, capacity);
+  const ranked = considerations.filter((entry) => entry.eligible)
+    .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id));
+  const rank = new Map(ranked.map((entry, index) => [entry.job.id, index + 1]));
+  const records = considerations.map((entry) => {
+    scheduler.decision_sequence += 1;
+    const allocated = entry.job.id === selectedJobId;
+    const reason = allocated
+      ? { code: "allocated", message: "Selected by durable weighted allocation and all capacity, capability, resource, and lock constraints fit." }
+      : entry.reason ?? (!entry.reservation.fits ? deferralReason(entry.checks, entry.reservation) : null)
+        ?? fallbackReason ?? { code: "fairness_order", message: "Another eligible slice ranked first by durable weighted allocation." };
+    const record = {
+      sequence: scheduler.decision_sequence,
+      at,
+      project_id: entry.project.id,
+      job_id: entry.job.id,
+      slice_title: entry.job.work?.title ?? null,
+      eligible: entry.eligible,
+      result: allocated ? "allocated" : "deferred",
+      reason,
+      queue: entry.queue,
+      fairness: { ...entry.fairness, rank: rank.get(entry.job.id) ?? null },
+      constraints: entry.reservation.constraints,
+      checks: entry.checks,
+    };
+    scheduler.decisions.push(record);
+    scheduler.latest[entry.project.id] = record;
+    return record;
+  });
+  return records;
 }

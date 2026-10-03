@@ -189,6 +189,12 @@ the durable `review_required` project gate remains until an operator resumes it.
 Weighted dispatch progress is stored in `system_metadata.execution_scheduler`.
 Its allocation counters, selection sequence, and timestamps survive worker restarts,
 so restarting a worker does not reset a project's place in weighted allocation.
+Every scheduling round also persists the considered project queue heads and their
+allocation or deferral result. Status projections expose each slice's eligibility,
+project queue position, weight and weighted-allocation rank, capability fit, and
+the capacity, project-limit, counted-resource, dependency, or lock constraint that
+caused a deferral. These explanations are rebuilt from scheduler state after restart;
+worker stdout is not an audit source.
 
 Approval refers to the current item revision, so stale answers cannot approve
 revised work:
@@ -258,6 +264,9 @@ The deterministic acceptance harness proves:
   with `allow_autonomous: true` and `approval_required: false`
 - decision-loop regression protection for the README inspection versus executable
   verification question, including after reconstructing the store from disk
+- deterministic allocation evidence for compatible multi-project concurrency,
+  capacity-limited weighted turns, blocked project-head bypass, repository lock
+  conflicts, and the default one-slot mode
 - actual served browser JavaScript in Chrome on an insecure
   `http://roundhouse-compatible` origin, including Enter/Shift+Enter/IME behavior,
   preserved failed submissions, cleared successful submissions, draft preservation

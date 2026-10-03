@@ -47,6 +47,7 @@ export function itemView(data, item) {
     id: question.id, decision_key: question.decision_key ?? null, prompt: question.prompt, answer: question.answer?.text ?? "",
     answered_at: question.answer?.at ?? question.updated_at ?? null,
   }));
+  const allocationDecisions = data.system_metadata?.execution_scheduler?.decisions ?? [];
   return {
     id: item.id,
     state,
@@ -100,6 +101,8 @@ export function itemView(data, item) {
       attempts: job.attempts.length,
       agent_role: job.agent_role ?? "general",
       shipping: job.shipping ?? null,
+      allocation: allocationDecisions.findLast((decision) => decision.job_id === job.id) ?? null,
+      allocation_history: allocationDecisions.filter((decision) => decision.job_id === job.id),
     })),
   };
 }
@@ -124,7 +127,26 @@ export function statusView(data, filters = {}) {
     title: nextJob.work?.title ?? nextItem.input?.text?.slice(0, 160) ?? "Untitled work",
     priority: nextItem.priority ?? null,
   } : null;
-  return { items, next_departure, projects: data.projects, project_candidates: data.project_candidates ?? {}, system_metadata: data.system_metadata ?? {} };
+  const scheduler = data.system_metadata?.execution_scheduler;
+  const decisions = (scheduler?.decisions ?? [])
+    .filter((decision) => !filters.project_id || decision.project_id === filters.project_id)
+    .filter((decision) => !filters.item_id || data.jobs[decision.job_id]?.parent_id === filters.item_id);
+  return {
+    items,
+    next_departure,
+    allocations: {
+      capacity: scheduler?.capacity ?? null,
+      allocation_sequence: scheduler?.sequence ?? 0,
+      decision_sequence: scheduler?.decision_sequence ?? 0,
+      latest: Object.fromEntries(Object.entries(scheduler?.latest ?? {})
+        .filter(([projectId]) => !filters.project_id || projectId === filters.project_id)
+        .filter(([, decision]) => !filters.item_id || data.jobs[decision.job_id]?.parent_id === filters.item_id)),
+      decisions,
+    },
+    projects: data.projects,
+    project_candidates: data.project_candidates ?? {},
+    system_metadata: data.system_metadata ?? {},
+  };
 }
 
 export function needsHumanView(data, filters = {}) {

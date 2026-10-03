@@ -5,7 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { Store } from "../src/workflow/store.js";
-import { eligibleProjectHead, executionReservation, projectExecutionEligible, projectQueueHead, recordAllocation, reservationFits, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
+import { dispatchConsiderations, eligibleProjectHead, executionReservation, projectExecutionEligible, projectQueueHead, recordAllocation, recordDispatchRound, reservationAssessment, reservationFits, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
+import { statusView } from "../src/workflow/views.js";
 
 function manifest(repository, changes = {}) {
   return {
@@ -48,7 +49,7 @@ test("scheduler contract: weighted allocation state is durable across store reco
   });
 
   const scheduler = new Store(directory).read().system_metadata.execution_scheduler;
-  assert.equal(scheduler.version, 1);
+  assert.equal(scheduler.version, 2);
   assert.equal(scheduler.capacity, 3);
   assert.equal(scheduler.sequence, 1);
   assert.deepEqual(scheduler.projects.alpha, {
@@ -56,6 +57,40 @@ test("scheduler contract: weighted allocation state is durable across store reco
     last_selected_sequence: 1,
     last_selected_at: "2026-01-01T00:00:00.000Z",
   });
+});
+
+test("scheduler contract: allocation explanations persist every eligibility and constraint fact across restart", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-scheduler-evidence-"));
+  const store = new Store(directory);
+  const execution = { capacity: 2, capabilities: ["cpu"], resource_limits: { browser: 1 } };
+  const projects = [
+    { id: "alpha", status: "active", weight: 3, max_concurrent_runs: 1, required_capabilities: ["cpu"], resource_requirements: { browser: 1 }, repository: "/repo/shared", policy: { shipping: "push_branch" } },
+    { id: "beta", status: "active", weight: 1, max_concurrent_runs: 1, required_capabilities: ["cpu"], resource_requirements: {}, repository: "/repo/beta", policy: { shipping: "commit_only" } },
+  ];
+  store.change((data) => {
+    data.projects.alpha = {};
+    data.projects.beta = {};
+    data.items.a = { id: "a", project_id: "alpha", state: "Ready", input: { text: "Alpha" }, questions: [], history: [], job_ids: ["alpha-job"] };
+    data.items.b = { id: "b", project_id: "beta", state: "Ready", input: { text: "Beta" }, questions: [], history: [], job_ids: ["beta-job"] };
+    data.jobs["alpha-job"] = { id: "alpha-job", parent_id: "a", project_id: "alpha", position: 0, state: "Ready", dependencies: [], attempts: [], history: [], work: { title: "Alpha slice" } };
+    data.jobs["beta-job"] = { id: "beta-job", parent_id: "b", project_id: "beta", position: 0, state: "Ready", dependencies: [], attempts: [], history: [], work: { title: "Beta slice" } };
+    const considerations = dispatchConsiderations(data, projects, execution);
+    recordDispatchRound(data, considerations, "alpha-job", execution.capacity, "2026-01-01T00:00:00.000Z");
+  });
+
+  const restarted = new Store(directory);
+  const view = statusView(restarted.read());
+  assert.equal(view.allocations.decisions.length, 2);
+  assert.deepEqual(view.allocations.decisions.map((decision) => decision.result), ["allocated", "deferred"]);
+  const alpha = view.allocations.latest.alpha;
+  assert.equal(alpha.eligible, true);
+  assert.deepEqual(alpha.queue, { position: 1, length: 1, slice_position: 0 });
+  assert.deepEqual(alpha.fairness, { weight: 3, allocations_before: 0, weighted_allocation: 0, rank: 1 });
+  assert.deepEqual(alpha.constraints.capability, { required: ["cpu"], available: ["cpu"], missing: [], fits: true });
+  assert.equal(alpha.constraints.capacity.limit, 2);
+  assert.equal(alpha.constraints.resources[0].resource, "browser");
+  assert.match(view.allocations.latest.beta.reason.message, /weighted allocation/);
+  assert.equal(view.items[0].jobs[0].allocation.job_id, "alpha-job");
 });
 
 test("scheduler contract: only the earliest unfinished project slice can be eligible", () => {
@@ -91,4 +126,7 @@ test("scheduler contract: reservations enforce capabilities, capacity, project l
   assert.equal(reservationFits([], { ...alpha, required_capabilities: ["tpu"] }, execution), false);
   assert.equal(reservationFits([alpha], { ...beta, locks: alpha.locks }, execution), false);
   assert.equal(reservationFits([alpha, beta], { ...beta, project_id: "gamma", capacity_units: 2, locks: ["repository:/repos/gamma"], resources: {} }, execution), false);
+  const blocked = reservationAssessment([alpha], { ...beta, locks: alpha.locks }, execution);
+  assert.equal(blocked.fits, false);
+  assert.deepEqual(blocked.constraints.locks.conflicts, alpha.locks);
 });
