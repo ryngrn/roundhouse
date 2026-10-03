@@ -73,6 +73,23 @@ produce durable, specific readiness and scheduler evidence. The installed delive
 adapter is still Git-only, so repository-free execution also remains ineligible until
 a repository-independent delivery provider is installed.
 
+Execution providers declare whether they require a repository. The existing project
+executor is repository-backed; command providers are repository-independent by
+default and can opt into requiring one. A repository-free slice is matched only to
+a repository-independent provider, even if a repository-backed provider otherwise
+has the right capability set.
+
+Customer projects may configure a `lifecycle` stage (`speculative`, `managed`, or
+`purchased`) and a `repository_provisioning` policy. A speculative project can remain
+repository-free while research, artifact, or other repository-independent providers
+prepare previews. `RepositoryProvisioner.transitionProjectLifecycle` applies an
+explicit promotion and requests creation only when the destination appears in
+`provision_on`. Managed and purchased promotions share one durable per-project
+creation key: a later stage, retry, or process restart returns the original result
+instead of creating another repository. An interrupted or uncertain provider result
+leaves the promoted project and action in `reconciliation_required`; autonomous
+replay is refused until an operator reconciles the external repository.
+
 `execution.providers` registers replaceable execution adapters. Every provider has a
 stable ID and declares the capability combinations it can handle. `kind: project`
 uses the project's existing Codex or command executor; `kind: command` invokes the

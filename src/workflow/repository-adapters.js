@@ -8,6 +8,7 @@ import { projectContext, validateWorkflowConfig } from "./config.js";
 const stableId = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
 const actionKinds = new Set(["create", "connect", "inspect", "map_workspace", "bootstrap_project"]);
 const lifecycleStates = new Set(["provisioning", "connected", "ready", "reconciliation_required", "disconnected"]);
+const customerLifecycleStates = new Set(["speculative", "managed", "purchased"]);
 
 function requiredString(value, field) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a nonempty string.`);
@@ -143,6 +144,80 @@ export class RepositoryProvisioner {
     return this.#perform({ kind: "connect", adapter_id, request, idempotency_key, actor, invoke: (adapter) => adapter.connect(clone(request)) });
   }
 
+  /**
+   * Applies a configured customer lifecycle transition. Repository creation is
+   * tied to one durable key per project rather than to an individual stage, so
+   * managed -> purchased and retried promotion events cannot create a second
+   * dedicated repository.
+   */
+  async transitionProjectLifecycle({ project, from, to, actor = null } = {}) {
+    if (!project || typeof project !== "object" || Array.isArray(project)) throw new Error("Lifecycle transition requires a configured project.");
+    const projectId = requiredString(project.id, "Project id");
+    if (!customerLifecycleStates.has(from) || !customerLifecycleStates.has(to)) {
+      throw new Error("Project lifecycle stages must be speculative, managed, or purchased.");
+    }
+    const order = ["speculative", "managed", "purchased"];
+    if (order.indexOf(to) < order.indexOf(from)) throw new Error("Project lifecycle cannot move backwards.");
+    const configuration = project.lifecycle;
+    if (!configuration || !customerLifecycleStates.has(configuration.stage)) {
+      throw new Error(`Project ${projectId} has no configured customer lifecycle.`);
+    }
+    const provisioning = configuration.repository_provisioning;
+    const trigger = provisioning?.provision_on?.includes(to) === true;
+    const existing = ensureProvisioningState(await this.store.read()).projects?.[projectId]?.customer_lifecycle;
+    const current = existing?.stage ?? configuration.stage;
+    const lifecycleKey = `project:${projectId}:dedicated-repository`;
+
+    if (current !== from && !(trigger && current === to && existing?.repository_action_id)) {
+      throw new Error(`Project ${projectId} lifecycle is ${current}, not ${from}.`);
+    }
+    if (!trigger) {
+      let record;
+      await this.store.change((data) => {
+        ensureProvisioningState(data);
+        const now = this.now();
+        const runtime = data.projects[projectId] ?? { id: projectId };
+        runtime.customer_lifecycle = lifecycleRecord(runtime.customer_lifecycle, from, to, now, actor, "not_requested");
+        data.projects[projectId] = runtime;
+        record = clone(runtime);
+      });
+      return { project: record, action: null, repository: null };
+    }
+    if (!provisioning) throw new Error(`Project ${projectId} has no repository provisioning policy for ${to}.`);
+    assertNoCredentials(provisioning.request, "lifecycle repository request");
+    const result = await this.#perform({
+      kind: "create", adapter_id: provisioning.adapter_id, request: provisioning.request,
+      idempotency_key: lifecycleKey, actor,
+      invoke: (adapter) => adapter.create(clone(provisioning.request)),
+      action_context: { project_id: projectId, lifecycle_transition: { from, to } },
+      onIntent: (data, action, now) => {
+        const runtime = data.projects[projectId] ?? { id: projectId };
+        runtime.customer_lifecycle = lifecycleRecord(runtime.customer_lifecycle, from, to, now, actor, "provisioning");
+        runtime.customer_lifecycle.repository_action_id = action.id;
+        data.projects[projectId] = runtime;
+      },
+      onSuccess: (data, action, now) => {
+        const lifecycle = data.projects[projectId].customer_lifecycle;
+        Object.assign(lifecycle, { repository_status: "provisioned", repository_id: action.repository_id, updated_at: now });
+      },
+      onFailure: (data, action, now) => {
+        const lifecycle = data.projects[projectId]?.customer_lifecycle;
+        if (lifecycle) Object.assign(lifecycle, { repository_status: "reconciliation_required", updated_at: now });
+      },
+    });
+    await this.store.change((data) => {
+      const lifecycle = data.projects[projectId]?.customer_lifecycle;
+      if (!lifecycle || lifecycle.stage === to) return;
+      data.projects[projectId].customer_lifecycle = lifecycleRecord(lifecycle, lifecycle.stage, to, this.now(), actor, "provisioned");
+      data.projects[projectId].customer_lifecycle.repository_action_id = result.action.id;
+      data.projects[projectId].customer_lifecycle.repository_id = result.repository.id;
+    });
+    const snapshot = await this.store.read();
+    return { ...result, project: clone(snapshot.projects[projectId]) };
+  }
+
+  async applyLifecycleTransition(options) { return this.transitionProjectLifecycle(options); }
+
   async inspect({ repository_id, idempotency_key, actor = null }) {
     const snapshot = ensureProvisioningState(await this.store.read());
     const repository = snapshot.repositories[repository_id];
@@ -266,7 +341,8 @@ export class RepositoryProvisioner {
 
   async bootstrap(options) { return this.bootstrapProject(options); }
 
-  async #perform({ kind, adapter_id, request, repository_id = null, idempotency_key, actor, invoke }) {
+  async #perform({ kind, adapter_id, request, repository_id = null, idempotency_key, actor, invoke,
+    action_context = null, onIntent = null, onSuccess = null, onFailure = null }) {
     if (!actionKinds.has(kind)) throw new Error(`Unknown repository action: ${kind}`);
     requiredString(idempotency_key, "Repository action idempotency_key");
     if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("Repository action request must be an object.");
@@ -293,8 +369,10 @@ export class RepositoryProvisioner {
         id: this.id(), kind, status: "pending", adapter_id, repository_id, idempotency_key, request_digest,
         request: clone(request), actor, node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null,
         started_at: now, finished_at: null, attempt: 1, evidence: [], error: null,
+        ...(action_context ? clone(action_context) : {}),
       };
       data.repository_actions[action.id] = action;
+      onIntent?.(data, action, now);
       if (["create", "connect"].includes(kind) && repository_id) data.repositories[repository_id].lifecycle_state = "provisioning";
     });
     if (existingResult) return existingResult;
@@ -341,6 +419,7 @@ export class RepositoryProvisioner {
         current.status = "succeeded";
         current.finished_at = now;
         current.evidence.push({ at: now, phase: "provider_result", result_digest: digest(current.result) });
+        onSuccess?.(data, current, now);
       });
     } catch (error) {
       await this.store.change((data) => {
@@ -355,12 +434,22 @@ export class RepositoryProvisioner {
           data.repositories[current.repository_id].lifecycle_state = kind === "inspect" ? "disconnected" : "reconciliation_required";
           data.repositories[current.repository_id].updated_at = now;
         }
+        onFailure?.(data, current, now);
       });
       throw error;
     }
     const data = ensureProvisioningState(await this.store.read());
     return actionResult(data.repository_actions[action.id], data);
   }
+}
+
+function lifecycleRecord(previous, from, to, now, actor, repositoryStatus) {
+  const history = [...(previous?.history ?? [])];
+  if (from !== to) history.push({ from, to, at: now, actor });
+  return {
+    ...(previous ?? {}), stage: to, previous_stage: from, repository_status: repositoryStatus,
+    history, updated_at: now,
+  };
 }
 
 export class ProjectBootstrapError extends Error {

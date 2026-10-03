@@ -107,6 +107,61 @@ test("repository provisioning: uncertain mutations are durable and cannot be rep
   assert.equal(calls, 1);
 });
 
+test("project lifecycle: speculative previews stay repository-free until managed or purchased promotion", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-lifecycle-preview-"));
+  let creates = 0;
+  const provisioner = new RepositoryProvisioner({ store: new Store(directory), adapters: [adapter({
+    async create(request) { creates += 1; return { identity: { provider_repository_id: `customer:${request.name}` } }; },
+  })] });
+  const project = { id: "inclusion-customer", lifecycle: { stage: "speculative", repository_provisioning: {
+    adapter_id: "fixture-repositories", provision_on: ["managed", "purchased"], request: { name: "customer-one" },
+  } } };
+
+  const preview = await provisioner.transitionProjectLifecycle({ project, from: "speculative", to: "speculative", actor: "sales" });
+  assert.equal(preview.action, null);
+  assert.equal(creates, 0);
+  const speculative = new Store(directory).read();
+  assert.equal(speculative.projects[project.id].customer_lifecycle.stage, "speculative");
+  assert.equal(speculative.projects[project.id].customer_lifecycle.repository_status, "not_requested");
+  assert.equal(Object.keys(speculative.repositories).length, 0);
+
+  const promoted = await provisioner.transitionProjectLifecycle({ project, from: "speculative", to: "managed", actor: "operator" });
+  assert.equal(promoted.project.customer_lifecycle.stage, "managed");
+  assert.equal(promoted.project.customer_lifecycle.repository_status, "provisioned");
+  assert.equal(promoted.action.project_id, project.id);
+  assert.deepEqual(promoted.action.lifecycle_transition, { from: "speculative", to: "managed" });
+
+  const purchased = await new RepositoryProvisioner({ store: new Store(directory), adapters: [adapter({
+    async create() { creates += 1; throw new Error("must not create twice"); },
+  })] }).transitionProjectLifecycle({ project, from: "managed", to: "purchased", actor: "operator" });
+  assert.equal(purchased.project.customer_lifecycle.stage, "purchased");
+  assert.equal(purchased.repository.id, promoted.repository.id);
+  assert.equal(creates, 1);
+  assert.equal(Object.values(new Store(directory).read().repository_actions).filter((action) => action.kind === "create").length, 1);
+});
+
+test("project lifecycle: uncertain promotion survives restart and never repeats repository creation", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-lifecycle-uncertain-"));
+  let creates = 0;
+  const project = { id: "inclusion-preview", lifecycle: { stage: "speculative", repository_provisioning: {
+    adapter_id: "fixture-repositories", provision_on: ["managed", "purchased"], request: { name: "uncertain-customer" },
+  } } };
+  const failing = adapter({ async create() { creates += 1; throw new Error("provider result unknown"); } });
+  await assert.rejects(new RepositoryProvisioner({ store: new Store(directory), adapters: [failing] })
+    .transitionProjectLifecycle({ project, from: "speculative", to: "purchased" }), /result unknown/);
+  let snapshot = new Store(directory).read();
+  assert.equal(snapshot.projects[project.id].customer_lifecycle.stage, "purchased");
+  assert.equal(snapshot.projects[project.id].customer_lifecycle.repository_status, "reconciliation_required");
+  assert.equal(Object.values(snapshot.repository_actions)[0].status, "reconciliation_required");
+
+  await assert.rejects(new RepositoryProvisioner({ store: new Store(directory), adapters: [failing] })
+    .transitionProjectLifecycle({ project, from: "speculative", to: "purchased" }), /requires reconciliation/);
+  snapshot = new Store(directory).read();
+  assert.equal(creates, 1);
+  assert.equal(Object.keys(snapshot.repositories).length, 0);
+  assert.equal(Object.keys(snapshot.repository_actions).length, 1);
+});
+
 function command(cwd, args) {
   const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);

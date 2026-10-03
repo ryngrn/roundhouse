@@ -48,6 +48,16 @@ refuses to replace a conflicting existing remote. Provider and Git failures reta
 bounded phase/status/request-ID evidence; a create without a definitive provider
 response records the external repository state as unknown and requires reconciliation.
 
+Lifecycle-driven creation is an explicit domain operation layered on that adapter
+boundary. Project configuration names the customer lifecycle stage, adapter, trigger
+stages, and credential-free provider request. Speculative transitions persist no
+repository create action. A transition to configured managed or purchased service
+persists the customer transition and repository intent together before calling the
+provider. Both promotion destinations use the same stable project key, so only one
+dedicated repository can be requested. The successful repository/action IDs—or the
+need for external reconciliation after an uncertain result—remain on the durable
+project projection across restarts.
+
 `RoundhouseService` is the reusable external-adapter boundary. It normalizes intake,
 queries work/questions, and submits guarded human answers to the Engine. The MCP
 server contains schemas and presentation text only; the browser JSON API and future

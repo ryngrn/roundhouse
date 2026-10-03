@@ -80,6 +80,19 @@ test("execution providers: capabilities split across providers are an unsupporte
   assert.equal(eligibility.reasons[0].code, "provider_unavailable");
 });
 
+test("execution providers: repository-free projects cannot select repository-backed runtimes", () => {
+  const providers = [
+    { id: "software", capabilities: [], repository_required: true },
+    { id: "research", capabilities: ["research"], repository_required: false },
+  ];
+  assert.equal(selectExecutionProvider(providers, [], { repositoryAvailable: false }), providers[1]);
+  assert.equal(selectExecutionProvider(providers, ["research"], { repositoryAvailable: false }), providers[1]);
+  assert.equal(executionEligibility({ max_concurrent_runs: 1, repository_required: false, required_capabilities: [],
+    resource_requirements: {} }, { capacity: 1, capabilities: [], resource_limits: {}, providers: [providers[0]] }).eligible, false);
+  assert.equal(executionEligibility({ max_concurrent_runs: 1, repository_required: false, required_capabilities: ["research"],
+    resource_requirements: {} }, { capacity: 1, capabilities: ["research"], resource_limits: {}, providers }).eligible, true);
+});
+
 test("execution providers: command adapters and the existing project runtime share one contract", async () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-provider-runtime-"));
   let projectCalls = 0;
@@ -89,7 +102,7 @@ test("execution providers: command adapters and the existing project runtime sha
       process.execPath, "-e", "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({received:JSON.parse(s).provider})))",
     ] },
   ], { execute: async () => { projectCalls += 1; return { passed: true, exit_code: 0 }; } });
-  const project = { required_capabilities: [], timeout_ms: 10_000 };
+  const project = { repository: workspace, required_capabilities: [], timeout_ms: 10_000 };
   const baseJob = { work: { required_capabilities: [] }, project_context: { agent_profile: { id: "general" }, purpose: "test" } };
   const software = await runtime.execute({ project, job: baseJob, workspace, previous_failure: null, onStart: () => {} });
   assert.equal(projectCalls, 1);
@@ -118,6 +131,22 @@ test("scheduler contract: repository requirements are independent from capabilit
   assert.throws(() => validateWorkflowConfig({
     projects: [{ id: "invalid", name: "Invalid", purpose: "Test", success_state: "Done", status: "active", verification: [] }],
   }, filename), /requires a repository/);
+});
+
+test("scheduler contract: speculative customer lifecycle configuration remains repository-free", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-speculative-project-"));
+  const config = validateWorkflowConfig({
+    execution: { capabilities: ["research"], providers: [{ id: "research", kind: "command", capabilities: ["research"],
+      repository_required: false, command: [process.execPath, "provider.mjs"] }] },
+    projects: [{ id: "inclusion-preview", name: "Inclusion Preview", purpose: "Prepare a speculative customer preview",
+      success_state: "A preview is reviewable", status: "active", repository_required: false,
+      required_capabilities: ["research"], verification: [], lifecycle: { stage: "speculative", repository_provisioning: {
+        adapter_id: "github", provision_on: ["managed", "purchased"], request: { name: "customer-preview" },
+      } } }],
+  }, path.join(directory, "config.yaml"));
+  assert.equal(config.projects[0].repository, undefined);
+  assert.equal(config.projects[0].lifecycle.stage, "speculative");
+  assert.equal(projectExecutionEligible(config.projects[0], config.execution), true);
 });
 
 test("scheduler contract: slice capabilities produce durable, specific ineligibility evidence", () => {

@@ -54,3 +54,24 @@ projects:
         command: [npm, test]
       - id: checks
         command: [npm, run, check]
+  # A speculative customer preview can omit repository and verification. A
+  # repository-independent command provider/capability may execute its slices.
+  # Promotion is applied through RepositoryProvisioner.transitionProjectLifecycle;
+  # the stable per-project intent prevents duplicate creates across either
+  # managed or purchased promotion events.
+  # - id: customer-preview
+  #   name: Customer Preview
+  #   purpose: Prepare a speculative customer preview.
+  #   success_state: The preview is ready for customer review.
+  #   status: active
+  #   repository_required: false
+  #   required_capabilities: [research, artifact]
+  #   lifecycle:
+  #     stage: speculative
+  #     repository_provisioning:
+  #       adapter_id: github
+  #       provision_on: [managed, purchased]
+  #       request:
+  #         name: dedicated-customer-repository
+  #         workspace: /absolute/path/to/future/customer/workspace
+  #   verification: []

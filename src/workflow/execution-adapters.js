@@ -6,9 +6,10 @@ export function requiredExecutionCapabilities(project, job = null) {
   return [...new Set([...(project.required_capabilities ?? []), ...(job?.work?.required_capabilities ?? [])])];
 }
 
-export function selectExecutionProvider(providers, requiredCapabilities) {
+export function selectExecutionProvider(providers, requiredCapabilities, { repositoryAvailable = true } = {}) {
   const required = new Set(requiredCapabilities);
   return (providers ?? [])
+    .filter((provider) => repositoryAvailable || (provider.repository_required ?? provider.kind === "project") !== true)
     .filter((provider) => requiredCapabilities.every((capability) => provider.capabilities.includes(capability)))
     .sort((left, right) => {
       const leftExtra = left.capabilities.filter((capability) => !required.has(capability)).length;
@@ -36,17 +37,18 @@ export class ExecutionAdapterRegistry {
     this.adapters.set(adapter.id, {
       id: adapter.id,
       capabilities: [...adapter.capabilities],
+      repository_required: adapter.repository_required === true,
       execute: adapter.execute.bind(adapter),
     });
     return this;
   }
 
-  select(requiredCapabilities) {
-    return selectExecutionProvider([...this.adapters.values()], requiredCapabilities);
+  select(requiredCapabilities, options) {
+    return selectExecutionProvider([...this.adapters.values()], requiredCapabilities, options);
   }
 
-  require(requiredCapabilities) {
-    const adapter = this.select(requiredCapabilities);
+  require(requiredCapabilities, options) {
+    const adapter = this.select(requiredCapabilities, options);
     if (adapter) return adapter;
     const required = requiredCapabilities.length ? requiredCapabilities.join(", ") : "(none)";
     throw new Error(`No execution provider supports the required capability combination: ${required}.`);
@@ -57,6 +59,7 @@ class ProjectExecutionAdapter {
   constructor(configuration, runtime) {
     this.id = configuration.id;
     this.capabilities = configuration.capabilities;
+    this.repository_required = configuration.repository_required ?? true;
     this.runtime = runtime;
   }
 
@@ -69,6 +72,7 @@ class CommandExecutionAdapter {
   constructor(configuration) {
     this.id = configuration.id;
     this.capabilities = configuration.capabilities;
+    this.repository_required = configuration.repository_required ?? false;
     this.command = configuration.command;
   }
 
@@ -107,7 +111,7 @@ export class CapabilityRuntime {
 
   async execute(request) {
     const required = requiredExecutionCapabilities(request.project, request.job);
-    const adapter = this.registry.require(required);
+    const adapter = this.registry.require(required, { repositoryAvailable: Boolean(request.project.repository) });
     const result = await adapter.execute(request);
     return { ...result, provider: { id: adapter.id, capabilities: [...adapter.capabilities], required } };
   }

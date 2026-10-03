@@ -11,6 +11,7 @@ export const commandValid = (command) => Array.isArray(command) && command.lengt
 const plainObject = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
 const contractKey = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
 const credentialKey = /^(?:.*[_-])?(?:token|password|passwd|secret|credential|authorization|api[_-]?key|private[_-]?key|access[_-]?key)$/i;
+const customerLifecycleStates = ["speculative", "managed", "purchased"];
 
 /** Project manifests are durable operator configuration, never a secret store. */
 export function assertNoConfigurationCredentials(value, location = "configuration") {
@@ -98,6 +99,26 @@ function normalizeProjects(raw, root, execution) {
     check(typeof repository_required === "boolean", `Project ${project.id} repository_required must be boolean.`);
     check(!repository_required || nonempty(project.repository), `Project ${project.id} requires a repository.`);
     const repository = nonempty(project.repository) ? fs.realpathSync(path.resolve(root, project.repository)) : undefined;
+    let lifecycle = project.lifecycle;
+    if (lifecycle !== undefined) {
+      check(plainObject(lifecycle), `Project ${project.id} lifecycle must be an object.`);
+      for (const key of Object.keys(lifecycle)) check(["stage", "repository_provisioning"].includes(key), `Unknown project lifecycle setting: ${key}`);
+      check(customerLifecycleStates.includes(lifecycle.stage), `Project ${project.id} lifecycle stage must be speculative, managed, or purchased.`);
+      const provisioning = lifecycle.repository_provisioning;
+      if (provisioning !== undefined) {
+        check(plainObject(provisioning), `Project ${project.id} repository_provisioning must be an object.`);
+        for (const key of Object.keys(provisioning)) check(["adapter_id", "provision_on", "request"].includes(key), `Unknown repository provisioning setting: ${key}`);
+        check(nonempty(provisioning.adapter_id) && contractKey.test(provisioning.adapter_id), `Project ${project.id} repository adapter must be a stable lowercase identifier.`);
+        check(Array.isArray(provisioning.provision_on) && provisioning.provision_on.length > 0,
+          `Project ${project.id} provision_on must contain lifecycle stages.`);
+        check(new Set(provisioning.provision_on).size === provisioning.provision_on.length &&
+          provisioning.provision_on.every((stage) => ["managed", "purchased"].includes(stage)),
+        `Project ${project.id} provision_on must contain unique managed or purchased stages.`);
+        check(plainObject(provisioning.request), `Project ${project.id} repository provisioning request must be an object.`);
+        assertNoConfigurationCredentials(provisioning.request, `Project ${project.id} repository provisioning request`);
+        lifecycle = { stage: lifecycle.stage, repository_provisioning: { ...provisioning, provision_on: [...provisioning.provision_on], request: structuredClone(provisioning.request) } };
+      } else lifecycle = { stage: lifecycle.stage };
+    }
     const verification = project.verification ?? [];
     check(Array.isArray(verification), "Verification must be an array.");
     check(!repository_required || verification.length > 0, "Repository-backed projects require at least one verification command.");
@@ -169,7 +190,7 @@ function normalizeProjects(raw, root, execution) {
       check(deployment && typeof deployment === "object" && !Array.isArray(deployment), "Invalid deployment configuration.");
     }
     return {
-      ...project, ...(repository ? { repository } : {}), repository_required, verification, weight, max_concurrent_runs, required_capabilities, resource_requirements, metric_definitions, policy, executor,
+      ...project, ...(repository ? { repository } : {}), ...(lifecycle ? { lifecycle } : {}), repository_required, verification, weight, max_concurrent_runs, required_capabilities, resource_requirements, metric_definitions, policy, executor,
       runtime: "local", timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
       ...(deployment ? { deployment } : {}),
@@ -189,14 +210,17 @@ export function validateWorkflowConfig(raw, filename) {
   check(suppliedProviders === undefined || Array.isArray(suppliedProviders), "execution.providers must be an array.");
   const providers = (suppliedProviders ?? [{ id: "local-project", kind: "project", capabilities }]).map((provider) => {
     check(plainObject(provider), "Execution provider must be an object.");
-    for (const key of Object.keys(provider)) check(["id", "kind", "capabilities", "command"].includes(key), `Unknown execution provider setting: ${key}`);
+    for (const key of Object.keys(provider)) check(["id", "kind", "capabilities", "command", "repository_required"].includes(key), `Unknown execution provider setting: ${key}`);
     check(nonempty(provider.id) && contractKey.test(provider.id), "Execution provider id must be a stable lowercase identifier.");
     check(["project", "command"].includes(provider.kind), `Execution provider ${provider.id} kind must be project or command.`);
     const declared = stringSet(provider.capabilities ?? [], `Execution provider ${provider.id} capabilities`);
     check(declared.every((capability) => capabilities.includes(capability)), `Execution provider ${provider.id} declares a capability unavailable on this installation.`);
     if (provider.kind === "command") check(commandValid(provider.command), `Execution provider ${provider.id} requires an argv array.`);
     else check(provider.command === undefined, `Project execution provider ${provider.id} cannot define a command.`);
-    return { ...provider, capabilities: declared };
+    const repository_required = provider.repository_required ?? provider.kind === "project";
+    check(typeof repository_required === "boolean", `Execution provider ${provider.id} repository_required must be boolean.`);
+    check(provider.kind !== "project" || repository_required, `Project execution provider ${provider.id} requires a repository.`);
+    return { ...provider, capabilities: declared, ...(provider.repository_required !== undefined ? { repository_required } : {}) };
   });
   check(new Set(providers.map((provider) => provider.id)).size === providers.length, "Execution provider ids must be unique.");
   check(providers.length > 0, "At least one execution provider is required.");

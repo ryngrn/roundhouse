@@ -76,7 +76,8 @@ export function executionEligibility(project, execution, capabilities = executio
   const missing = required.filter((capability) => !capabilities.includes(capability));
   const reasons = [];
   if (missing.length) reasons.push({ code: "capability_mismatch", message: `Missing capabilities: ${missing.join(", ")}.`, missing });
-  if (!missing.length && execution.providers && !selectExecutionProvider(execution.providers, required)) {
+  if (!missing.length && execution.providers && !selectExecutionProvider(execution.providers, required,
+    { repositoryAvailable: Boolean(project.repository) })) {
     reasons.push({ code: "provider_unavailable", message: `No execution provider supports the required capability combination: ${required.length ? required.join(", ") : "(none)"}.`, required });
   }
   if ((job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository)) && !project.repository) {
@@ -136,7 +137,8 @@ export function reservationAssessment(active, candidate, execution, capabilities
     capability: { required: [...(candidate.required_capabilities ?? [])], available: [...capabilities], missing: missingCapabilities, fits: !missingCapabilities.length },
     provider: (() => {
       if (!execution.providers || missingCapabilities.length) return { selected: null, fits: !execution.providers || Boolean(missingCapabilities.length) };
-      const selected = selectExecutionProvider(execution.providers, candidate.required_capabilities ?? []);
+      const selected = selectExecutionProvider(execution.providers, candidate.required_capabilities ?? [],
+        { repositoryAvailable: Boolean(candidate.repository?.configured) });
       return { selected: selected?.id ?? null, fits: Boolean(selected) };
     })(),
     capacity: { requested: candidate.capacity_units ?? 1, used: capacityUsed, limit: execution.capacity, fits: capacityUsed + (candidate.capacity_units ?? 1) <= execution.capacity },
