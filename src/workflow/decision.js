@@ -14,15 +14,24 @@ export const decisionSchema = object({
   questions: { type: "array", items: focusedQuestion },
   // Retained as optional input compatibility for existing command providers. New
   // providers use questions[] and Roundhouse never browser-splits their prose.
-  question: string, decision_key: { type: ["string", "null"] },
+  question: { type: ["string", "null"] }, decision_key: { type: ["string", "null"] },
   dependencies: strings, executor: string, runtime: string, shipping_policy: string, should_decompose: { type: "boolean" },
   reconcile_with: { type: ["string", "null"] }, blocked_on: strings,
   work_items: { type: "array", items: object({ title: string, outcome: string,
     acceptance_criteria: { type: "array", items: object({ description: string, verification_ids: strings }) } }) },
-}, ["project", "project_confidence", "execution_confidence", "sufficient_context", "safe_to_execute", "approval_required",
-  "decision", "reason", "questions", "dependencies", "executor", "runtime", "shipping_policy", "should_decompose", "work_items"]);
+});
 
 export function validateDecision(value) {
+  // Structured-output providers require every declared property to appear in
+  // `required`. Normalize older command providers and test doubles before
+  // applying that strict schema so the compatibility fields remain optional at
+  // the Roundhouse boundary.
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (!Object.hasOwn(value, "question")) value.question = null;
+    if (!Object.hasOwn(value, "decision_key")) value.decision_key = null;
+    if (!Object.hasOwn(value, "reconcile_with")) value.reconcile_with = null;
+    if (!Object.hasOwn(value, "blocked_on")) value.blocked_on = [];
+  }
   if (value && typeof value === "object" && !Array.isArray(value) && !Array.isArray(value.questions)) {
     const prompt = typeof value.question === "string" ? value.question.trim() : "";
     value.questions = prompt ? [{ prompt, decision_key: value.decision_key || `legacy:${createHash("sha256").update(prompt).digest("hex").slice(0, 24)}` }] : [];
