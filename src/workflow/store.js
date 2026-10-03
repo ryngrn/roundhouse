@@ -37,9 +37,13 @@ export class Store extends StorageRepository {
   acquireWorkerLease() { return acquireLock(this.workerLock); }
   acquireTriageLease() { return acquireLock(this.triageLock); }
   read() {
-    if (!fs.existsSync(this.file)) return { schema_version: 1, items: {}, jobs: {}, projects: {}, project_candidates: {}, system_metadata: {}, outbox: [] };
+    if (!fs.existsSync(this.file)) return { schema_version: 1, items: {}, jobs: {}, projects: {}, project_candidates: {}, system_metadata: {}, outbox: [],
+      repositories: {}, repository_actions: {}, workspace_mappings: {} };
     const data = JSON.parse(fs.readFileSync(this.file, "utf8"));
     if (data.schema_version !== 1) throw new Error("Unsupported state version.");
+    data.repositories ??= {};
+    data.repository_actions ??= {};
+    data.workspace_mappings ??= {};
     return data;
   }
   change(fn) {

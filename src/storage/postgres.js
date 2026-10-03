@@ -15,11 +15,13 @@ const migrations = [
   { version: 3, name: "durable_item_revisions", file: path.join(here, "migrations", "003_durable_item_revisions.sql") },
   { version: 4, name: "attempt_node_identity", file: path.join(here, "migrations", "004_attempt_node_identity.sql") },
   { version: 5, name: "remote_commands", file: path.join(here, "migrations", "005_remote_commands.sql") },
+  { version: 6, name: "repository_provisioning", file: path.join(here, "migrations", "006_repository_provisioning.sql") },
 ];
 const snapshotLock = 714_209_533;
 
 function emptySnapshot() {
-  return { schema_version: 1, items: {}, jobs: {}, projects: {}, project_candidates: {}, system_metadata: {}, outbox: [] };
+  return { schema_version: 1, items: {}, jobs: {}, projects: {}, project_candidates: {}, system_metadata: {}, outbox: [],
+    repositories: {}, repository_actions: {}, workspace_mappings: {} };
 }
 
 function date(value, fallback = new Date().toISOString()) {
@@ -62,6 +64,9 @@ async function readSnapshot(client) {
   for (const row of await rows(client, "SELECT key, value FROM roundhouse.system_metadata")) data.system_metadata[row.key] = row.value;
   for (const row of await rows(client, "SELECT id, payload FROM roundhouse.projects ORDER BY id")) data.projects[row.id] = row.payload;
   for (const row of await rows(client, "SELECT id, payload FROM roundhouse.project_candidates ORDER BY id")) data.project_candidates[row.id] = row.payload;
+  for (const row of await rows(client, "SELECT id, payload FROM roundhouse.repository_records ORDER BY id")) data.repositories[row.id] = row.payload;
+  for (const row of await rows(client, "SELECT id, payload FROM roundhouse.repository_actions ORDER BY started_at, id")) data.repository_actions[row.id] = row.payload;
+  for (const row of await rows(client, "SELECT id, payload FROM roundhouse.repository_workspace_mappings ORDER BY created_at, id")) data.workspace_mappings[row.id] = row.payload;
   for (const row of await rows(client, "SELECT id, payload FROM roundhouse.depot_items ORDER BY created_at, id")) data.items[row.id] = row.payload;
   for (const row of await rows(client, `SELECT j.id,j.payload,j.owning_node_id,n.name AS owning_node_name,n.capabilities AS owning_node_capabilities
     FROM roundhouse.jobs j LEFT JOIN roundhouse.nodes n ON n.id=j.owning_node_id ORDER BY j.position,j.id`)) {
@@ -87,6 +92,9 @@ async function readSnapshot(client) {
 
 async function clearDomain(client) {
   await client.query(`TRUNCATE TABLE
+    roundhouse.repository_workspace_mappings,
+    roundhouse.repository_actions,
+    roundhouse.repository_records,
     roundhouse.mcp_deliveries,
     roundhouse.mcp_subscriptions,
     roundhouse.mcp_event_state,
@@ -128,6 +136,26 @@ async function writeSnapshot(client, data) {
     await client.query(`INSERT INTO roundhouse.project_candidates
       (id, name, status, executable, source_system, record_count, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [candidate.id, candidate.name, candidate.status, Boolean(candidate.executable), candidate.source_system ?? null, candidate.record_count ?? 0, candidate]);
+  }
+  for (const repository of Object.values(data.repositories ?? {})) {
+    await client.query(`INSERT INTO roundhouse.repository_records
+      (id,adapter_id,provider_repository_id,lifecycle_state,revision,payload,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [repository.id, repository.identity.adapter_id,
+      repository.identity.provider_repository_id, repository.lifecycle_state, repository.revision, repository,
+      date(repository.created_at), date(repository.updated_at, date(repository.created_at))]);
+  }
+  for (const action of Object.values(data.repository_actions ?? {})) {
+    await client.query(`INSERT INTO roundhouse.repository_actions
+      (id,repository_id,adapter_id,action_kind,status,idempotency_key,request_digest,started_at,finished_at,payload)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [action.id, action.repository_id ?? null, action.adapter_id,
+      action.kind, action.status, action.idempotency_key, action.request_digest, date(action.started_at),
+      action.finished_at ? date(action.finished_at) : null, action]);
+  }
+  for (const mapping of Object.values(data.workspace_mappings ?? {})) {
+    await client.query(`INSERT INTO roundhouse.repository_workspace_mappings
+      (id,repository_id,project_id,purpose,status,workspace,payload,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [mapping.id, mapping.repository_id, mapping.project_id,
+      mapping.purpose, mapping.status, mapping.workspace, mapping, date(mapping.created_at), date(mapping.updated_at, date(mapping.created_at))]);
   }
   for (const item of Object.values(data.items ?? {})) {
     await client.query(`INSERT INTO roundhouse.depot_items
