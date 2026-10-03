@@ -92,6 +92,42 @@ test("postgres: two nodes racing claim exactly one job and expose its owner", { 
   await second.close();
 });
 
+test("postgres: atomic reservations enforce global, project, capability, resource, and repository constraints", { skip: !enabled }, async () => {
+  await reset();
+  const first = await open("reserve-one");
+  const second = await open("reserve-two");
+  await first.change((data) => {
+    seed(data);
+    for (const suffix of ["2", "3"]) {
+      const item = record(`item-${suffix}`, { state: "Ready", input: { text: `ship ${suffix}`, source: "test", actor: "test" },
+        clarifications: [], questions: [], decision: null, job_ids: [`job-${suffix}`], project_id: `project-${suffix}` });
+      data.items[item.id] = item;
+      data.jobs[`job-${suffix}`] = record(`job-${suffix}`, { state: "Ready", parent_id: item.id, project_id: `project-${suffix}`,
+        work: { title: `work ${suffix}` }, agent_role: "general", project_context: {}, policy_hash: "hash", dependencies: [],
+        attempts: [], processes: [], position: Number(suffix) });
+      data.projects[`project-${suffix}`] = { id: `project-${suffix}`, active: false };
+    }
+  });
+  const execution = { capacity: 2, capabilities: ["gpu"], resource_limits: { gpu: 2 } };
+  const reservation = (projectId, repository, resources = { gpu: 1 }, required = ["gpu"]) => ({
+    project_id: projectId, project_limit: 1, capacity_units: 1, required_capabilities: required, resources,
+    locks: [`repository:${repository}`],
+  });
+  const firstClaim = await first.claimJob(["job-1"], { execution, reservations: { "job-1": reservation("project-1", "/repo/shared") } });
+  assert.ok(firstClaim);
+  assert.equal(await second.claimJob(["job-2"], { execution, reservations: { "job-2": reservation("project-2", "/repo/shared") } }), null);
+  assert.equal(await second.claimJob(["job-3"], { execution, reservations: { "job-3": reservation("project-1", "/repo/three", {}) } }), null);
+  assert.equal(await second.claimJob(["job-2"], { execution, reservations: { "job-2": reservation("project-2", "/repo/two", { gpu: 2 }) } }), null);
+  assert.equal(await second.claimJob(["job-2"], { execution, reservations: { "job-2": reservation("project-2", "/repo/two", {}, ["tpu"]) } }), null);
+  const compatible = await second.claimJob(["job-2"], { execution, reservations: { "job-2": reservation("project-2", "/repo/two") } });
+  assert.ok(compatible);
+  assert.equal(await first.claimJob(["job-3"], { execution, reservations: { "job-3": reservation("project-3", "/repo/three", {}) } }), null);
+  await first.releaseLease(firstClaim.lease);
+  await second.releaseLease(compatible.lease);
+  await first.close();
+  await second.close();
+});
+
 test("postgres: racing workers execute and ship one claimed job exactly once", { skip: !enabled }, async () => {
   await reset();
   // Use the production lease window: a hosted database can spend more than
@@ -153,6 +189,25 @@ test("postgres: expired leases recover without duplicate delivery and stale revi
   assert.equal(await second.claimJob(["job-1"]), null);
   await assert.rejects(second.compareAndChange("items", "item-1", 999, () => {}), /Stale revision/);
   await first.releaseLease(claim.lease);
+  await first.close();
+  await second.close();
+});
+
+test("postgres: an expired Ready reservation blocks instead of being selected again", { skip: !enabled }, async () => {
+  await reset();
+  const first = await open("reserved", 30);
+  const second = await open("reserved-recovery", 30);
+  await first.change(seed);
+  const execution = { capacity: 1, capabilities: [], resource_limits: {} };
+  const reservation = { project_id: "project-1", project_limit: 1, capacity_units: 1,
+    required_capabilities: [], resources: {}, locks: ["repository:/repo/one"] };
+  await first.claimJob(["job-1"], { leaseMs: 30, execution, reservations: { "job-1": reservation } });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(await second.recoverExpiredClaims(), 1);
+  const recovered = await second.read();
+  assert.equal(recovered.jobs["job-1"].state, "Blocked");
+  assert.match(recovered.jobs["job-1"].history.at(-1).reason, /expired owner lease/i);
+  assert.equal(await second.claimJob(["job-1"], { execution, reservations: { "job-1": reservation } }), null);
   await first.close();
   await second.close();
 });

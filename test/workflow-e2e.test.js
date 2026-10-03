@@ -258,6 +258,41 @@ test("integration: dispatch preserves project order and skips an ineligible head
   assert.equal(result.jobs["alpha-later"].state, "Ready");
 });
 
+test("integration: compatible projects use available execution slots concurrently", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-dispatch-concurrent-"));
+  const store = new Store(directory);
+  const projects = [schedulingProject("alpha"), schedulingProject("beta"), schedulingProject("gamma")];
+  store.change((data) => {
+    for (const [index, project] of projects.entries()) {
+      data.projects[project.id] = {};
+      data.jobs[`${project.id}-job`] = schedulingJob(`${project.id}-job`, project.id, index);
+    }
+  });
+  const engine = new Engine({
+    store,
+    config: { projects, max_jobs_per_run: 3, execution: { capacity: 2, capabilities: [], resource_limits: {} }, triage: {} },
+    shipping: { canDispatch: () => true },
+  });
+  let active = 0;
+  let maximum = 0;
+  engine.execute = async (id, project) => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    store.change((data) => {
+      data.jobs[id].state = "Shipped";
+      data.projects[project.id] = { ...data.projects[project.id], active: false };
+    });
+    active -= 1;
+    return true;
+  };
+
+  const result = await engine.runDispatch();
+  assert.equal(result.executed, 3);
+  assert.equal(maximum, 2);
+  assert.ok(Object.values(result.jobs).every((job) => job.state === "Shipped"));
+});
+
 test("integration: persisted weighted fairness survives bounded worker invocations", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-dispatch-fairness-"));
   const projects = [schedulingProject("alpha", 3), schedulingProject("beta", 1)];
@@ -432,6 +467,8 @@ test("integration: post-shipping human gate pauses queue without relabeling ship
   assert.equal(result.executed, 1);
   assert.deepEqual(Object.values(result.jobs).map((j) => j.state), ["Shipped", "Ready"]);
   assert.equal(result.projects.example.review_required, true);
+  assert.equal(Object.values(result.jobs)[0].owning_node_id, null);
+  assert.equal(new Store(h.store.directory).read().projects.example.review_required, true);
   assert.equal((await h.engine.run()).executed, 0);
 });
 

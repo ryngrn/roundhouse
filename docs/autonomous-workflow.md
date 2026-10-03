@@ -191,14 +191,20 @@ Project queues initially use submission/decomposition order. Project weights sel
 dispatch turns when multiple project queues have work.
 
 Execution capacity defaults to **one slot**, preserving the behavior of existing
-installations. The durable configuration contract also records per-project limits,
-runtime capability requirements, and integer resource limits/requirements. A
-project cannot declare more concurrency or resources than the global execution
-policy provides. The current local worker still serializes ownership with a worker
-lease and does not open parallel CLI windows; the capacity contract allows shared
-schedulers to make eligibility decisions without inferring operator intent. Each
+installations. Raising `execution.capacity` lets one worker run compatible project
+heads concurrently. The durable configuration contract also records per-project
+limits, runtime capability requirements, and integer resource limits/requirements.
+A project cannot declare more concurrency or resources than the global execution
+policy provides. Local workers reserve inside their exclusive worker lease;
+PostgreSQL workers persist the complete reservation on the job lease and select it
+atomically with the job. Repository and delivery targets are exclusive reservation
+locks, while counted resources can be shared up to their configured limits. Each
 invocation is bounded by `max_jobs_per_run`; rerun the worker to handle additional
 queued or newly submitted requests.
+
+A reservation is released only after the owned attempt and its runtime have stopped.
+When `review_after_shipping` pauses continuation, the execution slot is released but
+the durable `review_required` project gate remains until an operator resumes it.
 
 Weighted dispatch progress is stored in `system_metadata.execution_scheduler`.
 Its allocation counters, selection sequence, and timestamps survive worker restarts,
@@ -245,9 +251,11 @@ remote repository.
 
 With the local adapter, state writes are atomic fsynced snapshots and recovery
 refuses live/remote filesystem owners. With PostgreSQL, nodes use expiring heartbeat
-leases; claims and dependency checks are transactional across nodes. Recovery marks
-expired active work Blocked and never guesses whether a push happened. Inspect the
-retained commit, branch and remote before resuming. A persisted delivery intent
+leases; claims, dependencies, capacity, project limits, counted resources, and
+exclusive repository/delivery locks are checked in one transaction across nodes.
+Recovery marks expired active work, including a Ready job with an uncertain expired
+reservation, Blocked and never guesses whether a push happened. Inspect the retained
+commit, branch and remote before resuming. A persisted delivery intent
 always requires reconciliation. Database loss stops autonomous work; there is no
 stale local fallback or offline multi-master mode.
 

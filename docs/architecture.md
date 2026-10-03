@@ -59,9 +59,11 @@ verification evidence, shipping/deployment, transition audit, outbox/MCP deliver
 nodes, leases, and import provenance. JSONB is limited to variable provider/domain
 payloads on those records; there is no monolithic state blob.
 
-PostgreSQL job claims use a transaction and `FOR UPDATE SKIP LOCKED`. One live lease
-owner is recorded with acquisition, heartbeat, and expiry timestamps. Separate
-project/resource leases protect Git and remote delivery across nodes. Revision
+PostgreSQL job claims use a transaction and `FOR UPDATE SKIP LOCKED`. The same
+transaction reserves a global slot, project allowance, counted resources, and
+exclusive repository/delivery keys on the job lease. One live lease owner is
+recorded with acquisition, heartbeat, and expiry timestamps. Separate project
+leases add defense in depth around Git and remote delivery across nodes. Revision
 guards reject stale writes. The delivery intent and outbox commit before external
 delivery, and expired ownership blocks uncertain work for reconciliation instead of
 replaying it. Advisory locks serialize schema migration and compatibility snapshot
