@@ -433,9 +433,12 @@ export class PostgresStorageRepository extends StorageRepository {
       for (const { id } of expired) {
         const job = data.jobs[id];
         if (!job || job.state === "Blocked") continue;
+        const remote = job.attempts?.at(-1)?.execution?.remote_execution;
         this.move(data, job, "Blocked", job.delivery_intent
           ? "Expired owner lease after delivery intent; reconcile the remote before replacement work."
-          : "Expired owner lease interrupted execution; inspect the workspace before replacement work.");
+          : remote
+            ? `Expired owner lease interrupted Herdr execution on ${remote.machine_selector}/${remote.agent_target}; explicit reconciliation is required and the prompt will not be replayed automatically.`
+            : "Expired owner lease interrupted execution; inspect the workspace before replacement work.");
         data.projects[job.project_id] = { ...data.projects[job.project_id], active: false, blocked: true };
       }
       for (const { id } of expiredItems) {
