@@ -498,4 +498,4 @@ $("#config-form").addEventListener("submit", async (event) => {
   catch (error) { $("#config-message").textContent = error.message; }
 });
 
-renderTrainLanguage(); load(); setInterval(load, 5000);
+renderTrainLanguage(); updateFilterControls(); load(); setInterval(load, 5000);

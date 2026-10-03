@@ -112,6 +112,7 @@ dialog { padding:0; color:var(--text); background:var(--surface-1); border:1px s
 .view-button:hover { color:var(--text); background:var(--surface-raised); box-shadow:none; transform:none; }
 .view-button.is-active { color:var(--moving); background:#142229; box-shadow:inset 0 0 0 1px #365367; }
 .section-actions { display:flex; align-items:center; gap:7px; }
+.section-actions #edit-config:disabled { display:none; }
 .filter-clear { color:var(--moving)!important; border-color:#365367!important; }
 
 .project-board { gap:12px; }
