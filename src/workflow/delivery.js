@@ -1,6 +1,7 @@
 import { deploymentProvider } from "./deployment.js";
 import { LocalGitRepositoryAdapter, RepositoryAdapterRegistry } from "./repository-adapters.js";
 import { pullRequestProvider } from "./pull-request.js";
+import { digest } from "../storage/repository.js";
 
 export { git } from "./repository-adapters.js";
 
@@ -100,6 +101,15 @@ export class GitDelivery {
     const verification = job.shipping?.verification;
     const pull_request = job.shipping?.pull_request;
     if (!prepared || !verification?.passed || !pull_request) throw new Error("Merge requires a verified, correlated pull request.");
+    const target = { project_id: project.id, repository: project.repository, base: project.pull_request.base,
+      pull_request_id: pull_request.id };
+    const parameters = { commit: verification.commit };
+    const expectedDigest = digest({ action: "merge_protected_branch", target, parameters, revision: approval?.job_revision });
+    if (approval?.action !== "merge_protected_branch" || digest(job.merge_intent) !== digest(approval) ||
+      approval.request_digest !== expectedDigest ||
+      digest(approval.target) !== digest(target) || digest(approval.parameters) !== digest(parameters)) {
+      throw new Error("Merge requires exact revision-bound approval for this protected/default branch action.");
+    }
     if (pull_request.head_commit !== verification.commit || !this.#adapter(project, prepared).unchanged(prepared, verification.commit)) {
       throw new Error("Approved pull request no longer matches the verified candidate commit.");
     }

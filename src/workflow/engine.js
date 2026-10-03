@@ -764,8 +764,12 @@ export class Engine {
       if (!project || project.policy.shipping !== "merge_to_main") throw new Error("Job is not configured for policy-controlled merge.");
       if (job.merge_intent) throw new Error("A merge intent already exists and requires reconciliation; it cannot be replayed.");
       if (job.shipping?.pull_request?.head_commit !== job.shipping?.commit) throw new Error("Merge candidate is not correlated to the exact verified commit.");
+      const target = { project_id: project.id, repository: project.repository, base: project.pull_request.base,
+        pull_request_id: job.shipping.pull_request.id };
+      const parameters = { commit: job.shipping.commit };
       approval = { actor, job_revision: revision, commit: job.shipping.commit, pull_request_id: job.shipping.pull_request.id,
-        action: "merge", at: new Date().toISOString() };
+        action: "merge_protected_branch", target, parameters,
+        request_digest: digest({ action: "merge_protected_branch", target, parameters, revision }), at: new Date().toISOString() };
       job.merge_intent = approval;
       job.history.push({ from: "Review", to: "Review", reason: `Merge action approved by ${actor}.`, at: approval.at });
       job.revision += 1;

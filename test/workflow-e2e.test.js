@@ -382,6 +382,10 @@ test("e2e: merge requires a current per-action approval and never pushes the tar
   job = h.store.read().jobs[job.id];
   assert.equal(job.state, "Shipped");
   assert.equal(job.merge.approval.actor, "maintainer");
+  assert.equal(job.merge.approval.action, "merge_protected_branch");
+  assert.equal(job.merge.approval.target.base, "main");
+  assert.equal(job.merge.approval.parameters.commit, job.shipping.commit);
+  assert.ok(job.merge.approval.request_digest);
   assert.equal(job.merge.head_commit, job.shipping.commit);
   assert.equal(git(h.remote, ["rev-parse", "main"]), mainBefore);
 });

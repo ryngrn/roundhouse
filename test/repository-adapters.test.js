@@ -7,7 +7,7 @@ import test from "node:test";
 import { saveWorkflowConfig } from "../src/workflow/config.js";
 import { Store } from "../src/workflow/store.js";
 import { GitDelivery } from "../src/workflow/delivery.js";
-import { GitHubRepositoryAdapter, LocalGitRepositoryAdapter, ProjectBootstrapError, ProjectBootstrapper, RepositoryAdapter, RepositoryAdapterRegistry, RepositoryProvisioner, repositoryIdentity } from "../src/workflow/repository-adapters.js";
+import { GitHubRepositoryAdapter, LocalGitRepositoryAdapter, ProjectBootstrapError, ProjectBootstrapper, RepositoryAdapter, RepositoryAdapterRegistry, RepositoryProvisioner, repositoryIdentity, sensitiveRepositoryActions } from "../src/workflow/repository-adapters.js";
 
 function adapter(overrides = {}) {
   return {
@@ -35,6 +35,84 @@ test("repository adapters: contract requires stable identity and create, connect
     display_name: "Example", owner: "octocat", github_node_id: "MDQ6" }), {
     adapter_id: "fixture-repositories", provider_repository_id: "opaque-17", display_name: "Example",
   });
+});
+
+test("repository authority: every sensitive action is blocked until exact current-revision approval", async () => {
+  for (const kind of sensitiveRepositoryActions) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-sensitive-action-"));
+    const calls = [];
+    const provider = adapter({
+      async performSensitiveAction(packet) { calls.push(packet); return { confirmed: true, action: packet.action }; },
+    });
+    const provisioner = new RepositoryProvisioner({ store: new Store(directory), adapters: [provider] });
+    const created = await provisioner.create({ adapter_id: provider.id, request: { name: kind },
+      idempotency_key: `create-${kind}` });
+    const requested = await provisioner.requestSensitiveAction({ repository_id: created.repository.id, action: kind,
+      parameters: { branch: "main", mode: "requested" }, idempotency_key: `sensitive-${kind}`, actor: "requester" });
+    assert.equal(requested.action.status, "approval_required");
+    assert.equal(calls.length, 0);
+    await assert.rejects(provisioner.executeSensitiveAction({ action_id: requested.action.id, revision: 1 }),
+      /requires exact current-revision approval/);
+    await assert.rejects(provisioner.approveSensitiveAction({ action_id: requested.action.id, revision: 2, actor: "maintainer" }),
+      /current sensitive repository action revision/);
+    const approved = await provisioner.approveSensitiveAction({ action_id: requested.action.id, revision: 1, actor: "maintainer" });
+    assert.equal(approved.action.approval.action, kind);
+    assert.deepEqual(approved.action.approval.target, requested.action.target);
+    assert.deepEqual(approved.action.approval.parameters, requested.action.parameters);
+    assert.equal(approved.action.approval.request_digest, requested.action.request_digest);
+    const completed = await provisioner.executeSensitiveAction({ action_id: requested.action.id, revision: 1 });
+    assert.equal(completed.action.status, "succeeded");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].authorization.actor, "maintainer");
+  }
+});
+
+test("repository authority: stale or generalized approval cannot authorize changed work", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-sensitive-stale-"));
+  let calls = 0;
+  const provider = adapter({ async performSensitiveAction() { calls += 1; return { confirmed: true }; } });
+  const provisioner = new RepositoryProvisioner({ store: new Store(directory), adapters: [provider] });
+  const created = await provisioner.create({ adapter_id: provider.id, request: { name: "stale" }, idempotency_key: "create-stale" });
+  const requested = await provisioner.requestSensitiveAction({ repository_id: created.repository.id, action: "force_push",
+    parameters: { branch: "release", commit: "abc123" }, idempotency_key: "force-release" });
+  await provisioner.approveSensitiveAction({ action_id: requested.action.id, revision: 1, actor: "maintainer" });
+  provisioner.store.change((data) => { data.repository_actions[requested.action.id].parameters.commit = "changed"; });
+  await assert.rejects(provisioner.executeSensitiveAction({ action_id: requested.action.id, revision: 1 }), /exact current-revision approval/);
+  assert.equal(calls, 0);
+
+  const fresh = await provisioner.requestSensitiveAction({ repository_id: created.repository.id, action: "change_visibility",
+    parameters: { visibility: "public" }, idempotency_key: "make-public" });
+  await provisioner.approveSensitiveAction({ action_id: fresh.action.id, revision: 1, actor: "maintainer" });
+  provisioner.store.change((data) => { data.repositories[created.repository.id].revision += 1; });
+  await assert.rejects(provisioner.executeSensitiveAction({ action_id: fresh.action.id, revision: 1 }), /stale.*repository revision/);
+  assert.equal(calls, 0);
+});
+
+test("repository authority: adapters cannot expose direct sensitive-operation bypasses", () => {
+  assert.throws(() => new RepositoryAdapterRegistry([adapter({ deleteRepository() {} })]), /outside the domain authorization boundary/);
+  assert.throws(() => new RepositoryAdapterRegistry([adapter({ forcePush() {} })]), /outside the domain authorization boundary/);
+});
+
+test("repository authority: routine creation remains private", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-private-only-"));
+  const provisioner = new RepositoryProvisioner({ store: new Store(directory), adapters: [adapter()] });
+  await assert.rejects(provisioner.create({ adapter_id: "fixture-repositories", request: { name: "public", visibility: "public" },
+    idempotency_key: "public-create" }), /private-only/);
+  assert.throws(() => new RepositoryAdapterRegistry([adapter({ change_visibility() {} })]), /outside the domain authorization boundary/);
+  assert.equal(Object.keys(provisioner.store.read().repository_actions).length, 0);
+});
+
+test("repository authority: credential rotation persists references but rejects credential material", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-credential-boundary-"));
+  const provisioner = new RepositoryProvisioner({ store: new Store(directory), adapters: [adapter()] });
+  const created = await provisioner.create({ adapter_id: "fixture-repositories", request: { name: "credentials" },
+    idempotency_key: "create-credentials" });
+  const requested = await provisioner.requestSensitiveAction({ repository_id: created.repository.id, action: "change_credentials",
+    parameters: { credential_id: "deploy-key-1", operation: "rotate" }, idempotency_key: "rotate-key" });
+  assert.equal(requested.action.parameters.credential_id, "deploy-key-1");
+  await assert.rejects(provisioner.requestSensitiveAction({ repository_id: created.repository.id, action: "change_credentials",
+    parameters: { token: "must-not-persist" }, idempotency_key: "unsafe-rotate" }), /credential material/);
+  assert.doesNotMatch(JSON.stringify(provisioner.store.read()), /must-not-persist/);
 });
 
 test("repository delivery: coordinator routes routine work through an adapter and alone authorizes push", async () => {

@@ -9,6 +9,14 @@ import { projectContext, validateWorkflowConfig } from "./config.js";
 
 const stableId = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
 const actionKinds = new Set(["create", "connect", "inspect", "map_workspace", "bootstrap_project"]);
+export const sensitiveRepositoryActions = Object.freeze([
+  "delete_repository", "force_push", "change_default_branch", "change_branch_protection",
+  "change_visibility", "change_credentials", "merge_protected_branch",
+]);
+const sensitiveActionKinds = new Set(sensitiveRepositoryActions);
+const forbiddenAdapterMethods = ["deleteRepository", "forcePush", "changeDefaultBranch", "changeBranchProtection",
+  "changeVisibility", "changeCredentials", "mergeProtectedBranch", "delete", "setVisibility", "updateDefaultBranch",
+  "updateBranchProtection", "rotateCredentials", "merge", ...sensitiveRepositoryActions];
 const lifecycleStates = new Set(["provisioning", "connected", "ready", "reconciliation_required", "disconnected"]);
 const customerLifecycleStates = new Set(["speculative", "managed", "purchased"]);
 
@@ -54,6 +62,17 @@ function assertNoCredentials(value, location = "request") {
   }
 }
 
+function assertNoCredentialMaterial(value, location) {
+  if (!value || typeof value !== "object") return;
+  for (const [key, entry] of Object.entries(value)) {
+    const reference = /(?:credential|key)[_-](?:id|name|reference)$/i.test(key);
+    if (!reference && /(?:token|password|passwd|secret|credential|authorization|api[_-]?key|private[_-]?key|access[_-]?key)/i.test(key)) {
+      throw new Error(`Repository ${location} must not contain credential material; supply it through the execution environment.`);
+    }
+    if (entry && typeof entry === "object") assertNoCredentialMaterial(entry, `${location}.${key}`);
+  }
+}
+
 /**
  * Provider-neutral identity retained by Roundhouse. Provider account,
  * installation, owner, and API-specific fields belong to the adapter and are
@@ -91,6 +110,7 @@ export class RepositoryAdapter {
   snapshot() { throw new Error("snapshot() is not implemented."); }
   unchanged() { throw new Error("unchanged() is not implemented."); }
   push() { throw new Error("push() is not implemented."); }
+  performSensitiveAction() { throw new Error("performSensitiveAction() is not implemented."); }
 }
 
 export class RepositoryAdapterRegistry {
@@ -104,6 +124,8 @@ export class RepositoryAdapterRegistry {
     for (const method of ["create", "connect", "inspect"]) {
       if (typeof adapter[method] !== "function") throw new Error(`Repository adapter ${adapter.id} must implement ${method}().`);
     }
+    const bypass = forbiddenAdapterMethods.find((method) => typeof adapter[method] === "function");
+    if (bypass) throw new Error(`Repository adapter ${adapter.id} exposes sensitive operation ${bypass}() outside the domain authorization boundary.`);
     if (this.adapters.has(adapter.id)) throw new Error(`Duplicate repository adapter: ${adapter.id}`);
     this.adapters.set(adapter.id, adapter);
     return this;
@@ -121,6 +143,14 @@ export class RepositoryAdapterRegistry {
       if (typeof adapter[method] !== "function" || adapter[method] === RepositoryAdapter.prototype[method]) {
         throw new Error(`Repository adapter ${id} does not provide delivery operation ${method}().`);
       }
+    }
+    return adapter;
+  }
+
+  requireSensitiveActions(id) {
+    const adapter = this.require(id);
+    if (typeof adapter.performSensitiveAction !== "function" || adapter.performSensitiveAction === RepositoryAdapter.prototype.performSensitiveAction) {
+      throw new Error(`Repository adapter ${id} does not provide performSensitiveAction().`);
     }
     return adapter;
   }
@@ -159,12 +189,147 @@ export class RepositoryProvisioner {
 
   async create({ adapter_id, request, idempotency_key, actor = null }) {
     assertNoCredentials(request);
+    if (request?.visibility && request.visibility !== "private") {
+      throw new Error("Routine repository creation is private-only; public visibility requires a sensitive-action approval.");
+    }
     return this.#perform({ kind: "create", adapter_id, request, idempotency_key, actor, invoke: (adapter) => adapter.create(clone(request)) });
   }
 
   async connect({ adapter_id, request, idempotency_key, actor = null }) {
     assertNoCredentials(request);
     return this.#perform({ kind: "connect", adapter_id, request, idempotency_key, actor, invoke: (adapter) => adapter.connect(clone(request)) });
+  }
+
+  /**
+   * Opens a durable human gate for a provider mutation that can destroy data,
+   * change repository authority, or affect a protected/default branch. The
+   * domain owns this classification: an adapter cannot downgrade one of these
+   * operations to routine work.
+   */
+  async requestSensitiveAction({ repository_id, action, parameters = {}, idempotency_key, actor = null }) {
+    requiredString(repository_id, "repository_id");
+    requiredString(idempotency_key, "Sensitive repository action idempotency_key");
+    if (!sensitiveActionKinds.has(action)) throw new Error(`Unknown sensitive repository action: ${action}`);
+    if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+      throw new Error("Sensitive repository action parameters must be an object.");
+    }
+    assertNoCredentialMaterial(parameters, "sensitive action parameters");
+    let result;
+    await this.store.change((data) => {
+      ensureProvisioningState(data);
+      const repository = data.repositories[repository_id];
+      if (!repository) throw new Error(`Unknown repository: ${repository_id}`);
+      const target = { repository_id, identity: clone(repository.identity), repository_revision: repository.revision };
+      const request = { action, target, parameters: clone(parameters) };
+      const request_digest = digest(request);
+      const existing = Object.values(data.repository_actions).find((candidate) => candidate.idempotency_key === idempotency_key);
+      if (existing) {
+        if (existing.kind !== action || existing.request_digest !== request_digest) {
+          throw new Error("Repository action idempotency key already exists with different input.");
+        }
+        result = actionResult(existing, data);
+        return;
+      }
+      const now = this.now();
+      const record = {
+        id: this.id(), kind: action, status: "approval_required", revision: 1,
+        adapter_id: repository.identity.adapter_id, repository_id, idempotency_key, request_digest,
+        request, target, parameters: clone(parameters), approval: null, actor,
+        node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null,
+        started_at: now, finished_at: null, attempt: 0, evidence: [], error: null,
+      };
+      data.repository_actions[record.id] = record;
+      result = actionResult(record, data);
+    });
+    return result;
+  }
+
+  async approveSensitiveAction({ action_id, revision, actor }) {
+    requiredString(action_id, "Sensitive repository action id");
+    requiredString(actor, "Sensitive repository action approval actor");
+    let result;
+    await this.store.change((data) => {
+      ensureProvisioningState(data);
+      const action = data.repository_actions[action_id];
+      if (!action || !sensitiveActionKinds.has(action.kind)) throw new Error(`Unknown sensitive repository action: ${action_id}`);
+      if (action.status !== "approval_required" || action.revision !== revision) {
+        throw new Error("Approval must reference the current sensitive repository action revision.");
+      }
+      const repository = data.repositories[action.repository_id];
+      if (!repository || repository.revision !== action.target.repository_revision ||
+        digest({ action: action.kind, target: action.target, parameters: action.parameters }) !== action.request_digest) {
+        throw new Error("Sensitive repository action changed after it was requested; create a new approval request.");
+      }
+      const now = this.now();
+      action.approval = { action: action.kind, target: clone(action.target), parameters: clone(action.parameters),
+        request_digest: action.request_digest, revision, actor: actor.trim(), approved_at: now };
+      action.status = "approved";
+      action.evidence.push({ at: now, phase: "human_approval", actor: actor.trim(), request_digest: action.request_digest });
+      result = actionResult(action, data);
+    });
+    return result;
+  }
+
+  async executeSensitiveAction({ action_id, revision }) {
+    requiredString(action_id, "Sensitive repository action id");
+    let packet;
+    await this.store.change((data) => {
+      ensureProvisioningState(data);
+      const action = data.repository_actions[action_id];
+      if (!action || !sensitiveActionKinds.has(action.kind)) throw new Error(`Unknown sensitive repository action: ${action_id}`);
+      const repository = data.repositories[action.repository_id];
+      const approval = action.approval;
+      const exact = approval && approval.revision === revision && action.revision === revision &&
+        approval.action === action.kind && approval.request_digest === action.request_digest &&
+        digest(approval.target) === digest(action.target) && digest(approval.parameters) === digest(action.parameters);
+      if (action.status !== "approved" || !exact) throw new Error("Sensitive repository action requires exact current-revision approval.");
+      if (!repository || repository.revision !== action.target.repository_revision ||
+        digest(repository.identity) !== digest(action.target.identity)) {
+        throw new Error("Sensitive repository action approval is stale for the current repository revision.");
+      }
+      const conflicting = Object.values(data.repository_actions).find((candidate) => candidate.id !== action.id &&
+        candidate.repository_id === action.repository_id && candidate.status === "pending");
+      if (conflicting) throw new Error(`Repository already has sensitive action ${conflicting.id} in progress.`);
+      action.status = "pending";
+      action.attempt = 1;
+      action.evidence.push({ at: this.now(), phase: "authorization_check", request_digest: action.request_digest });
+      packet = { action: action.kind, target: clone(action.target), parameters: clone(action.parameters),
+        authorization: clone(approval) };
+    });
+    const snapshot = ensureProvisioningState(await this.store.read());
+    const action = snapshot.repository_actions[action_id];
+    try {
+      const adapter = this.adapters.requireSensitiveActions(action.adapter_id);
+      const response = await adapter.performSensitiveAction(packet);
+      assertNoCredentialMaterial(response, "provider result");
+      await this.store.change((data) => {
+        const current = data.repository_actions[action_id];
+        const repository = data.repositories[current.repository_id];
+        const now = this.now();
+        current.status = "succeeded";
+        current.result = clone(response ?? {});
+        current.finished_at = now;
+        current.evidence.push({ at: now, phase: "provider_result", result_digest: digest(current.result) });
+        if (current.kind === "delete_repository") repository.lifecycle_state = "disconnected";
+        repository.revision += 1;
+        repository.updated_at = now;
+      });
+    } catch (error) {
+      await this.store.change((data) => {
+        const current = data.repository_actions[action_id];
+        const now = this.now();
+        current.status = "reconciliation_required";
+        current.error = errorRecord(error);
+        current.finished_at = now;
+        current.evidence.push({ at: now, phase: "provider_error", error: clone(current.error) });
+        const repository = data.repositories[current.repository_id];
+        if (repository) Object.assign(repository, { lifecycle_state: "reconciliation_required",
+          revision: repository.revision + 1, updated_at: now });
+      });
+      throw error;
+    }
+    const data = ensureProvisioningState(await this.store.read());
+    return actionResult(data.repository_actions[action_id], data);
   }
 
   /**

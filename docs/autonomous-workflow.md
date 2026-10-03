@@ -201,6 +201,14 @@ is deterministic; the `command` provider receives commit-bound JSON on stdin for
 Git commit and push hooks are disabled for
 adapter-owned delivery; declare required checks explicitly in verification policy.
 
+Repository administration follows a separate authority boundary. Routine creation
+is private-only, and normal delivery may push only its verified job branch.
+Deletion, force-push, default/protected branch changes, making a repository public,
+credential changes, and protected/default-branch merges wait for a human approval
+bound to the exact action, target, parameters, and current repository/action
+revision. A generalized approval or an approval made stale by changed repository
+state cannot authorize the provider call.
+
 Submit pull-request feedback or approve an open PR without merging it using the
 current job revision. Merging has a separate command and approval record:
 

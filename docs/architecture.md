@@ -199,6 +199,19 @@ Register other supported policies explicitly. A document provider can use artifa
 versions in place of Git SHAs while retaining the same lifecycle. Non-code delivery
 is not implemented by the current Git adapter.
 
+Repository authority is a domain boundary, not an adapter option. Creating private
+repositories, inspecting them, and pushing verified commits to Roundhouse job
+branches are routine operations. Repository deletion, force-push, default-branch or
+branch-protection changes, public visibility, credential changes, and merges into a
+protected/default branch are sensitive actions. Each sensitive action first creates
+a durable approval request that captures its action, provider-neutral target,
+parameters, request digest, and current repository revision. A named human must
+approve that exact action revision before the coordinator will invoke a provider.
+Changed parameters or repository state make the approval stale, and uncertain
+provider results require reconciliation instead of replay. Adapters expose one
+generic sensitive-action method and cannot expose direct destructive methods that
+bypass this check.
+
 ## Configuration and audit trust
 
 Project policy, role settings, context bounds, and verification commands are operator-owned configuration. Model
