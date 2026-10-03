@@ -9,23 +9,23 @@
 </head>
 <body>
   <header class="app-header">
-    <div class="brand"><span class="mark" aria-hidden="true">R</span><div><h1>Roundhouse</h1><p>Project operations</p></div></div>
+    <div class="brand"><span class="mark" aria-hidden="true">R</span><div><h1>Roundhouse</h1><p>Control room · local operations</p></div></div>
     <div class="header-actions"><div id="connection" class="connection" role="status">Connecting…</div><button id="refresh" class="header-button" type="button">Refresh</button></div>
   </header>
   <main>
     <section class="command-bar" aria-label="Control room summary">
-      <div class="command-copy"><span class="eyebrow">Control room</span><h2>Work, grouped by project</h2><p>Open a row for its brief, decisions, evidence, and history.</p></div>
+      <div class="command-copy"><span class="eyebrow">Control room</span><h2>Every project. One clear signal.</h2><p>Open a row for its brief, decisions, evidence, and history.</p></div>
       <dl class="metrics">
-        <div><dt>Needs You</dt><dd id="count-needs">0</dd></div>
-        <div><dt>Active</dt><dd id="count-active">0</dd></div>
-        <div><dt>Queued</dt><dd id="count-queued">0</dd></div>
-        <div><dt>Shipped</dt><dd id="count-completed">0</dd></div>
-        <div><dt>Blocked</dt><dd id="count-blocked">0</dd></div>
+        <div><dt><span data-train-label="needs">Needs a signal</span><span class="sr-only"> Needs You </span></dt><dd id="count-needs">0</dd></div>
+        <div><dt><span data-train-label="active">Chugging along</span><span class="sr-only"> Active </span></dt><dd id="count-active">0</dd></div>
+        <div><dt><span data-train-label="queued">Ready to depart</span><span class="sr-only"> Queued </span></dt><dd id="count-queued">0</dd></div>
+        <div><dt><span data-train-label="shipped">Reached the station</span><span class="sr-only"> Shipped </span></dt><dd id="count-completed">0</dd></div>
+        <div><dt><span data-train-label="blocked">Held up</span><span class="sr-only"> Blocked </span></dt><dd id="count-blocked">0</dd></div>
       </dl>
     </section>
 
     <details class="intake-panel">
-      <summary><span><span class="eyebrow">Depot intake</span><strong>Send in new work</strong></span><span aria-hidden="true">＋</span></summary>
+      <summary><span><span class="eyebrow" data-train-label="depot">Depot</span><strong><span data-train-label="next">Next departure</span> · send in new work</strong></span><span class="summary-plus" aria-hidden="true">＋</span></summary>
       <form id="intake-form">
         <label for="intake-content">Requested outcome</label>
         <textarea id="intake-content" required placeholder="Describe the outcome you want…"></textarea>

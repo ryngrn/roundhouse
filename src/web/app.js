@@ -3,6 +3,32 @@ let configuration = { projects: [] };
 let currentOverview = null;
 let activeSession = null;
 
+const TRAIN_LANGUAGE = Object.freeze({
+  needs: "Needs a signal",
+  active: "Chugging along",
+  queued: "Ready to depart",
+  shipped: "Reached the station",
+  blocked: "Held up",
+  depot: "Depot",
+  next: "Next departure",
+});
+
+const trainState = (state) => {
+  if (["Needs You", "Needs Clarification", "Review"].includes(state)) return TRAIN_LANGUAGE.needs;
+  if (["Decision", "Executing", "Verification", "Rework"].includes(state)) return TRAIN_LANGUAGE.active;
+  if (state === "Ready") return TRAIN_LANGUAGE.queued;
+  if (["Shipped", "Imported History"].includes(state)) return TRAIN_LANGUAGE.shipped;
+  if (state === "Blocked") return TRAIN_LANGUAGE.blocked;
+  if (["Depot", "Imported Pending"].includes(state)) return TRAIN_LANGUAGE.depot;
+  return state;
+};
+
+function renderTrainLanguage() {
+  for (const element of document.querySelectorAll?.("[data-train-label]") || []) {
+    element.textContent = TRAIN_LANGUAGE[element.dataset.trainLabel] || element.textContent;
+  }
+}
+
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json();
@@ -54,7 +80,9 @@ function workRow(item) {
   button.setAttribute("aria-label", `Open ${item.title}, ${item.display_state}`);
   const identity = node("span", undefined, "row-identity");
   const kicker = node("span", undefined, "row-kicker");
-  kicker.append(node("span", item.display_state, `state state-${slug(item.display_state)}`));
+  const state = node("span", trainState(item.display_state), `state state-${slug(item.display_state)}`);
+  state.title = item.display_state;
+  kicker.append(state);
   if (item.priority) kicker.append(node("span", item.priority, "priority"));
   identity.append(kicker, node("strong", item.title), node("span", item.reason || item.brief || item.summary, "row-reason"));
   const facts = node("span", undefined, "row-facts");
@@ -103,8 +131,9 @@ function renderBoard(overview) {
     const title = node("div"); title.append(node("span", group.type === "project" ? "Project" : group.type === "candidate" ? "Candidate" : "Intake", "eyebrow"), node("h3", group.name), node("p", group.detail || "", "project-detail"));
     const counts = groupStatus(group.items);
     const atGlance = node("dl", undefined, "project-counts");
-    for (const [label, value] of [["Needs You", counts.needs], ["Active", counts.active], ["Queued", counts.queued], ["Shipped", counts.shipped], ["Blocked", counts.blocked]]) {
-      const cell = node("div"); cell.append(node("dt", label), node("dd", String(value))); atGlance.append(cell);
+    for (const [label, canonical, value] of [[TRAIN_LANGUAGE.needs, "Needs You", counts.needs], [TRAIN_LANGUAGE.active, "Active", counts.active], [TRAIN_LANGUAGE.queued, "Queued", counts.queued], [TRAIN_LANGUAGE.shipped, "Shipped", counts.shipped], [TRAIN_LANGUAGE.blocked, "Blocked", counts.blocked]]) {
+      const term = node("dt"); term.append(node("span", label), node("span", ` ${canonical} `, "sr-only"));
+      const cell = node("div"); cell.append(term, node("dd", String(value))); atGlance.append(cell);
     }
     heading.append(title, atGlance); section.append(heading);
     const labels = node("div", undefined, "row-labels");
@@ -230,7 +259,7 @@ function openWork(itemId) {
   activeSession = { item: structuredClone(item), questions: structuredClone(item.questions || []), drafts: new Map(), index: 0, stale: false, tab: item.needs_you ? "decisions" : "overview" };
   $("#work-project").textContent = projectLabel(item); $("#work-dialog-title").textContent = item.title; $("#work-outcome").textContent = item.outcome || item.brief || item.summary;
   const strip = $("#work-status-strip"); strip.replaceChildren();
-  for (const value of [item.display_state, item.priority, item.agent_role ? `Role · ${item.agent_role}` : null, item.owning_node ? `Node · ${item.owning_node}` : null, `Verify · ${item.verification_status}`, `Ship · ${item.shipping_status}`].filter(Boolean)) strip.append(node("span", value));
+  for (const value of [`${trainState(item.display_state)} · ${item.display_state}`, item.priority, item.agent_role ? `Role · ${item.agent_role}` : null, item.owning_node ? `Node · ${item.owning_node}` : null, `Verify · ${item.verification_status}`, `Ship · ${item.shipping_status}`].filter(Boolean)) strip.append(node("span", value));
   $("#decision-count").textContent = item.questions.length ? String(item.questions.length) : "";
   renderActiveTab(); $("#work-dialog").showModal();
 }
@@ -276,4 +305,4 @@ $("#config-form").addEventListener("submit", async (event) => {
   catch (error) { $("#config-message").textContent = error.message; }
 });
 
-load(); setInterval(load, 5000);
+renderTrainLanguage(); load(); setInterval(load, 5000);

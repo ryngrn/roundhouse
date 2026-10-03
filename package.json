@@ -17,6 +17,7 @@
     "test:postgres": "node --test test/storage-unit.test.js test/postgres-storage.test.js",
     "acceptance": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
     "acceptance:live": "node --test test/acceptance-live.test.js",
+    "visual": "node scripts/visual-gates.mjs",
     "demo": "node scripts/demo.mjs"
   },
   "engines": {

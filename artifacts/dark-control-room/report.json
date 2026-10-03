@@ -1,0 +1,177 @@
+{
+  "passed": true,
+  "generatedAt": "2026-10-03T01:42:55.679Z",
+  "screenshots": [
+    "desktop.png",
+    "desktop-modal.png",
+    "mobile.png",
+    "mobile-modal.png"
+  ],
+  "results": [
+    {
+      "surface": "desktop-dashboard",
+      "colorScheme": "dark",
+      "bodyBackground": "rgb(9, 11, 12)",
+      "bodyLuminance": 0.00323965473745925,
+      "bodyText": "rgb(237, 241, 239)",
+      "bodyContrast": 17.30798485881643,
+      "primaryTextContrast": 16.10555454619243,
+      "surfaces": {
+        "body": {
+          "color": "rgb(9, 11, 12)",
+          "luminance": 0.00323965473745925
+        },
+        ".command-bar": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".project-group": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".project-heading": {
+          "color": "rgb(22, 27, 30)",
+          "luminance": 0.010481764997238133
+        },
+        ".work-row": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        }
+      },
+      "nearWhiteMajorElements": [],
+      "horizontalOverflow": false,
+      "scrollWidth": 1440,
+      "viewportWidth": 1440,
+      "focused": "body"
+    },
+    {
+      "surface": "desktop-modal",
+      "colorScheme": "dark",
+      "bodyBackground": "rgb(9, 11, 12)",
+      "bodyLuminance": 0.00323965473745925,
+      "bodyText": "rgb(237, 241, 239)",
+      "bodyContrast": 17.30798485881643,
+      "primaryTextContrast": 16.10555454619243,
+      "surfaces": {
+        "body": {
+          "color": "rgb(9, 11, 12)",
+          "luminance": 0.00323965473745925
+        },
+        ".command-bar": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".project-group": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".project-heading": {
+          "color": "rgb(22, 27, 30)",
+          "luminance": 0.010481764997238133
+        },
+        ".work-row": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".work-dialog": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".modal-content": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".decision-field": {
+          "color": "rgb(22, 27, 30)",
+          "luminance": 0.010481764997238133
+        }
+      },
+      "nearWhiteMajorElements": [],
+      "horizontalOverflow": false,
+      "scrollWidth": 1440,
+      "viewportWidth": 1440,
+      "focused": "decision-answer"
+    },
+    {
+      "surface": "mobile-dashboard",
+      "colorScheme": "dark",
+      "bodyBackground": "rgb(9, 11, 12)",
+      "bodyLuminance": 0.00323965473745925,
+      "bodyText": "rgb(237, 241, 239)",
+      "bodyContrast": 17.30798485881643,
+      "primaryTextContrast": 16.10555454619243,
+      "surfaces": {
+        "body": {
+          "color": "rgb(9, 11, 12)",
+          "luminance": 0.00323965473745925
+        },
+        ".command-bar": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".project-group": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".project-heading": {
+          "color": "rgb(22, 27, 30)",
+          "luminance": 0.010481764997238133
+        },
+        ".work-row": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        }
+      },
+      "nearWhiteMajorElements": [],
+      "horizontalOverflow": false,
+      "scrollWidth": 390,
+      "viewportWidth": 390,
+      "focused": "body"
+    },
+    {
+      "surface": "mobile-modal",
+      "colorScheme": "dark",
+      "bodyBackground": "rgb(9, 11, 12)",
+      "bodyLuminance": 0.00323965473745925,
+      "bodyText": "rgb(237, 241, 239)",
+      "bodyContrast": 17.30798485881643,
+      "primaryTextContrast": 16.10555454619243,
+      "surfaces": {
+        "body": {
+          "color": "rgb(9, 11, 12)",
+          "luminance": 0.00323965473745925
+        },
+        ".command-bar": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".project-group": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".project-heading": {
+          "color": "rgb(22, 27, 30)",
+          "luminance": 0.010481764997238133
+        },
+        ".work-row": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".work-dialog": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        },
+        ".modal-content": {
+          "color": "rgb(17, 21, 24)",
+          "luminance": 0.0072144930149211995
+        }
+      },
+      "nearWhiteMajorElements": [],
+      "horizontalOverflow": false,
+      "scrollWidth": 390,
+      "viewportWidth": 390,
+      "focused": "button"
+    }
+  ],
+  "violations": []
+}
