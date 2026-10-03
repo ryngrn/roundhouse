@@ -35,6 +35,19 @@ authority. Existing project repository paths and `GitDelivery` policy remain the
 only installed code-delivery path. Adapter credentials are process-owned and must
 not be included in the durable provisioning request.
 
+The initial `github` adapter creates private repositories or connects repositories
+identified by `owner/name` (or a normal GitHub URL). Requests provide a repository
+name or identity, an absolute or relative local workspace, and optionally an initial
+branch and description. `GITHUB_TOKEN` (or `GH_TOKEN`) supplies API and HTTPS Git
+authentication; `ROUNDHOUSE_GITHUB_OWNER` selects an organization creation endpoint.
+The token is passed only in request/process environment headers and is never written
+to the remote URL, Git configuration, action, repository record, or evidence. The
+adapter initializes Git, configures `origin`, establishes the initial branch, fetches
+an existing branch when present, and makes subsequent inspection idempotent. It
+refuses to replace a conflicting existing remote. Provider and Git failures retain
+bounded phase/status/request-ID evidence; a create without a definitive provider
+response records the external repository state as unknown and requires reconciliation.
+
 `RoundhouseService` is the reusable external-adapter boundary. It normalizes intake,
 queries work/questions, and submits guarded human answers to the Engine. The MCP
 server contains schemas and presentation text only; the browser JSON API and future
