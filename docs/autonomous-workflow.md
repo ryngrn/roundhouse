@@ -7,11 +7,21 @@ status movement is required for a successful autonomous job.
 
 ## Behavior
 
-The work lifecycle is Depot → Decision → Ready → Executing → Verification →
-Shipped. Low confidence or insufficient acceptance checks lead to Needs
-Clarification. A material human decision leads to Review. Execution or verification
-failure can enter Rework, then another execution attempt. Exhausted attempts,
+The control-plane lifecycle is Depot/Imported Pending → Decision → Ready, Needs
+Clarification, Review, Blocked, Archived, or Reconciled. Imported Pending first gets a
+durable, non-executable release into Depot; a legacy Ready/Running label is evidence,
+not authority. The separate dispatch lifecycle is Ready → Executing → Verification →
+Shipped. Low confidence or a material human decision leads to focused questions.
+Execution or verification failure can enter bounded Rework; exhausted attempts,
 infrastructure errors, or uncertain delivery lead to Blocked.
+
+The service continuously runs triage with bounded concurrency, per-pass limits,
+durable attempts, exponential backoff, item leases in shared mode, and weighted
+priority that favors P0/P1 while preserving retry fairness. Triage continues while
+execution capacity is full. Needs Clarification/Review is not re-polled until an
+answer changes the item; Blocked is retried only after an explicit request or a
+relevant dependency fingerprint changes. Use `roundhouse depot triage` for a
+triage-only operator pass.
 
 Review means a human decision is required. Successful execution does not itself
 create Review. `review_after_shipping` can separately pause the project's queue

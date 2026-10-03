@@ -121,6 +121,12 @@ export class RoundhouseService {
     return { item: itemView(await this.store.read(), item), reevaluated: true };
   }
 
+  retryTriage({ id, expected_revision, actor = "local-user" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to retry triage.");
+    return mapResult(this.engine.retryTriage(id, expected_revision, actor), (item) =>
+      mapResult(this.store.read(), (data) => ({ item: itemView(data, item), retry_requested: true })));
+  }
+
   getStorageStatus() {
     return this.store.status();
   }

@@ -119,9 +119,9 @@ export async function startRoundhouseServer({
           needs_you: needs.questions,
           counts: {
             needs_you: status.items.filter((item) => item.needs_you).length,
-            active: status.items.filter((item) => ["Decision", "Executing", "Verification", "Rework"].includes(item.state)).length,
-            queued: status.items.filter((item) => ["Depot", "Ready", "Imported Pending"].includes(item.state)).length,
-            completed: status.items.filter((item) => ["Shipped", "Imported History"].includes(item.state)).length,
+            active: status.items.filter((item) => ["Executing", "Verification", "Rework"].includes(item.state)).length,
+            queued: status.items.filter((item) => item.state === "Ready").length,
+            completed: status.items.filter((item) => ["Shipped", "Imported History", "Archived", "Reconciled"].includes(item.state)).length,
             blocked: status.items.filter((item) => item.state === "Blocked").length,
           },
           connection: {
@@ -196,11 +196,19 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 200, result);
       }
+      const retryTriage = url.pathname.match(/^\/api\/items\/([^/]+)\/retry-triage$/);
+      if (request.method === "POST" && retryTriage) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.retryTriage({ id: decodeURIComponent(retryTriage[1]), expected_revision: input.expected_revision, actor: "local-user" });
+        loop.wake();
+        return send(response, 200, result);
+      }
       if (request.method === "POST" && url.pathname === "/api/worker/tick") {
         verifyOrigin(request, origins);
         await jsonBody(request);
         const result = await loop.tick();
-        return send(response, 200, { executed: result.executed ?? 0, worker: loop.status() });
+        return send(response, 200, { triaged: result.triaged ?? 0, executed: result.executed ?? 0, worker: loop.status() });
       }
       return send(response, 404, { error: "Not Found" });
     } catch (error) {

@@ -8,6 +8,7 @@ import { LocalRuntime, CommandVerifier } from "./runtime.js";
 import { GitDelivery } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
+import { exactReconciliationTarget, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
@@ -22,11 +23,38 @@ function executionProjectContext(project, role) {
   return { ...context, agent_profile: composeAgentRole(role, project) };
 }
 
-const itemPriority = (item) => Number.isFinite(item.priority_rank) ? item.priority_rank : 100;
+function relatedWork(data, item) {
+  const projectKeys = new Set([item.project_id, item.input?.project_id, item.input?.project_hint,
+    item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id]?.name : null].filter(Boolean).map((value) => String(value).toLowerCase()));
+  return Object.values(data.items)
+    .filter((candidate) => candidate.id !== item.id)
+    .filter((candidate) => {
+      const keys = [candidate.project_id, candidate.input?.project_id, candidate.input?.project_hint,
+        candidate.project_candidate_id ? data.project_candidates?.[candidate.project_candidate_id]?.name : null]
+        .filter(Boolean).map((value) => String(value).toLowerCase());
+      return !projectKeys.size || keys.some((key) => projectKeys.has(key));
+    })
+    .slice(0, 50)
+    .map((candidate) => ({
+      id: candidate.id,
+      state: candidate.state,
+      project_id: candidate.project_id ?? null,
+      legacy_roundhouse_id: candidate.legacy_depot?.["Roundhouse ID"] ?? candidate.provenance?.legacy_roundhouse_id ?? null,
+      title: candidate.legacy_depot?.Item ?? candidate.decision?.work_items?.[0]?.title ?? candidate.input?.text?.split("\n")[0]?.slice(0, 200) ?? null,
+      summary: candidate.input?.text?.slice(0, 500) ?? "",
+      completed_at: candidate.completed_at ?? null,
+      jobs: (candidate.job_ids ?? []).map((jobId) => data.jobs[jobId]).filter(Boolean).map((job) => ({
+        id: job.id, state: job.state, title: job.work?.title ?? null, outcome: job.work?.outcome ?? null,
+        commit: job.shipping?.commit ?? null, branch: job.shipping?.branch ?? null,
+      })),
+    }));
+}
 
 export class Engine {
-  constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = new LocalRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery() }) {
-    Object.assign(this, { store, config, decision, runtime, verifier, shipping });
+  constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = new LocalRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery(), clock = () => Date.now() }) {
+    const triage = { max_per_tick: 1, max_concurrent: 1, base_backoff_ms: 30_000, max_backoff_ms: 60 * 60_000, ...(config.triage ?? {}) };
+    config.triage = triage;
+    Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
   processRecorder(collection, id) {
     return (pid) => {
@@ -55,20 +83,30 @@ export class Engine {
       const item = data.items[id];
       if (item.state === "Decision" && item.awaiting_decision) item.awaiting_decision = false;
       else {
-        if (!["Depot", "Needs Clarification"].includes(item.state)) throw new Error("Item cannot be decided in its current state.");
-        this.store.move(data, item, "Decision", "Evaluating Depot request.");
+        if (!["Depot", "Needs Clarification", "Blocked"].includes(item.state)) throw new Error("Item cannot be triaged in its current state.");
+        this.store.move(data, item, "Decision", "Triage is evaluating the Depot request.");
       }
+      item.triage ??= { attempts: [], failure_count: 0 };
+      item.triage.attempts ??= [];
+      item.triage.attempts.push({ number: item.triage.attempts.length + 1, item_revision: item.revision,
+        started_at: new Date(this.clock()).toISOString(), node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null });
+      item.triage.status = "evaluating";
+      item.triage.retry_requested_at = null;
+      item.triage.next_attempt_at = null;
     });
     try {
-      const item = (await this.store.read()).items[id];
+      const snapshot = await this.store.read();
+      const item = snapshot.items[id];
       const projects = this.config.projects.map((project) => projectContext(project));
       const selectedProject = item.selected_project ?? item.input.project_id;
-      const proposed = await this.decision.decide({ item: { ...item, input: { ...item.input, ...(selectedProject ? { project_id: selectedProject } : {}) } }, projects, directory: path.join(this.store.directory, "decisions", id, String(item.revision)), onStart: this.processRecorder("items", id) });
+      const proposed = await this.decision.decide({ item: { ...item, related_work: relatedWork(snapshot, item),
+        input: { ...item.input, ...(selectedProject ? { project_id: selectedProject } : {}) } }, projects,
+        directory: path.join(this.store.directory, "decisions", id, String(item.revision)), onStart: this.processRecorder("items", id) });
       const configuredProject = this.config.projects.find((project) => project.id === proposed.project);
       const role = configuredProject ? inferAgentRole({ item, decision: proposed, project: configuredProject }) : "general";
       const project = configuredProject ? executionProjectContext(configuredProject, role) : null;
       const decision = project ? inferRoutineAcceptanceCriteria(proposed, project, item, role) : proposed;
-      const route = routeDecision(decision, project ? [project] : projects, selectedProject);
+      let route = routeDecision(decision, project ? [project] : projects, selectedProject);
       if (leaseHeartbeatError) throw leaseHeartbeatError;
       if (this.store.shared) await this.store.assertLease(decisionLease);
       await this.store.change((data) => {
@@ -86,6 +124,20 @@ export class Engine {
         if (repeated && ["Needs Clarification", "Review"].includes(route.state)) {
           this.store.move(data, current, "Blocked", `Decision provider repeated already resolved decision ${repeated.decision_key}.`);
           current.processes = [];
+          current.execution_eligible = false;
+          const attempt = current.triage?.attempts?.at(-1);
+          if (attempt) {
+            attempt.finished_at = new Date(this.clock()).toISOString();
+            attempt.outcome = "Blocked";
+            attempt.reason = current.history.at(-1).reason;
+          }
+          current.triage.status = "Blocked";
+          current.triage.reason = current.history.at(-1).reason;
+          current.triage.last_evaluated_revision = current.revision;
+          current.triage.failure_count = 0;
+          current.triage.last_error = null;
+          current.triage.next_attempt_at = null;
+          current.triage.blocked_fingerprint = triageFingerprint(current, data, this.config, this.store);
           return;
         }
         current.decision_history ??= [];
@@ -98,10 +150,32 @@ export class Engine {
         current.project_context = project ?? null;
         current.agent_role = project ? role : null;
         current.processes = [];
+        if (route.state === "Reconciled") {
+          const target = exactReconciliationTarget(data, current, decision.reconcile_with);
+          if (target) {
+            current.reconciled_with = target.id;
+            current.provenance = current.provenance ? { ...current.provenance, reconciled: true } : current.provenance;
+            route = { state: "Reconciled", reason: `${route.reason} Exact durable target: ${target.id}.` };
+          } else route = { state: "Blocked", reason: "Reconciliation was refused because no exact durable/provenance identity matched the proposed target." };
+        }
+        const unconfiguredHint = !project && (current.project_candidate_id || selectedProject || current.input.project_hint);
+        if (unconfiguredHint && !current.project_candidate_id) {
+          data.project_candidates ??= {};
+          const label = current.input.project_hint ?? selectedProject;
+          const candidateId = `native-${digest(String(label).toLowerCase()).slice(0, 16)}`;
+          data.project_candidates[candidateId] ??= { id: candidateId, name: String(label), status: "candidate", executable: false,
+            source_system: current.input.source ?? "native", first_seen_at: new Date(this.clock()).toISOString(), source_ids: [current.id], record_count: 1 };
+          current.project_candidate_id = candidateId;
+        }
+        if (unconfiguredHint && !["Review", "Archived", "Reconciled"].includes(route.state)
+          && (route.state !== "Needs Clarification" || proposedQuestions.length === 0)) {
+          route = { state: "Blocked", reason: "The referenced project is a non-executable project candidate and has no active runtime configuration." };
+        }
         if (decision.dependencies.some((dependency) => !data.jobs[dependency])) {
           this.store.move(data, current, "Needs Clarification", "Decision referenced unknown dependencies.");
         } else {
           this.store.move(data, current, route.state, route.reason);
+          current.execution_eligible = route.state === "Ready";
           if (route.state === "Ready") this.createJobs(data, current);
         }
         if (["Needs Clarification", "Review"].includes(current.state)) {
@@ -137,10 +211,39 @@ export class Engine {
             outbox.question_count = questions.length;
           }
         }
+        const attempt = current.triage?.attempts?.at(-1);
+        if (attempt) {
+          attempt.finished_at = new Date(this.clock()).toISOString();
+          attempt.outcome = current.state;
+          attempt.reason = current.history.at(-1)?.reason ?? route.reason;
+        }
+        current.triage ??= { attempts: [] };
+        current.triage.status = current.state;
+        current.triage.reason = current.history.at(-1)?.reason ?? route.reason;
+        current.triage.last_evaluated_revision = current.revision;
+        current.triage.failure_count = 0;
+        current.triage.last_error = null;
+        current.triage.next_attempt_at = null;
+        current.triage.blocked_on = decision.blocked_on ?? [];
+        current.triage.interrupted = false;
+        current.triage.blocked_fingerprint = current.state === "Blocked" ? triageFingerprint(current, data, this.config, this.store) : null;
       });
     } catch (error) {
       if (this.store.shared) await this.store.assertLease(decisionLease);
-      await this.store.change((data) => this.store.move(data, data.items[id], "Blocked", `Decision failed: ${error.message}`));
+      await this.store.change((data) => {
+        const current = data.items[id];
+        const failures = (current.triage?.failure_count ?? 0) + 1;
+        const delay = triageBackoff(this.config, failures);
+        if (current.state === "Decision") this.store.move(data, current, "Depot", `Triage failed; retry deferred for ${delay}ms: ${error.message}`);
+        current.processes = [];
+        current.triage ??= { attempts: [] };
+        const attempt = current.triage.attempts?.at(-1);
+        if (attempt) { attempt.finished_at = new Date(this.clock()).toISOString(); attempt.error = error.message; }
+        current.triage.status = "backoff";
+        current.triage.failure_count = failures;
+        current.triage.last_error = error.message;
+        current.triage.next_attempt_at = new Date(this.clock() + delay).toISOString();
+      });
     }
     } finally {
       if (leaseHeartbeat) clearInterval(leaseHeartbeat);
@@ -154,7 +257,7 @@ export class Engine {
       data.jobs[id] = record(id, { state: "Ready", parent_id: item.id, project_id: item.project_id,
         work, agent_role: item.agent_role ?? "general", project_context: item.project_context, policy_hash: item.policy_hash,
         dependencies: [...item.decision.dependencies, ...(index ? [`${item.id}-${index}`] : [])],
-        attempts: [], processes: [], position: Object.keys(data.jobs).length });
+        attempts: [], processes: [], priority_rank: priorityRank(item), position: Object.keys(data.jobs).length });
       return id;
     });
   }
@@ -384,6 +487,103 @@ export class Engine {
       release();
     }
   }
+  retryTriage(id, expectedRevision, actor = "local-user") {
+    if (!actor?.trim()) throw new Error("Triage retry requires an actor.");
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new Error("Triage retry requires a positive expected revision.");
+    return this.store.change((data) => {
+      const item = data.items[id];
+      if (!item || item.revision !== expectedRevision || item.job_ids?.length || !["Depot", "Blocked"].includes(item.state)) {
+        throw new Error("Only the current unstarted Depot or Blocked revision can be retried.");
+      }
+      item.triage ??= { attempts: [], failure_count: 0 };
+      item.triage.retry_requested_at = new Date(this.clock()).toISOString();
+      item.triage.retry_requested_by = actor;
+      item.triage.next_attempt_at = null;
+      return item;
+    });
+  }
+  async triageItem(id, existingLease = null) {
+    const itemLease = this.store.shared && !existingLease
+      ? await this.store.acquireLease("item", id, { operation: "triage" })
+      : existingLease;
+    if (this.store.shared && !itemLease) return false;
+    const releaseLease = this.store.shared && !existingLease;
+    try {
+      let eligible = false;
+      await this.store.change((data) => {
+        const item = data.items[id];
+        if (!item) return;
+        const fingerprint = triageFingerprint(item, data, this.config, this.store);
+        const selected = selectTriageCandidates({ ...data, items: { [id]: item } }, this.config, this.store,
+          { now: this.clock(), limit: 1 });
+        if (!selected.length) return;
+        data.system_metadata ??= {};
+        const scheduler = data.system_metadata.triage_scheduler ?? { sequence: 0 };
+        scheduler.sequence += 1;
+        scheduler.last_selected_at = new Date(this.clock()).toISOString();
+        scheduler.last_item_id = id;
+        data.system_metadata.triage_scheduler = scheduler;
+        item.triage ??= { attempts: [], failure_count: 0 };
+        item.triage.last_selected_sequence = scheduler.sequence;
+        item.triage.selection_fingerprint = fingerprint;
+        if (item.state === "Imported Pending") {
+          const now = new Date(this.clock()).toISOString();
+          for (const question of item.questions ?? []) {
+            if (question.status !== "open") continue;
+            question.status = "superseded";
+            question.revision += 1;
+            question.updated_at = now;
+            question.superseded_by = "continuous-triage";
+          }
+          item.imported_release = {
+            actor: "continuous-triage",
+            at: now,
+            from_revision: item.revision,
+            provenance: item.provenance ? { source_system: item.provenance.source_system, source_id: item.provenance.source_id } : null,
+            legacy_status: item.legacy_depot?.Status ?? null,
+            legacy_workflow_state: item.legacy_depot?.["Workflow State"] ?? null,
+            reason: "Safe explicit triage release; legacy readiness is context only and grants no execution authority.",
+          };
+          item.reevaluation = { actor: "continuous-triage", at: now, trigger: "continuous_imported_pending" };
+          item.requires_reevaluation = false;
+          item.execution_eligible = false;
+          this.store.move(data, item, "Depot", "Imported Pending released for explicit Roundhouse triage; legacy status is evidence, not execution authority.");
+        }
+        eligible = true;
+      });
+      if (!eligible) return false;
+      await this.decide(id, itemLease);
+      return true;
+    } finally {
+      if (releaseLease) await this.store.releaseLease(itemLease).catch(() => {});
+    }
+  }
+  async runTriage({ projectId, limit = this.config.triage.max_per_tick } = {}) {
+    if (projectId && !this.config.projects.some((project) => project.id === projectId)) throw new Error("Unknown project filter.");
+    const release = this.store.shared ? () => {} : this.store.acquireTriageLease();
+    try {
+      if (this.store.shared) {
+        await this.store.heartbeatNode("online");
+        await this.store.recoverExpiredClaims();
+      }
+      const snapshot = await this.store.read();
+      const candidates = selectTriageCandidates(snapshot, this.config, this.store, { now: this.clock(), limit, projectId });
+      let triaged = 0;
+      for (let offset = 0; offset < candidates.length; offset += this.config.triage.max_concurrent) {
+        const batch = candidates.slice(offset, offset + this.config.triage.max_concurrent);
+        const outcomes = await Promise.all(batch.map(async ({ item }) => {
+          if (!this.store.shared) return this.triageItem(item.id);
+          const lease = await this.store.acquireLease("item", item.id, { operation: "triage" });
+          if (!lease) return false;
+          try { return await this.triageItem(item.id, lease); }
+          finally { await this.store.releaseLease(lease).catch(() => {}); }
+        }));
+        triaged += outcomes.filter(Boolean).length;
+      }
+      const state = await this.store.read();
+      return { triaged, triage_limit_reached: Number.isFinite(limit) && triaged >= limit, ...state };
+    } finally { release(); }
+  }
   async execute(id, project, jobLease = null) {
     let releaseRepo;
     let projectLease;
@@ -490,29 +690,30 @@ export class Engine {
     });
   }
   async run({ projectId } = {}) {
-    if (this.store.shared) return this.runShared({ projectId });
+    const triage = await this.runTriage({ projectId, limit: Infinity });
+    const dispatch = await this.runDispatch({ projectId });
+    return { ...dispatch, triaged: triage.triaged };
+  }
+  async runDispatch({ projectId } = {}) {
+    if (this.store.shared) return this.runSharedDispatch({ projectId });
     const release = this.store.acquireWorkerLease();
     let executed = 0;
     try {
       if (projectId && !this.config.projects.some((p) => p.id === projectId)) throw new Error("Unknown project filter.");
       const snapshot = await this.store.read();
-      if ([...Object.values(snapshot.items), ...Object.values(snapshot.jobs)].some((j) => ["Executing", "Verification", "Rework"].includes(j.state) || (j.state === "Decision" && !j.awaiting_decision))) throw new Error("Interrupted work requires recovery, not automatic replay.");
-      const decisionCandidates = Object.values(snapshot.items)
-        .filter((item) => item.state === "Depot" || item.awaiting_decision)
-        .sort((a, b) => itemPriority(a) - itemPriority(b) || String(a.created_at).localeCompare(String(b.created_at)) || a.id.localeCompare(b.id));
-      for (const item of decisionCandidates) {
-        if (projectId && item.input.project_id && item.input.project_id !== projectId) continue;
-        await this.decide(item.id);
-      }
+      if (Object.values(snapshot.jobs).some((job) => ["Executing", "Verification", "Rework"].includes(job.state))) throw new Error("Interrupted execution requires recovery, not automatic replay.");
       const stopped = new Set();
       while (executed < this.config.max_jobs_per_run) {
         const state = await this.store.read();
-        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review"));
+        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review")
+          && (this.shipping.canDispatch?.(p) ?? true)
+          && Object.values(state.jobs).filter((job) => job.project_id === p.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < p.max_concurrent_runs);
         // Weighted turns across projects; each project's own order is preserved.
         candidates.sort((a, b) => ((state.projects[a.id]?.turns ?? 0) / a.weight) - ((state.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
         let selected;
         for (const project of candidates) {
-          const job = Object.values(state.jobs).filter((j) => j.project_id === project.id && j.state === "Ready" && j.dependencies.every((id) => state.jobs[id]?.state === "Shipped")).sort((a, b) => a.position - b.position)[0];
+          const job = Object.values(state.jobs).filter((j) => j.project_id === project.id && j.state === "Ready" && j.dependencies.every((id) => state.jobs[id]?.state === "Shipped"))
+            .sort((a, b) => priorityRank(a) - priorityRank(b) || a.position - b.position)[0];
           if (job) { selected = { project, job }; break; }
         }
         if (!selected) break;
@@ -534,35 +735,22 @@ export class Engine {
     } finally { release(); }
   }
 
-  async runShared({ projectId } = {}) {
+  async runSharedDispatch({ projectId } = {}) {
     let executed = 0;
     if (projectId && !this.config.projects.some((project) => project.id === projectId)) throw new Error("Unknown project filter.");
     await this.store.heartbeatNode("online");
     await this.store.recoverExpiredClaims();
 
-    let snapshot = await this.store.read();
-    const decisionCandidates = Object.values(snapshot.items)
-      .filter((item) => item.state === "Depot" || item.awaiting_decision)
-      .sort((a, b) => itemPriority(a) - itemPriority(b) || String(a.created_at).localeCompare(String(b.created_at)) || a.id.localeCompare(b.id));
-    for (const item of decisionCandidates) {
-      if (projectId && item.input.project_id && item.input.project_id !== projectId) continue;
-      const lease = await this.store.acquireLease("item", item.id, { operation: "decision" });
-      if (!lease) continue;
-      try {
-        const current = (await this.store.read()).items[item.id];
-        if (current && (current.state === "Depot" || current.awaiting_decision)) await this.decide(item.id, lease);
-      } finally {
-        await this.store.releaseLease(lease).catch(() => {});
-      }
-    }
-
+    let snapshot;
     const stopped = new Set();
     while (executed < this.config.max_jobs_per_run) {
       snapshot = await this.store.read();
       const candidates = this.config.projects.filter((project) => (!projectId || project.id === projectId)
         && project.status === "active" && !stopped.has(project.id) && !snapshot.projects[project.id]?.blocked
         && !snapshot.projects[project.id]?.stop && !snapshot.projects[project.id]?.review_required
-        && !Object.values(snapshot.items).some((item) => item.project_id === project.id && item.state === "Review"));
+        && !Object.values(snapshot.items).some((item) => item.project_id === project.id && item.state === "Review")
+        && (this.shipping.canDispatch?.(project) ?? true)
+        && Object.values(snapshot.jobs).filter((job) => job.project_id === project.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < project.max_concurrent_runs);
       candidates.sort((a, b) => ((snapshot.projects[a.id]?.turns ?? 0) / a.weight) - ((snapshot.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
       if (!candidates.length) break;
       const claim = await this.store.claimJob(candidates.map((project) => project.id));

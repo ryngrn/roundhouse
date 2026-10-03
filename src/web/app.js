@@ -40,6 +40,8 @@ function renderConnection(overview) {
   $("#connection").className = "connection connected";
   const countIds = { needs_you: "needs", active: "active", queued: "queued", completed: "completed", blocked: "blocked" };
   for (const [key, id] of Object.entries(countIds)) $(`#count-${id}`).textContent = overview.counts[key];
+  const next = overview.next_departure;
+  $("#next-departure").textContent = next ? `Next departure · ${next.title}${next.priority ? ` · ${next.priority}` : ""}` : "Next departure · none ready";
 }
 
 function rowMeta(label, value, className = "") {
@@ -56,7 +58,7 @@ function workRow(item) {
   const kicker = node("span", undefined, "row-kicker");
   kicker.append(node("span", item.display_state, `state state-${slug(item.display_state)}`));
   if (item.priority) kicker.append(node("span", item.priority, "priority"));
-  identity.append(kicker, node("strong", item.title), node("span", item.reason || item.brief || item.summary, "row-reason"));
+  identity.append(kicker, node("strong", item.title), node("span", item.triage?.reason || item.reason || item.brief || item.summary, "row-reason"));
   const facts = node("span", undefined, "row-facts");
   facts.append(
     rowMeta("Role", item.agent_role || "Unassigned"),
@@ -75,9 +77,9 @@ function workRow(item) {
 function groupStatus(items) {
   return {
     needs: items.filter((item) => item.needs_you).length,
-    active: items.filter((item) => ["Decision", "Executing", "Verification", "Rework"].includes(item.state)).length,
-    queued: items.filter((item) => ["Depot", "Ready", "Imported Pending"].includes(item.state) && !item.needs_you).length,
-    shipped: items.filter((item) => ["Shipped", "Imported History"].includes(item.state)).length,
+    active: items.filter((item) => ["Executing", "Verification", "Rework"].includes(item.state)).length,
+    queued: items.filter((item) => item.state === "Ready" && !item.needs_you).length,
+    shipped: items.filter((item) => ["Shipped", "Imported History", "Archived", "Reconciled"].includes(item.state)).length,
     blocked: items.filter((item) => item.state === "Blocked").length,
   };
 }
@@ -103,7 +105,7 @@ function renderBoard(overview) {
     const title = node("div"); title.append(node("span", group.type === "project" ? "Project" : group.type === "candidate" ? "Candidate" : "Intake", "eyebrow"), node("h3", group.name), node("p", group.detail || "", "project-detail"));
     const counts = groupStatus(group.items);
     const atGlance = node("dl", undefined, "project-counts");
-    for (const [label, value] of [["Needs You", counts.needs], ["Active", counts.active], ["Queued", counts.queued], ["Shipped", counts.shipped], ["Blocked", counts.blocked]]) {
+    for (const [label, value] of [["Needs a signal", counts.needs], ["Chugging along…", counts.active], ["Ready to depart", counts.queued], ["Reached the station", counts.shipped], ["Held up", counts.blocked]]) {
       const cell = node("div"); cell.append(node("dt", label), node("dd", String(value))); atGlance.append(cell);
     }
     heading.append(title, atGlance); section.append(heading);
@@ -128,7 +130,7 @@ function detailSection(title, value, className = "") {
 
 function renderOverview(item) {
   const root = node("div", undefined, "detail-grid");
-  for (const section of [detailSection("Outcome", item.outcome || item.brief || "Outcome is still being defined.", "featured"), detailSection("Brief", item.brief), detailSection("Context", item.context), detailSection("Acceptance criteria", item.acceptance_criteria)]) if (section) root.append(section);
+  for (const section of [detailSection("Outcome", item.outcome || item.brief || "Outcome is still being defined.", "featured"), detailSection("Triage activity", item.triage), detailSection("Brief", item.brief), detailSection("Context", item.context), detailSection("Acceptance criteria", item.acceptance_criteria)]) if (section) root.append(section);
   const raw = node("details", undefined, "raw-details"); raw.append(node("summary", "Raw intake"), node("p", item.raw_intake)); root.append(raw);
   if (item.legacy) { const legacy = node("details", undefined, "raw-details"); legacy.append(node("summary", "Imported record fields"), node("pre", JSON.stringify(item.legacy, null, 2))); root.append(legacy); }
   return root;

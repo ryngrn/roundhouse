@@ -2,9 +2,11 @@
 
 [Public documentation and onboarding](https://ryngrn.github.io/roundhouse/)
 
-Roundhouse turns incoming ideas in the **Depot** into policy-controlled work:
-interpret the request, resolve the project, execute, verify, ship, and optionally
-continue the project's queue. Review means a human decision is needed.
+Roundhouse turns incoming ideas in the **Depot** into policy-controlled work. A
+continuous triage control plane interprets and classifies requests, reconciles exact
+duplicates, slices broad work, asks only decision-changing questions, and makes safe
+work Ready. A separate dispatcher claims eligible work, executes, verifies, ships,
+and optionally continues the project's queue.
 
 The complete vertical slice can run locally or across nodes, with a durable workflow and replaceable
 decision, execution, verification, shipping/deployment, and source adapters. The
@@ -91,9 +93,10 @@ are repository-relative and contain no personal machine settings.
 - [Notion Depot archive and one-time cutover](docs/chatgpt-rdc-bridge.md)
 - [ChatGPT MCP adapter setup and testing](docs/chatgpt-mcp.md)
 
-The local adapter has one execution slot per state directory. PostgreSQL workers use
-atomic claims plus job and project leases across nodes. Both support project queue
-order, bounded rework, duplicate guards, and conservative crash recovery. Remote
+The local adapter has one execution slot per state directory and an independent
+triage lease. PostgreSQL workers use atomic claims plus item, job, and project leases
+across nodes. Both support priority/fair queue order, bounded triage backoff and
+rework, exact-identity duplicate guards, and conservative crash recovery. Remote
 execution runtimes, PR creation, and merging remain extension points. Deployment is available through
 the fixture provider for proof and a configurable command provider for real systems.
 

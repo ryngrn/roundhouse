@@ -372,7 +372,7 @@ export class PostgresStorageRepository extends StorageRepository {
               LEFT JOIN roundhouse.jobs dependency ON dependency.id=d.depends_on_job_id
               WHERE d.job_id=j.id AND dependency.state IS DISTINCT FROM 'Shipped'
             )
-          ORDER BY j.position,j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED
+          ORDER BY COALESCE((j.payload->>'priority_rank')::integer,100),j.position,j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED
         ), lease AS (
           INSERT INTO roundhouse.resource_leases(resource_kind,resource_key,owner_node_id,token,acquired_at,heartbeat_at,expires_at,payload)
           SELECT 'job',id,$2,$3,clock_timestamp(),clock_timestamp(),clock_timestamp()+($4 * interval '1 millisecond'),'{}'::jsonb FROM candidate
@@ -410,7 +410,12 @@ export class PostgresStorageRepository extends StorageRepository {
       }
       for (const { id } of expiredItems) {
         const item = data.items[id];
-        if (item?.state === "Decision") this.move(data, item, "Blocked", "Expired owner lease interrupted decision work; explicit reconsideration is required.");
+        if (item?.state === "Decision") {
+          this.move(data, item, "Blocked", "Expired owner lease interrupted decision work; explicit retry is required.");
+          item.triage ??= { attempts: [], failure_count: 0 };
+          item.triage.status = "interrupted";
+          item.triage.interrupted = true;
+        }
       }
       const recovered = expired.length + expiredItems.length;
       if (recovered) await writeSnapshot(client, data);

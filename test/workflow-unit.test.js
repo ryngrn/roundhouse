@@ -32,6 +32,9 @@ test("unit: threshold boundaries, authority, configuration routing and readiness
   for (const changes of [{ approval_required: true }, { safe_to_execute: false }, { decision: "review" }]) assert.equal(routeDecision({ ...decision, ...changes }, [project]).state, "Review");
   assert.equal(routeDecision(decision, [{ ...project, policy: { ...project.policy, allow_autonomous: false } }]).state, "Review");
   assert.equal(routeDecision(decision, [{ ...project, status: "paused" }]).state, "Blocked");
+  assert.equal(routeDecision({ ...decision, decision: "archive", project_confidence: 0.95 }, []).state, "Archived");
+  assert.equal(routeDecision({ ...decision, decision: "reconcile", project_confidence: 0.95, reconcile_with: "durable-item" }, []).state, "Reconciled");
+  assert.equal(routeDecision({ ...decision, decision: "block", blocked_on: ["runtime"] }, []).state, "Blocked");
   assert.equal(routeDecision(decision, [project], "different").state, "Needs Clarification");
   assert.throws(() => validateDecision({ ...decision, project_confidence: 2 }));
   assert.throws(() => validateDecision({ ...decision, private_reasoning: "not allowed" }));

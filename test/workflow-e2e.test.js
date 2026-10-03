@@ -115,7 +115,7 @@ test("integration: a second worker cannot claim or delete the first worker's lea
   const h = harness(); h.submit("slow change");
   const first = h.engine.run();
   await assert.rejects(() => new Engine({ store: h.store, config: h.config }).run(), /Locked/);
-  assert.ok(fs.existsSync(h.store.workerLock));
+  assert.ok(fs.existsSync(h.store.triageLock) || fs.existsSync(h.store.workerLock));
   assert.equal((await first).executed, 1);
 });
 test("integration: verification changing the committed version cannot ship", async () => {

@@ -3,6 +3,11 @@ decision:
   kind: codex
   bin: codex
 max_jobs_per_run: 10
+triage:
+  max_per_tick: 1
+  max_concurrent: 1
+  base_backoff_ms: 30000
+  max_backoff_ms: 3600000
 projects:
   - id: roundhouse
     name: Roundhouse
@@ -10,12 +15,15 @@ projects:
     success_state: Depot work is interpreted, executed, verified, and delivered under explicit project policy.
     status: active
     repository: ..
-    base_ref: HEAD
+    base_ref: codex/chatgpt-depot
     remote: origin
-    context_sources: [README.md, docs/autonomous-workflow.md, docs/architecture.md]
+    context_sources: [README.md, docs/autonomous-workflow.md, docs/architecture.md, docs/postgresql-control-plane.md]
     weight: 1
     max_concurrent_runs: 1
     runtime: local
+    self_hosting:
+      isolated_worktree: true
+      restart_after_delivery: false
     executor:
       kind: codex
       bin: codex
@@ -27,11 +35,11 @@ projects:
       continuation: stop_after_job
       max_rework_attempts: 1
     verification:
-      - id: dependencies
-        command: [npm, ci, --ignore-scripts, --prefer-offline]
       - id: tests
         command: [npm, test]
+      - id: acceptance
+        command: [npm, run, acceptance]
       - id: syntax
         command: [npm, run, check]
       - id: whitespace
-        command: [git, diff, --check, HEAD^, HEAD]
+        command: [git, diff, --check]

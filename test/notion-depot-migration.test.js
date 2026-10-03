@@ -86,7 +86,7 @@ test("exact rerun is a no-op and a changed source record reports conflict withou
   assert.equal(first.export_digest, exportFileDigest(bytes));
 });
 
-test("Ready and Running imports never reach decision or worker execution solely because of import", async (t) => {
+test("Ready and Running import labels trigger explicit triage but never direct worker execution", async (t) => {
   const { store } = setup(t);
   const exported = { rows: fixture.rows.slice(2, 4) };
   importNotionDepot({ store, exportData: exported, exportDigest: exportFileDigest(Buffer.from(JSON.stringify(exported))), configuredProjects });
@@ -94,12 +94,14 @@ test("Ready and Running imports never reach decision or worker execution solely 
   const engine = new Engine({
     store,
     config: { projects: [], max_jobs_per_run: 10 },
-    decision: { decide: async () => { decisions += 1; throw new Error("must not decide"); } },
+    decision: { decide: async () => { decisions += 1; throw new Error("triage fixture failure"); } },
   });
   const result = await engine.run();
   assert.equal(result.executed, 0);
-  assert.equal(decisions, 0);
-  assert.deepEqual(Object.values(store.read().items).map((item) => item.state), ["Imported Pending", "Imported Pending"]);
+  assert.equal(result.triaged, 2);
+  assert.equal(decisions, 2);
+  assert.deepEqual(Object.values(store.read().items).map((item) => item.state), ["Depot", "Depot"]);
+  assert.ok(Object.values(store.read().items).every((item) => item.imported_release && item.execution_eligible === false));
   assert.equal(Object.keys(store.read().jobs).length, 0);
 });
 

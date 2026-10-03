@@ -11,6 +11,7 @@ Notion prototype is available only through the one-time archive importer.
 | Decision provider | Structured Codex response or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
 | Agent-role composer | Role manifest plus bounded Markdown skills and project context | General or Designer execution context and required evidence |
 | Durable workflow | PostgreSQL repository (shared) or explicit local repository, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
+| Triage control plane | Independent bounded worker pass with durable attempts/backoff | Release imported work safely, classify, reconcile exact identities, slice, question, block, or make Ready |
 | Execution runtime | Local subprocess, Codex or configured command | `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
@@ -35,9 +36,10 @@ a structured conflict and zero answers are applied. The legacy MCP
 `answer_question` tool remains available for external single-question clients.
 
 The combined local server owns the browser control room, JSON API, MCP endpoint,
-and a bounded worker loop. HTTP handlers contain no routing, approval, execution,
-or shipping policy. The loop calls the same Engine used by the CLI, so worker locks
-and conservative recovery continue to govern both paths.
+and independent bounded triage and dispatch loops. HTTP handlers contain no routing,
+approval, execution, or shipping policy. A long execution does not starve triage.
+The loops call the same Engine used by the CLI, so worker locks, item leases, durable
+backoff, and conservative recovery continue to govern both paths.
 
 MCP Events is an outbound status adapter, not a second workflow. Subscriptions,
 verification records, delivery attempts, stable event IDs, and retry state share
@@ -71,8 +73,18 @@ it is never a fallback when shared PostgreSQL is unavailable.
 
 One-time Notion Depot imports add immutable provenance, legacy metadata,
 non-executable project candidates, and a durable cutover marker. `Imported History`
-and `Imported Pending` are never worker candidates. A pending record must first be
-explicitly re-evaluated into the native decision lifecycle.
+is terminal. `Imported Pending` is eligible only for the triage control plane: triage
+first commits a release into Depot with legacy status and provenance recorded as
+non-authoritative evidence, then performs a normal native evaluation. It can never
+be claimed directly by the execution scheduler.
+
+Triage attempts, errors, exponential backoff, dependency fingerprints, import-release
+evidence, decisions, and questions live on the durable item projection. Needs-a-signal
+items are not re-polled until a human answer changes their revision. Held-up items are
+not re-polled until a retry is requested or relevant project/config/dependency state
+changes. Shared workers claim item leases before evaluation, while local triage uses a
+separate filesystem lease from execution. Exact durable or provenance identities are
+required for automatic reconciliation; prose similarity is never sufficient.
 
 Claim intent, runtime process IDs, candidate commits, verification evidence, and
 delivery intent are persisted at their boundaries. A restart never assumes an

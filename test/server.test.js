@@ -95,7 +95,7 @@ test("local server: protected UI, health, API, worker, evidence, config, and not
   const page = await request(running.url, "/");
   assert.equal(page.status, 200);
   assert.match(page.text, /Roundhouse Control Room/);
-  assert.match(page.text, /Needs You/);
+  assert.match(page.text, /Needs a signal/);
   assert.match(page.text, /Project configuration/);
   assert.equal((await request(running.url, "/health")).json().status, "ok");
 

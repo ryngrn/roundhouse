@@ -15,6 +15,12 @@ export function git(cwd, args, optional = false) {
 }
 
 export class GitDelivery {
+  canDispatch(project) {
+    if (!project.self_hosting) return true;
+    if (git(project.repository, ["status", "--porcelain"])) return false;
+    const common = git(project.repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    return !fs.existsSync(path.join(common, "roundhouse-worker.lock"));
+  }
   supports(projectOrPolicy) {
     if (typeof projectOrPolicy === "string") return ["commit_only", "push_branch"].includes(projectOrPolicy);
     return ["commit_only", "push_branch"].includes(projectOrPolicy.policy.shipping) ||

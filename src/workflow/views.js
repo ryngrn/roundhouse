@@ -1,3 +1,5 @@
+import { displayState } from "./presentation.js";
+
 function aggregateState(item, jobs) {
   if (!jobs.length) return item.state;
   if (jobs.every((job) => job.state === "Shipped")) return "Shipped";
@@ -67,13 +69,20 @@ export function itemView(data, item) {
       revision: question.revision, kind: question.kind, prompt: question.prompt,
     })),
     needs_you: openQuestions.length > 0,
-    display_state: openQuestions.length ? "Needs You" : state,
+    display_state: displayState(state, { needsYou: openQuestions.length > 0 }),
     outcome,
     imported: Boolean(provenance?.source_system === "notion"),
     provenance,
     legacy,
     requires_reevaluation: item.requires_reevaluation === true,
     execution_eligible: item.execution_eligible !== false,
+    triage: item.triage ? {
+      status: item.triage.status ?? null,
+      reason: item.triage.reason ?? item.history.at(-1)?.reason ?? null,
+      attempts: item.triage.attempts?.length ?? 0,
+      next_attempt_at: item.triage.next_attempt_at ?? null,
+      last_error: item.triage.last_error ?? null,
+    } : null,
     created_at: item.created_at ?? null,
     updated_at: item.updated_at ?? null,
     agent_role: currentJob?.agent_role ?? item.agent_role ?? null,
@@ -102,7 +111,20 @@ export function statusView(data, filters = {}) {
     .map((item) => itemView(data, item))
     .sort((a, b) => (data.items[a.id].priority_rank ?? 100) - (data.items[b.id].priority_rank ?? 100)
       || String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")) || a.id.localeCompare(b.id));
-  return { items, projects: data.projects, project_candidates: data.project_candidates ?? {}, system_metadata: data.system_metadata ?? {} };
+  const nextJob = Object.values(data.jobs)
+    .filter((job) => job.state === "Ready" && job.project_context?.status === "active"
+      && !data.projects?.[job.project_id]?.blocked && !data.projects?.[job.project_id]?.stop && !data.projects?.[job.project_id]?.review_required
+      && (job.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped"))
+    .sort((a, b) => (a.priority_rank ?? 100) - (b.priority_rank ?? 100) || (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id))[0];
+  const nextItem = nextJob ? data.items[nextJob.parent_id] : null;
+  const next_departure = nextJob && nextItem ? {
+    item_id: nextItem.id,
+    job_id: nextJob.id,
+    project_id: nextJob.project_id,
+    title: nextJob.work?.title ?? nextItem.input?.text?.slice(0, 160) ?? "Untitled work",
+    priority: nextItem.priority ?? null,
+  } : null;
+  return { items, next_departure, projects: data.projects, project_candidates: data.project_candidates ?? {}, system_metadata: data.system_metadata ?? {} };
 }
 
 export function needsHumanView(data, filters = {}) {
@@ -125,7 +147,7 @@ export function needsHumanView(data, filters = {}) {
   return { questions };
 }
 
-const notificationStates = new Set(["Needs Clarification", "Review", "Blocked", "Shipped"]);
+const notificationStates = new Set(["Needs Clarification", "Review", "Blocked", "Shipped", "Archived", "Reconciled"]);
 
 export function notificationView(data, { after } = {}) {
   const events = data.outbox ?? [];
@@ -147,7 +169,7 @@ export function notificationView(data, { after } = {}) {
       state: event.state,
       item_id: event.item_id,
       entity_id: event.entity_id,
-      title: kind === "needs_you" ? "Roundhouse needs you" : kind === "failure" ? "Roundhouse work blocked" : "Roundhouse work shipped",
+      title: kind === "needs_you" ? "Roundhouse needs a signal" : kind === "failure" ? "Roundhouse work held up" : "Roundhouse reached the station",
       message: event.reason,
       project: entity?.project_id ?? item?.project_id ?? null,
       at: event.at,

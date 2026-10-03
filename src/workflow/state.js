@@ -2,14 +2,16 @@ export const transitions = {
   "Imported Pending": ["Depot"],
   "Imported History": [],
   Depot: ["Decision"],
-  Decision: ["Ready", "Needs Clarification", "Review"],
+  Decision: ["Depot", "Ready", "Needs Clarification", "Review", "Archived", "Reconciled"],
   "Needs Clarification": ["Decision"],
   Ready: ["Executing", "Review"],
   Executing: ["Verification", "Rework", "Review"],
   Verification: ["Shipped", "Rework", "Review"],
   Rework: ["Executing"],
   Review: ["Ready", "Decision"],
-  Blocked: [],
+  Blocked: ["Decision"],
+  Archived: [],
+  Reconciled: [],
   Shipped: [],
 };
 

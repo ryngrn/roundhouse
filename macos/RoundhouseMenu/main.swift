@@ -27,7 +27,7 @@ struct NoticePage: Decodable {
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let health = NSMenuItem(title: "Roundhouse is starting…", action: nil, keyEquivalent: "")
-    private let counts = NSMenuItem(title: "Needs You 0 · Active 0", action: nil, keyEquivalent: "")
+    private let counts = NSMenuItem(title: "Needs a signal 0 · Chugging along 0", action: nil, keyEquivalent: "")
     private var timer: Timer?
     private let base = URL(string: "http://roundhouse")!
     private let directBase = URL(string: "http://127.0.0.1:8787")!
@@ -76,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 let frontHealthy = frontError == nil && (frontResponse as? HTTPURLResponse)?.statusCode == 200
                 DispatchQueue.main.async {
                     self.health.title = frontHealthy ? "● App and front door healthy" : "● Front door unavailable · app healthy"
-                    self.counts.title = "Needs You \(overview.counts.needsYou) · Active \(overview.counts.active) · Blocked \(overview.counts.blocked)"
+                    self.counts.title = "Needs a signal \(overview.counts.needsYou) · Chugging along \(overview.counts.active) · Held up \(overview.counts.blocked)"
                     self.item.button?.title = !frontHealthy ? "R!" : overview.counts.needsYou > 0 || overview.counts.blocked > 0 ? "R•" : "R"
                 }
             }.resume()

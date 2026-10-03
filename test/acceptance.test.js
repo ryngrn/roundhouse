@@ -284,7 +284,7 @@ test("acceptance: real browser UI works on insecure roundhouse-compatible HTTP",
   assert.equal(Object.values(new Store(fixture.stateDirectory).read().items).length, 1);
   await postJson(running.url, "/api/worker/tick", {});
   await page.locator("#refresh").click();
-  await expectText(page, "#project-board", /Shipped\s*1/);
+  await expectText(page, "#project-board", /Reached the station\s*1/);
   await expectText(page, "#project-board", /autonomous acceptance/);
 
   await page.locator("#edit-config").click();
@@ -296,7 +296,7 @@ test("acceptance: real browser UI works on insecure roundhouse-compatible HTTP",
   await expectText(page, "#config-message", /Project id must be a stable lowercase slug/);
 });
 
-test("acceptance: real browser Needs You drafts and approvals survive polling", async (t) => {
+test("acceptance: real browser Needs a signal drafts and approvals survive polling", async (t) => {
   if (!fs.existsSync(chrome)) return t.skip("Google Chrome is not installed.");
   const fixture = tempProject({ approvalRequired: false, autonomous: true });
   const running = await startRoundhouseServer({
@@ -322,7 +322,7 @@ test("acceptance: real browser Needs You drafts and approvals survive polling", 
   t.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(`http://roundhouse-compatible:${new URL(running.url).port}/`, { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: /Open human review acceptance, Needs You/ }).click();
+  await page.getByRole("button", { name: /Open human review acceptance, Needs a signal/ }).click();
   const answer = page.locator("#decision-answer");
   await answer.fill("Manual README inspection");
   await answer.press("Shift+Enter");
@@ -333,13 +333,13 @@ test("acceptance: real browser Needs You drafts and approvals survive polling", 
   await page.evaluate(() => document.querySelector("#refresh").click());
   assert.equal(await page.locator("#decision-answer").inputValue(), "Manual README inspection plus the configured clean-git check is acceptable.");
   await page.getByRole("button", { name: "Submit 1 answer" }).click();
-  await page.getByRole("button", { name: /Open human review acceptance, Needs You/ }).click();
+  await page.getByRole("button", { name: /Open human review acceptance, Needs a signal/ }).click();
   await expectText(page, "#work-modal-content", /Approve the verified disposable change/);
   await page.locator("#decision-answer").fill("approve");
   await page.getByRole("button", { name: "Submit 1 answer" }).click();
   await postJson(running.url, "/api/worker/tick", {});
   await page.locator("#refresh").click();
-  await expectText(page, "#project-board", /Shipped\s*1/);
+  await expectText(page, "#project-board", /Reached the station\s*1/);
   assert.equal(Object.values(new Store(fixture.stateDirectory).read().jobs)[0].state, "Shipped");
 });
 
@@ -374,11 +374,11 @@ test("acceptance: project-first dashboard runs seven-question atomic sessions wi
     data.project_candidates.roundhouse = { id: "roundhouse", name: "Roundhouse", status: "candidate", executable: false, record_count: 1 };
     const open = (item, id, prompt, kind = "imported_decision") => ({ id, decision_id: null, decision_key: `fixture:${id}`, item_id: item.id,
       item_revision: item.revision, revision: 1, kind, prompt, status: "open", created_at: item.created_at, updated_at: item.updated_at });
-    const ipadItem = data.items[ipad.id]; Object.assign(ipadItem, { state: "Imported Pending", requires_reevaluation: true, execution_eligible: false,
+    const ipadItem = data.items[ipad.id]; Object.assign(ipadItem, { state: "Needs Clarification", requires_reevaluation: false, execution_eligible: false,
       project_candidate_id: "ipad", priority: "P2", legacy_depot: { Item: "iPad Monitor — one-cable old iPad display", "Decisions Needed": compound },
       provenance: { source_system: "notion", source: "Roundhouse Depot prototype", source_id: "ipad-source", source_page_url: "https://www.notion.so/ipad" },
       questions: [open(ipadItem, "ipad-compound", compound)] });
-    const drummerItem = data.items[drummer.id]; Object.assign(drummerItem, { state: "Imported Pending", requires_reevaluation: true, execution_eligible: false,
+    const drummerItem = data.items[drummer.id]; Object.assign(drummerItem, { state: "Needs Clarification", requires_reevaluation: false, execution_eligible: false,
       priority: "P2", legacy_depot: { Item: "Drummer You Aren’t — establish new project" },
       provenance: { source_system: "notion", source: "Roundhouse Depot prototype", source_id: "drummer-source" },
       questions: [open(drummerItem, "drummer-name", "Choose the durable project name.")] });
@@ -408,7 +408,7 @@ test("acceptance: project-first dashboard runs seven-question atomic sessions wi
   assert.equal((await page.locator("body").innerText()).includes("Oldest iPad/iPadOS target"), false);
   const rows = page.locator(".work-row"); assert.ok(await rows.count() >= 4);
 
-  await page.getByRole("button", { name: /Open iPad Monitor — one-cable old iPad display, Needs You/ }).click();
+  await page.getByRole("button", { name: /Open iPad Monitor — one-cable old iPad display, Needs a signal/ }).click();
   await expectText(page, ".progress-label", /Question 1 of 7/);
   const answer = page.locator("#decision-answer");
   const longDraft = "The oldest supported target should be iPadOS 15, balancing reused hardware with a maintainable signed application path.";
@@ -443,7 +443,7 @@ test("acceptance: project-first dashboard runs seven-question atomic sessions wi
   assert.equal(persistedIpad.questions.filter((question) => question.status === "answered").length, 7);
   assert.equal(persistedIpad.decision_sessions[0].answers.length, 7);
 
-  await page.getByRole("button", { name: /Open Build the private remote Roundhouse dashboard, Needs You/ }).click();
+  await page.getByRole("button", { name: /Open Build the private remote Roundhouse dashboard, Needs a signal/ }).click();
   await page.locator("#decision-answer").fill("Keep this draft through the conflict.");
   store.change((data) => {
     data.items[remote.id].revision += 1; data.items[remote.id].updated_at = new Date().toISOString();
@@ -457,7 +457,7 @@ test("acceptance: project-first dashboard runs seven-question atomic sessions wi
   page.once("dialog", (dialog) => dialog.accept()); await page.locator("#close-work").click();
   await expectText(page, "#project-board", /Background update is visible/);
 
-  await page.getByRole("button", { name: /Open Drummer You Aren’t — establish new project, Needs You/ }).click();
+  await page.getByRole("button", { name: /Open Drummer You Aren’t — establish new project, Needs a signal/ }).click();
   await page.waitForFunction(() => document.activeElement === document.querySelector("#decision-answer"));
   assert.equal(await page.locator("#decision-answer").evaluate((element) => document.activeElement === element), true);
   await page.locator("#decision-answer").fill("Pocket Orchestra");
@@ -465,7 +465,7 @@ test("acceptance: project-first dashboard runs seven-question atomic sessions wi
   assert.equal(reevaluations, 2);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: /Open Designer homepage work, Shipped/ }).click();
+  await page.getByRole("button", { name: /Open Designer homepage work, Reached the station/ }).click();
   const bounds = await page.locator("#work-dialog").boundingBox();
   assert.deepEqual({ x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) }, { x: 0, y: 0, width: 390, height: 844 });
   await page.getByRole("button", { name: "Evidence" }).click();

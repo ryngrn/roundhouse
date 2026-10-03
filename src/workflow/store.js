@@ -27,6 +27,7 @@ export class Store extends StorageRepository {
     this.node = node ?? loadNodeIdentity(this.directory, env);
     this.file = path.join(this.directory, "state.json");
     this.workerLock = path.join(this.directory, "worker.lock");
+    this.triageLock = path.join(this.directory, "triage.lock");
   }
   status() {
     return { kind: "local", shared: false, authoritative: true, connected: true, read_only: false,
@@ -34,6 +35,7 @@ export class Store extends StorageRepository {
       node: { id: this.node.id, name: this.node.name, capabilities: this.node.capabilities } };
   }
   acquireWorkerLease() { return acquireLock(this.workerLock); }
+  acquireTriageLease() { return acquireLock(this.triageLock); }
   read() {
     if (!fs.existsSync(this.file)) return { schema_version: 1, items: {}, jobs: {}, projects: {}, project_candidates: {}, system_metadata: {}, outbox: [] };
     const data = JSON.parse(fs.readFileSync(this.file, "utf8"));
@@ -96,6 +98,24 @@ export class Store extends StorageRepository {
       }
       fs.unlinkSync(filename);
       fs.rmdirSync(this.workerLock);
+    }
+    const triageOwnerFile = path.join(this.triageLock, "owner.json");
+    if (fs.existsSync(this.triageLock)) {
+      if (!fs.existsSync(triageOwnerFile)) throw new Error("Incomplete triage lock owner metadata. Manual inspection required.");
+      const owner = JSON.parse(fs.readFileSync(triageOwnerFile, "utf8"));
+      if (owner.hostname !== os.hostname() || alive(owner.pid)) throw new Error("Cannot recover a live or remote triage worker.");
+      this.change((state) => {
+        for (const item of Object.values(state.items)) {
+          if (item.state !== "Decision" || item.awaiting_decision) continue;
+          this.move(state, item, "Blocked", "Interrupted triage attempt requires an explicit retry after inspection.");
+          item.triage ??= { attempts: [], failure_count: 0 };
+          item.triage.status = "interrupted";
+          item.triage.interrupted = true;
+          item.triage.blocked_fingerprint = "interrupted";
+        }
+      });
+      fs.unlinkSync(triageOwnerFile);
+      fs.rmdirSync(this.triageLock);
     }
     return this.read();
   }

@@ -37,6 +37,9 @@ const questionSchema = z.object({
   id: z.string(), decision_id: z.string().nullable(), revision: z.number(), kind: z.enum(["clarification", "review", "imported_decision"]), prompt: z.string(),
   item_id: z.string(), item_revision: z.number(), project: z.string().nullable(), state: z.string(),
 });
+const nextDepartureSchema = z.object({
+  item_id: z.string(), job_id: z.string(), project_id: z.string(), title: z.string(), priority: z.string().nullable(),
+});
 
 function result(structuredContent, text) {
   return { structuredContent, content: [{ type: "text", text }] };
@@ -103,7 +106,7 @@ const toolSpecs = [
     title: "Get Roundhouse work status",
     description: "Get compact durable status for Roundhouse Depot items and their work. Use this for progress or outcome questions; it does not change or advance work.",
     input: filterSchema,
-    output: z.object({ items: z.array(itemSchema), projects: z.record(z.string(), z.unknown()),
+    output: z.object({ items: z.array(itemSchema), next_departure: nextDepartureSchema.nullable(), projects: z.record(z.string(), z.unknown()),
       project_candidates: z.record(z.string(), z.unknown()), system_metadata: z.record(z.string(), z.unknown()) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async (service, filters) => {

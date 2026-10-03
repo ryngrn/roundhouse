@@ -66,6 +66,14 @@ function normalizeProjects(raw, root) {
     check((project.runtime ?? "local") === "local", "Only the local runtime is installed.");
     const timeout_ms = project.timeout_ms ?? 120 * 60_000;
     check(Number.isInteger(timeout_ms) && timeout_ms > 0, "timeout_ms must be positive.");
+    const self_hosting = project.self_hosting ?? null;
+    if (self_hosting !== null) {
+      check(self_hosting && typeof self_hosting === "object" && !Array.isArray(self_hosting), "self_hosting must be an object.");
+      check(self_hosting.isolated_worktree === true, "Self-hosted projects must require an isolated worktree.");
+      check(self_hosting.restart_after_delivery === false, "Self-hosted projects cannot restart the live service during delivery.");
+      check(max_concurrent_runs === 1, "Self-hosted projects must initially use max_concurrent_runs: 1.");
+      check(!["merge_to_main", "deploy"].includes(policy.shipping), "Self-hosted projects cannot auto-merge or deploy.");
+    }
     check(project.context_sources === undefined || (Array.isArray(project.context_sources) && project.context_sources.every((source) => typeof source === "string")), "context_sources must be file paths.");
     const suppliedAgent = project.agent ?? {};
     check(suppliedAgent && typeof suppliedAgent === "object" && !Array.isArray(suppliedAgent), "agent must be an object.");
@@ -110,7 +118,7 @@ function normalizeProjects(raw, root) {
     return {
       ...project, repository, weight, max_concurrent_runs, metric_definitions, policy, executor,
       runtime: "local", timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
-      agent, context_limits,
+      agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
       ...(deployment ? { deployment } : {}),
     };
   });
@@ -125,7 +133,20 @@ export function validateWorkflowConfig(raw, filename) {
   if (decision.kind === "command") check(commandValid(decision.command), "Decision provider requires an argv array.");
   const max_jobs_per_run = raw.max_jobs_per_run ?? 20;
   check(Number.isInteger(max_jobs_per_run) && max_jobs_per_run > 0 && max_jobs_per_run <= 1000, "max_jobs_per_run must be 1–1000.");
-  return { projects, decision, max_jobs_per_run, filename: absolute };
+  check(raw.triage === undefined || (raw.triage && typeof raw.triage === "object" && !Array.isArray(raw.triage)), "triage must be an object.");
+  for (const key of Object.keys(raw.triage ?? {})) check(["max_per_tick", "max_concurrent", "base_backoff_ms", "max_backoff_ms"].includes(key), `Unknown triage setting: ${key}`);
+  const triage = {
+    max_per_tick: 1,
+    max_concurrent: 1,
+    base_backoff_ms: 30_000,
+    max_backoff_ms: 60 * 60_000,
+    ...(raw.triage ?? {}),
+  };
+  check(Number.isInteger(triage.max_per_tick) && triage.max_per_tick > 0 && triage.max_per_tick <= 100, "triage.max_per_tick must be 1–100.");
+  check(Number.isInteger(triage.max_concurrent) && triage.max_concurrent > 0 && triage.max_concurrent <= 8, "triage.max_concurrent must be 1–8.");
+  check(Number.isInteger(triage.base_backoff_ms) && triage.base_backoff_ms > 0, "triage.base_backoff_ms must be positive.");
+  check(Number.isInteger(triage.max_backoff_ms) && triage.max_backoff_ms >= triage.base_backoff_ms, "triage.max_backoff_ms must be at least the base backoff.");
+  return { projects, decision, max_jobs_per_run, triage, filename: absolute };
 }
 
 export function loadWorkflowConfig(filename) {
