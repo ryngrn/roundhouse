@@ -35,3 +35,13 @@ projects:
         command: [npm, test]
       - id: checks
         command: [npm, run, check]
+
+  # Herdr is opt-in and drives an existing operator-configured remote agent.
+  # The remote machine/agent must be able to access the exact prepared worktree
+  # path and content; Roundhouse still verifies, commits, and ships locally.
+  # - id: remote-example
+  #   ...
+  #   runtime: herdr
+  #   herdr:
+  #     machine: build-host
+  #     agent: existing-agent-target

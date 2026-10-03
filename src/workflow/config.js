@@ -63,7 +63,16 @@ function normalizeProjects(raw, root) {
     const executor = project.executor ?? { kind: "codex", bin: "codex" };
     check(["codex", "command"].includes(executor.kind), "Unknown executor.");
     if (executor.kind === "command") check(commandValid(executor.command), "Executor requires an argv array.");
-    check((project.runtime ?? "local") === "local", "Only the local runtime is installed.");
+    const runtime = project.runtime ?? "local";
+    check(["local", "herdr"].includes(runtime), "Runtime must be local or herdr.");
+    if (runtime === "herdr") {
+      check(project.herdr && typeof project.herdr === "object" && !Array.isArray(project.herdr), `Project ${project.id} requires herdr configuration.`);
+      check(nonempty(project.herdr.machine), `Project ${project.id} requires a nonempty herdr.machine selector.`);
+      check(nonempty(project.herdr.agent), `Project ${project.id} requires a nonempty herdr.agent target.`);
+      check(project.herdr.bin === undefined || nonempty(project.herdr.bin), `Project ${project.id} herdr.bin must be nonempty.`);
+    } else {
+      check(project.herdr === undefined, `Project ${project.id} cannot configure herdr while runtime is local.`);
+    }
     const timeout_ms = project.timeout_ms ?? 120 * 60_000;
     check(Number.isInteger(timeout_ms) && timeout_ms > 0, "timeout_ms must be positive.");
     const self_hosting = project.self_hosting ?? null;
@@ -117,7 +126,7 @@ function normalizeProjects(raw, root) {
     }
     return {
       ...project, repository, weight, max_concurrent_runs, metric_definitions, policy, executor,
-      runtime: "local", timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
+      runtime, timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
       ...(deployment ? { deployment } : {}),
     };

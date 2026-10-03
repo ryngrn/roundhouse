@@ -81,12 +81,21 @@ export class Store extends StorageRepository {
       if (processes.some((p) => alive(p.pid))) throw new Error("A recorded child process is still alive; recovery refused.");
       // A crash cannot prove an external action did not happen. Never replay it automatically.
       this.change((state) => {
+        const interruptedProjects = new Set();
         for (const entity of [...Object.values(state.items), ...Object.values(state.jobs)]) {
           if (["Decision", "Executing", "Verification", "Rework"].includes(entity.state)) {
-            this.move(state, entity, "Blocked", "Interrupted attempt: inspect workspace and remote delivery before submitting replacement work.");
+            const remote = entity.attempts?.at(-1)?.execution?.remote_execution;
+            const reason = remote
+              ? `Interrupted Herdr execution on ${remote.machine_selector}/${remote.agent_target}; explicit reconciliation is required and the prompt will not be replayed automatically.`
+              : "Interrupted attempt: inspect workspace and remote delivery before submitting replacement work.";
+            this.move(state, entity, "Blocked", reason);
+            if (entity.parent_id && entity.project_id) interruptedProjects.add(entity.project_id);
           }
         }
-        for (const project of Object.values(state.projects)) if (project.active) { project.blocked = true; project.active = false; }
+        for (const [projectId, project] of Object.entries(state.projects)) {
+          if (interruptedProjects.has(projectId)) project.blocked = true;
+          if (project.active) project.active = false;
+        }
       });
       for (const project of Object.values(this.read().projects)) {
         if (!project.repository_lock || !fs.existsSync(project.repository_lock)) continue;

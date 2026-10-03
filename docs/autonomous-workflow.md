@@ -136,6 +136,14 @@ work there, commits a candidate, and tests that exact commit. Changes made durin
 verification invalidate it. Failed candidates are retained locally but not shipped.
 The execution runtime is instructed not to push; delivery belongs to Roundhouse.
 
+Projects default to `runtime: local`. An opt-in `runtime: herdr` project must set
+nonempty `herdr.machine` and `herdr.agent` values. Roundhouse probes the saved
+machine and drives that existing agent through Herdr; it does not provision an
+agent and never falls back to local execution on reachability, authentication, or
+version failure. The remote agent must see the same absolute prepared worktree
+path and content so its edits are available for Roundhouse's local snapshot and
+verification. Herdr does not ship the result.
+
 Implemented delivery policies:
 
 - `push_branch` (default): push the verified commit to its job branch and confirm
@@ -205,6 +213,10 @@ Execution/verification retries are bounded by `max_rework_attempts` (0–10).
 The next attempt receives the previous failure evidence. Shipping errors do not
 trigger automated execution retries: a network failure may hide a successful push.
 Blocked projects stop taking new jobs until reconciled. Other projects can progress.
+An interrupted Herdr prompt is also Blocked and is never replayed automatically;
+its persisted machine selector, agent target, and returned remote correlation data
+are the starting point for explicit operator reconciliation. Recorded process IDs
+belong to the local Herdr CLI client, not to the remote execution.
 
 With the local adapter, state writes are atomic fsynced snapshots and recovery
 refuses live/remote filesystem owners. With PostgreSQL, nodes use expiring heartbeat
