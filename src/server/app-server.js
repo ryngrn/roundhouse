@@ -252,6 +252,22 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 200, result);
       }
+      const reviewJob = url.pathname.match(/^\/api\/jobs\/([^/]+)\/review$/);
+      if (request.method === "POST" && reviewJob) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.reviewJob({ id: decodeURIComponent(reviewJob[1]), expected_revision: input.expected_revision,
+          feedback: input.feedback, action: input.action ?? "rework", actor: "local-user" });
+        if (input.action !== "approve") loop.wake();
+        return send(response, 200, result);
+      }
+      const mergeJob = url.pathname.match(/^\/api\/jobs\/([^/]+)\/merge$/);
+      if (request.method === "POST" && mergeJob) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        return send(response, 200, await roundhouse.mergeJob({ id: decodeURIComponent(mergeJob[1]),
+          expected_revision: input.expected_revision, actor: "local-user" }));
+      }
       const reconsider = url.pathname.match(/^\/api\/items\/([^/]+)\/reconsider$/);
       if (request.method === "POST" && reconsider) {
         verifyOrigin(request, origins);

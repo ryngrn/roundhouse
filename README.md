@@ -101,8 +101,9 @@ uses an independent triage lease. PostgreSQL workers atomically reserve compatib
 capacity with item, job, project, repository, delivery, and counted-resource
 constraints across nodes. Both support priority/fair queue order, bounded triage backoff and
 rework, exact-identity duplicate guards, and conservative crash recovery. Remote
-execution runtimes, PR creation, and merging remain extension points. Deployment is available through
-the fixture provider for proof and a configurable command provider for real systems.
+execution runtimes remain an extension point. Pull-request creation/update and
+approval-controlled merge orchestration are available through fixture or
+operator-owned command providers. Deployment uses the same provider pattern.
 
 ## Earlier interfaces
 

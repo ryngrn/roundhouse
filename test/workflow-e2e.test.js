@@ -333,10 +333,70 @@ test("integration: verification changing the committed version cannot ship", asy
   assert.equal(job.attempts[0].verification.passed, false);
   assert.equal(job.shipping, undefined);
 });
-test("integration: unsupported delivery policy blocks before executor invocation", async () => {
-  const h = harness({ policy: { shipping: "create_pull_request" } }); h.submit("change");
-  const job = Object.values((await h.engine.run()).jobs)[0];
-  assert.equal(job.state, "Blocked"); assert.equal(job.attempts.length, 0);
+test("integration: pull-request policy without a configured provider is rejected", () => {
+  assert.throws(() => harness({ policy: { shipping: "create_pull_request" } }), /requires pull_request configuration/);
+});
+
+test("e2e: pull request is correlated to the job and exact verified commit, then approved", async () => {
+  const h = harness({ policy: { shipping: "create_pull_request" }, pull_request: { kind: "fixture", base: "main" } });
+  h.submit("change through pull request");
+  let job = Object.values((await h.engine.run()).jobs)[0];
+  assert.equal(job.state, "Review");
+  assert.equal(job.shipping.pull_request.correlation_key, job.id);
+  assert.equal(job.shipping.pull_request.head_commit, job.shipping.commit);
+  assert.equal(git(h.remote, ["rev-parse", job.shipping.branch]), job.shipping.commit);
+  h.engine.reviewJob(job.id, job.revision, "reviewer", "Verified and ready.", "approve");
+  job = h.store.read().jobs[job.id];
+  assert.equal(job.state, "Shipped");
+  assert.equal(job.reviews[0].commit, job.shipping.commit);
+});
+
+test("e2e: review rework preserves prior evidence and verifies the revised PR candidate", async () => {
+  const h = harness({ policy: { shipping: "create_pull_request", max_rework_attempts: 1 },
+    pull_request: { kind: "fixture", base: "main" } });
+  h.submit("change through review rework");
+  let job = Object.values((await h.engine.run()).jobs)[0];
+  const firstCommit = job.shipping.commit;
+  h.engine.reviewJob(job.id, job.revision, "reviewer", "Please revise the candidate.", "rework");
+  job = Object.values((await h.engine.runDispatch()).jobs)[0];
+  assert.equal(job.state, "Review");
+  assert.equal(job.attempts.length, 2);
+  assert.equal(job.attempts[0].verification.passed, true);
+  assert.equal(job.attempts[1].verification.passed, true);
+  assert.equal(job.deliveries.length, 2);
+  assert.equal(job.deliveries[0].commit, firstCommit);
+  assert.notEqual(job.shipping.commit, firstCommit);
+  assert.equal(job.shipping.pull_request.id, job.deliveries[0].pull_request.id);
+  assert.equal(job.shipping.pull_request.head_commit, job.shipping.commit);
+});
+
+test("e2e: merge requires a current per-action approval and never pushes the target branch", async () => {
+  const h = harness({ policy: { shipping: "merge_to_main" }, pull_request: { kind: "fixture", base: "main" } });
+  h.submit("merge through reviewed pull request");
+  let job = Object.values((await h.engine.run()).jobs)[0];
+  const mainBefore = git(h.remote, ["rev-parse", "main"]);
+  assert.equal(job.state, "Review");
+  assert.equal(job.merge_intent, undefined);
+  await assert.rejects(() => h.engine.approveMerge(job.id, job.revision - 1, "maintainer"), /current job Review revision/);
+  await h.engine.approveMerge(job.id, job.revision, "maintainer");
+  job = h.store.read().jobs[job.id];
+  assert.equal(job.state, "Shipped");
+  assert.equal(job.merge.approval.actor, "maintainer");
+  assert.equal(job.merge.head_commit, job.shipping.commit);
+  assert.equal(git(h.remote, ["rev-parse", "main"]), mainBefore);
+});
+
+test("e2e: command pull-request provider receives commit-bound upsert and merge actions", async () => {
+  const h = harness({ policy: { shipping: "merge_to_main" },
+    pull_request: { kind: "command", base: "main", command: [process.execPath, provider, "pull-request"] } });
+  h.submit("merge through command provider");
+  let job = Object.values((await h.engine.run()).jobs)[0];
+  assert.match(job.shipping.pr_url, /^https:\/\/pull-request\.fixture\.invalid\//);
+  await h.engine.approveMerge(job.id, job.revision, "maintainer");
+  job = h.store.read().jobs[job.id];
+  assert.equal(job.merge.provider, "command");
+  assert.equal(job.merge.pull_request_id, job.shipping.pull_request.id);
+  assert.equal(job.merge.head_commit, job.shipping.commit);
 });
 
 test("e2e: autonomous fixture deployment verifies and reaches durable Shipped state", async () => {

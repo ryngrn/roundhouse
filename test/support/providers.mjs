@@ -25,6 +25,21 @@ if (process.argv[2] === "decide") {
     url: `https://deploy.fixture.invalid/${packet.project}/${packet.commit}`,
     provider_reference: `fixture-${packet.commit.slice(0, 12)}`,
   }));
+} else if (process.argv[2] === "pull-request") {
+  if (packet.action === "upsert") {
+    process.stdout.write(JSON.stringify({
+      id: packet.previous?.id ?? `pr-${packet.correlation_key}`,
+      url: packet.previous?.url ?? `https://pull-request.fixture.invalid/${packet.correlation_key}`,
+      correlation_key: packet.correlation_key,
+      head_commit: packet.commit,
+      status: "open",
+    }));
+  } else if (packet.action === "merge") {
+    process.stdout.write(JSON.stringify({
+      status: "merged", pull_request_id: packet.pull_request.id,
+      head_commit: packet.commit, merge_commit: packet.commit,
+    }));
+  } else process.exit(9);
 } else {
   if (packet.authority?.workspace_changes_only !== true || packet.authority.commit !== false ||
     packet.authority.push !== false || packet.authority.deploy !== false || packet.authority.mark_shipped !== false) {

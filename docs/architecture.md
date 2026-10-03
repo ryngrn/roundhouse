@@ -185,6 +185,12 @@ verification. The deterministic fixture
 provider has no external effect. The command provider receives a commit-bound JSON
 packet and is the real integration path for an operator-owned deployment CLI.
 
+For pull-request delivery, a fixture or operator-owned command provider upserts by
+durable job correlation key and must report the exact verified head commit. Review
+feedback is retained with earlier attempts and deliveries before bounded rework.
+`merge_to_main` is a distinct revision-bound human action; only its provider may
+merge the correlated pull request, and no direct-push fallback exists.
+
 Implement a provider that acquires resource ownership, prepares the target,
 captures an immutable candidate identity, checks identity after verification, and
 ships only passing evidence. Return repository/resource reference, branch/version,

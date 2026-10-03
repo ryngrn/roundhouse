@@ -21,16 +21,13 @@ export function itemView(data, item) {
     ...(check.summary ? { summary: check.summary } : {}),
     ...(check.artifacts?.length ? { artifacts: check.artifacts } : {}),
   }));
-  const deliveries = completedJobs.map((job) => ({
-    job_id: job.id,
-    commit: job.shipping?.commit ?? null,
-    branch: job.shipping?.branch ?? null,
-    pushed: job.shipping?.pushed ?? false,
-    deployment: job.shipping?.deployment ?? null,
-    timestamp: job.shipping?.timestamp ?? null,
-  }));
+  const deliveries = jobs.flatMap((job) => (job.deliveries?.length ? job.deliveries : (job.shipping ? [job.shipping] : [])).map((delivery) => ({
+    job_id: job.id, commit: delivery.commit ?? null, branch: delivery.branch ?? null,
+    pushed: delivery.pushed ?? false, pull_request: delivery.pull_request ?? null,
+    pr_url: delivery.pr_url ?? null, deployment: delivery.deployment ?? null, timestamp: delivery.timestamp ?? null,
+  })));
   const completionReports = completedJobs.map((job) => job.attempts.at(-1)?.execution?.report).filter(Boolean);
-  const deliveryUrls = deliveries.map((delivery) => delivery.deployment?.url ?? delivery.deployment?.deploy_url).filter(Boolean);
+  const deliveryUrls = deliveries.map((delivery) => delivery.pr_url ?? delivery.deployment?.url ?? delivery.deployment?.deploy_url).filter(Boolean);
   const importedOutcome = item.legacy_depot?.Outcome || item.legacy_depot?.["Delivery Summary"] || null;
   const outcome = state === "Shipped"
     ? [completionReports.map((report) => report.summary).join(" "),
@@ -98,10 +95,13 @@ export function itemView(data, item) {
       id: job.id,
       title: job.work.title,
       state: job.state,
+      revision: job.revision,
       reason: job.history.at(-1)?.reason ?? null,
       attempts: job.attempts.length,
       agent_role: job.agent_role ?? "general",
       shipping: job.shipping ?? null,
+      reviews: job.reviews ?? [],
+      merge: job.merge ?? null,
       allocation: allocationDecisions.findLast((decision) => decision.job_id === job.id) ?? null,
       allocation_history: allocationDecisions.filter((decision) => decision.job_id === job.id),
     })),

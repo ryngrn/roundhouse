@@ -8,7 +8,7 @@ export const transitions = {
   Executing: ["Verification", "Rework", "Review"],
   Verification: ["Shipped", "Rework", "Review"],
   Rework: ["Executing"],
-  Review: ["Ready", "Decision"],
+  Review: ["Ready", "Decision", "Shipped"],
   Blocked: ["Decision"],
   Archived: [],
   Reconciled: [],

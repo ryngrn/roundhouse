@@ -292,7 +292,7 @@ export class RepositoryProvisioner {
       { project_id: normalized.id, phase: "policy" });
     if (normalized.repository !== fs.realpathSync(root)) throw new ProjectBootstrapError("Project repository path conflicts with the inspected repository workspace.",
       { project_id: normalized.id, repository_id, phase: "mapping" });
-    if (!["commit_only", "push_branch", "deploy"].includes(normalized.policy.shipping)) {
+    if (!["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy"].includes(normalized.policy.shipping)) {
       throw new ProjectBootstrapError(`Shipping policy is not installed: ${normalized.policy.shipping}`,
         { project_id: normalized.id, phase: "policy", shipping: normalized.policy.shipping });
     }

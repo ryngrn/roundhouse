@@ -620,9 +620,9 @@ export class Engine {
       const job = state.jobs[id];
       if (digest(executionProjectContext(project, job.agent_role ?? "general")) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
       if (!this.shipping.supports(project)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
-      const prepared = this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
-      await this.store.change((data) => { data.jobs[id].prepared = prepared; });
-      for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {
+      const prepared = job.prepared ?? this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
+      if (!job.prepared) await this.store.change((data) => { data.jobs[id].prepared = prepared; });
+      for (let attempt = job.attempts.length; attempt <= project.policy.max_rework_attempts; attempt++) {
         const current = (await this.store.read()).jobs[id];
         await this.store.change((data) => {
           const j = data.jobs[id];
@@ -635,7 +635,7 @@ export class Engine {
         try {
           const execution = await this.runtime.execute({ project, job: current, workspace: prepared.workspace,
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
-            previous_failure: current.attempts.at(-1) ?? null, onStart: this.processRecorder("jobs", id) });
+            previous_failure: current.rework_request ?? current.attempts.at(-1) ?? null, onStart: this.processRecorder("jobs", id) });
           await this.store.change((data) => { data.jobs[id].attempts.at(-1).execution = execution; });
           if (!execution.passed) throw new Error(`Executor failed (exit ${execution.exit_code}).`);
           const snapshot = this.shipping.snapshot({ project, job: current, prepared });
@@ -652,7 +652,14 @@ export class Engine {
           await this.store.change((data) => { data.jobs[id].attempts.at(-1).verification = verification; });
           if (!verification.passed) throw new Error("Required verification failed.");
           // Persist delivery intent before touching a remote. On crash this attempt is never replayed.
-          await this.store.change((data) => { data.jobs[id].delivery_intent = { commit: snapshot.commit, branch: prepared.branch, policy: project.policy.shipping }; });
+          await this.store.change((data) => {
+            const candidate = data.jobs[id];
+            candidate.delivery_intents ??= [];
+            const intent = { job_id: id, correlation_key: id, commit: snapshot.commit, branch: prepared.branch,
+              policy: project.policy.shipping, at: new Date().toISOString() };
+            candidate.delivery_intents.push(intent);
+            candidate.delivery_intent = intent;
+          });
           if (heartbeatError) throw heartbeatError;
           if (this.store.shared) {
             await this.store.assertLease(projectLease);
@@ -665,13 +672,19 @@ export class Engine {
           catch (error) { await this.block(id, `Delivery failed or uncertain: ${error.message}`); return true; }
           await this.store.change((data) => {
             const j = data.jobs[id];
+            j.deliveries ??= [];
+            j.deliveries.push(delivered);
             j.shipping = delivered;
+            j.rework_request = null;
             j.processes = [];
-            this.store.move(data, j, "Shipped", "Verified work delivered under project policy.");
-            data.projects[project.id] = { ...data.projects[project.id], last_commit: delivered.commit,
-              active: false, review_required: project.policy.review_after_shipping };
+            const awaitsPullRequestReview = ["create_pull_request", "merge_to_main"].includes(project.policy.shipping);
+            this.store.move(data, j, awaitsPullRequestReview ? "Review" : "Shipped",
+              awaitsPullRequestReview ? "Verified pull request awaits human review." : "Verified work delivered under project policy.");
+            data.projects[project.id] = { ...data.projects[project.id],
+              ...(awaitsPullRequestReview ? {} : { last_commit: delivered.commit }), active: false,
+              review_required: awaitsPullRequestReview ? false : project.policy.review_after_shipping };
             const parent = data.items[j.parent_id];
-            if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) {
+            if (!awaitsPullRequestReview && parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) {
               parent.completed_at = delivered.timestamp;
             }
           });
@@ -693,6 +706,91 @@ export class Engine {
         releaseRepo();
         await this.store.change((data) => { data.projects[project.id].repository_lock = null; });
       }
+      if (projectLease) await this.store.releaseLease(projectLease).catch(() => {});
+    }
+  }
+  reviewJob(id, revision, actor, feedback, action = "rework") {
+    if (!actor?.trim()) throw new Error("Review requires an actor.");
+    if (!feedback?.trim()) throw new Error("Review requires feedback.");
+    if (!["rework", "approve"].includes(action)) throw new Error("Review action must be rework or approve.");
+    return this.store.change((data) => {
+      const job = data.jobs[id];
+      if (!job || job.state !== "Review" || job.revision !== revision) throw new Error("Review must reference the current job Review revision.");
+      const project = this.config.projects.find((candidate) => candidate.id === job.project_id);
+      if (!project || !["create_pull_request", "merge_to_main"].includes(project.policy.shipping)) throw new Error("Job has no pull-request review workflow.");
+      if (job.shipping?.pull_request?.head_commit !== job.shipping?.commit) throw new Error("Review candidate is not correlated to the exact delivered commit.");
+      job.reviews ??= [];
+      const review = { actor, action, feedback, revision, commit: job.shipping.commit, pull_request_id: job.shipping.pull_request.id,
+        at: new Date().toISOString() };
+      job.reviews.push(review);
+      if (action === "rework") {
+        if (job.attempts.length > project.policy.max_rework_attempts) throw new Error("Configured rework limit has been reached.");
+        job.rework_request = review;
+        this.store.move(data, job, "Ready", `Pull-request feedback submitted by ${actor}; revised candidate must be re-verified.`);
+      } else {
+        if (project.policy.shipping === "merge_to_main") throw new Error("Merge approval must use the dedicated merge action.");
+        this.store.move(data, job, "Shipped", `Pull request approved by ${actor}.`);
+        data.projects[job.project_id] = { ...data.projects[job.project_id], last_commit: job.shipping.commit };
+        const parent = data.items[job.parent_id];
+        if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = review.at;
+      }
+      return job;
+    });
+  }
+
+  async approveMerge(id, revision, actor) {
+    if (!actor?.trim()) throw new Error("Merge approval requires an actor.");
+    let approval;
+    const initial = (await this.store.read()).jobs[id];
+    const project = this.config.projects.find((candidate) => candidate.id === initial?.project_id);
+    let job;
+    let projectLease;
+    let releaseRepo;
+    let heartbeatTimer;
+    try {
+    if (project) {
+      if (this.store.shared) {
+        projectLease = await this.store.acquireLease("project", project.id, { job_id: id, operation: "merge" });
+        if (!projectLease) throw new Error("Project delivery resource is already owned by another worker.");
+        heartbeatTimer = setInterval(() => this.store.heartbeatLease(projectLease).catch(() => {}),
+          Math.max(1_000, Math.floor(this.store.leaseMs / 3)));
+        heartbeatTimer.unref?.();
+      }
+      releaseRepo = this.shipping.lock(project);
+    }
+    await this.store.change((data) => {
+      job = data.jobs[id];
+      if (!job || job.state !== "Review" || job.revision !== revision) throw new Error("Merge approval must reference the current job Review revision.");
+      if (!project || project.policy.shipping !== "merge_to_main") throw new Error("Job is not configured for policy-controlled merge.");
+      if (job.merge_intent) throw new Error("A merge intent already exists and requires reconciliation; it cannot be replayed.");
+      if (job.shipping?.pull_request?.head_commit !== job.shipping?.commit) throw new Error("Merge candidate is not correlated to the exact verified commit.");
+      approval = { actor, job_revision: revision, commit: job.shipping.commit, pull_request_id: job.shipping.pull_request.id,
+        action: "merge", at: new Date().toISOString() };
+      job.merge_intent = approval;
+      job.history.push({ from: "Review", to: "Review", reason: `Merge action approved by ${actor}.`, at: approval.at });
+      job.revision += 1;
+      job.updated_at = approval.at;
+    });
+    job = (await this.store.read()).jobs[id];
+    if (projectLease) await this.store.assertLease(projectLease);
+    let merged;
+    try { merged = await this.shipping.merge({ project, job, approval, onStart: this.processRecorder("jobs", id) }); }
+    catch (error) { await this.block(id, `Merge failed or uncertain: ${error.message}`); return await this.store.read(); }
+    await this.store.change((data) => {
+      const current = data.jobs[id];
+      current.merge = { approval, ...merged };
+      current.shipping.merge = current.merge;
+      current.shipping.timestamp = merged.merged_at;
+      current.processes = [];
+      this.store.move(data, current, "Shipped", `Exact verified pull request merged with approval from ${actor}.`);
+      data.projects[current.project_id] = { ...data.projects[current.project_id], last_commit: current.shipping.commit, active: false };
+      const parent = data.items[current.parent_id];
+      if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = merged.merged_at;
+    });
+    return await this.store.read();
+    } finally {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (releaseRepo) releaseRepo();
       if (projectLease) await this.store.releaseLease(projectLease).catch(() => {});
     }
   }

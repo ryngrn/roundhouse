@@ -97,6 +97,19 @@ export class RoundhouseService {
       mapResult(this.store.read(), (data) => ({ item: itemView(data, item), approved: true })));
   }
 
+  reviewJob({ id, expected_revision, feedback, action = "rework", actor = "local-user" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to review pull-request work.");
+    return mapResult(this.engine.reviewJob(id, expected_revision, actor, feedback, action), (job) =>
+      mapResult(this.store.read(), (data) => ({ item: itemView(data, data.items[job.parent_id]), job: data.jobs[id], reviewed: true })));
+  }
+
+  async mergeJob({ id, expected_revision, actor = "local-user" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to merge pull-request work.");
+    const data = await this.engine.approveMerge(id, expected_revision, actor);
+    const job = data.jobs[id];
+    return { item: itemView(data, data.items[job.parent_id]), job, merged: job.state === "Shipped" };
+  }
+
   async answerQuestion({ id, answer, expected_revision, actor = "chatgpt-user" }) {
     if (!this.engine) throw new Error("Roundhouse configuration is required to re-evaluate an answer.");
     const item = await this.engine.answerQuestion(id, answer, actor, expected_revision);

@@ -191,11 +191,23 @@ function normalizeProjects(raw, root, execution) {
     } else if (deployment !== undefined) {
       check(deployment && typeof deployment === "object" && !Array.isArray(deployment), "Invalid deployment configuration.");
     }
+    let pull_request = project.pull_request;
+    if (["create_pull_request", "merge_to_main"].includes(policy.shipping)) {
+      check(pull_request && plainObject(pull_request), `Project ${project.id} requires pull_request configuration.`);
+      for (const key of Object.keys(pull_request)) check(["kind", "command", "base", "draft"].includes(key), `Unknown pull_request setting: ${key}`);
+      check(["fixture", "command"].includes(pull_request.kind), "Pull-request provider must be fixture or command.");
+      if (pull_request.kind === "command") check(commandValid(pull_request.command), "Command pull-request provider requires an argv array.");
+      check(pull_request.base === undefined || nonempty(pull_request.base), "pull_request.base must be nonempty.");
+      check(pull_request.draft === undefined || typeof pull_request.draft === "boolean", "pull_request.draft must be boolean.");
+      pull_request = { base: project.base_ref ?? "HEAD", draft: false, ...pull_request };
+    } else if (pull_request !== undefined) {
+      check(plainObject(pull_request), "Invalid pull_request configuration.");
+    }
     return {
       ...project, ...(repository ? { repository } : {}), ...(lifecycle ? { lifecycle } : {}), repository_required, repository_adapter, verification, weight, max_concurrent_runs, required_capabilities, resource_requirements, metric_definitions, policy, executor,
       runtime: "local", timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
-      ...(deployment ? { deployment } : {}),
+      ...(deployment ? { deployment } : {}), ...(pull_request ? { pull_request } : {}),
     };
   });
 }

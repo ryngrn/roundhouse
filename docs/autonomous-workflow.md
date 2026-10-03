@@ -187,11 +187,33 @@ Implemented delivery policies:
 - `deploy`: optionally push the verified branch, then invoke either the
   deterministic no-op fixture provider or an operator-configured command provider.
   Only a successful provider result becomes Shipped.
+- `create_pull_request`: push the verified job branch and idempotently open or
+  update a pull request correlated by durable job ID and exact candidate commit.
+  The job pauses in Review; approval completes it, while feedback returns the same
+  job to bounded rework and requires a newly verified candidate.
+- `merge_to_main`: use the same verified pull-request path, then pause in Review.
+  A separate current-revision human merge approval invokes the configured provider.
+  It never falls back to a direct target-branch push or another shipping mode.
 
-`create_pull_request` and `merge_to_main` are recognized policy values
-but block before execution until their provider is implemented. They never fall
-back silently to another delivery mode. Git commit and push hooks are disabled for
+Pull-request modes require a `pull_request` provider. The safe `fixture` provider
+is deterministic; the `command` provider receives commit-bound JSON on stdin for
+`upsert` and `merge` actions and must confirm correlation and exact commit identity.
+Git commit and push hooks are disabled for
 adapter-owned delivery; declare required checks explicitly in verification policy.
+
+Submit pull-request feedback or approve an open PR without merging it using the
+current job revision. Merging has a separate command and approval record:
+
+```sh
+node src/cli.js depot review --state-dir STATE --config CONFIG \
+  --id JOB_ID --revision REVISION --actor reviewer --action rework \
+  --text "Address the review findings"
+node src/cli.js depot merge --state-dir STATE --config CONFIG \
+  --id JOB_ID --revision REVISION --actor maintainer
+```
+
+The equivalent local API actions are `POST /api/jobs/:id/review` and
+`POST /api/jobs/:id/merge`; both require the current job revision.
 
 Delivery evidence includes repository, remote, branch, commit, verification command
 arguments, output, exit codes, timestamps, and nullable PR/deployment fields.
