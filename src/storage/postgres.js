@@ -364,20 +364,20 @@ export class PostgresStorageRepository extends StorageRepository {
     });
   }
 
-  async claimJob(projectIds, leaseMs = this.leaseMs) {
+  async claimJob(jobIds, leaseMs = this.leaseMs) {
     const token = randomUUID();
     return tx(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
       const result = await client.query(`WITH candidate AS (
           SELECT j.id FROM roundhouse.jobs j
           LEFT JOIN roundhouse.resource_leases l ON l.resource_kind='job' AND l.resource_key=j.id AND l.expires_at>clock_timestamp()
-          WHERE j.state='Ready' AND j.project_id=ANY($1::text[]) AND l.resource_key IS NULL
+          WHERE j.state='Ready' AND j.id=ANY($1::text[]) AND l.resource_key IS NULL
             AND NOT EXISTS (
               SELECT 1 FROM roundhouse.job_dependencies d
               LEFT JOIN roundhouse.jobs dependency ON dependency.id=d.depends_on_job_id
               WHERE d.job_id=j.id AND dependency.state IS DISTINCT FROM 'Shipped'
             )
-          ORDER BY COALESCE((j.payload->>'priority_rank')::integer,100),j.position,j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED
+          ORDER BY array_position($1::text[],j.id) LIMIT 1 FOR UPDATE OF j SKIP LOCKED
         ), lease AS (
           INSERT INTO roundhouse.resource_leases(resource_kind,resource_key,owner_node_id,token,acquired_at,heartbeat_at,expires_at,payload)
           SELECT 'job',id,$2,$3,clock_timestamp(),clock_timestamp(),clock_timestamp()+($4 * interval '1 millisecond'),'{}'::jsonb FROM candidate
@@ -387,7 +387,7 @@ export class PostgresStorageRepository extends StorageRepository {
           RETURNING resource_key
         )
         UPDATE roundhouse.jobs j SET owning_node_id=$2 FROM lease WHERE j.id=lease.resource_key
-        RETURNING j.id,j.payload`, [projectIds, this.node.id, token, leaseMs]);
+        RETURNING j.id,j.payload`, [jobIds, this.node.id, token, leaseMs]);
       if (!result.rowCount) return null;
       const job = result.rows[0].payload;
       return { job, lease: { resource_kind: "job", resource_key: job.id, owner_node_id: this.node.id, token } };

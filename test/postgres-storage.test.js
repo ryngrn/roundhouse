@@ -74,7 +74,7 @@ test("postgres: two nodes racing claim exactly one job and expose its owner", { 
   const first = await open("one");
   const second = await open("two");
   await first.change(seed);
-  const claims = await Promise.all([first.claimJob(["project-1"]), second.claimJob(["project-1"])]);
+  const claims = await Promise.all([first.claimJob(["job-1"]), second.claimJob(["job-1"])]);
   assert.equal(claims.filter(Boolean).length, 1);
   const winner = claims.find(Boolean);
   const snapshot = await first.read();
@@ -143,14 +143,14 @@ test("postgres: expired leases recover without duplicate delivery and stale revi
   const first = await open("short", 30);
   const second = await open("recovery", 30);
   await first.change((data) => seed(data, { deliveryIntent: true }));
-  const claim = await first.claimJob(["project-1"], 30);
+  const claim = await first.claimJob(["job-1"], 30);
   await first.change((data) => { data.jobs["job-1"].state = "Executing"; data.jobs["job-1"].revision += 1; });
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(await second.recoverExpiredClaims(), 1);
   const recovered = await second.read();
   assert.equal(recovered.jobs["job-1"].state, "Blocked");
   assert.match(recovered.jobs["job-1"].history.at(-1).reason, /delivery intent.*reconcile/i);
-  assert.equal(await second.claimJob(["project-1"]), null);
+  assert.equal(await second.claimJob(["job-1"]), null);
   await assert.rejects(second.compareAndChange("items", "item-1", 999, () => {}), /Stale revision/);
   await first.releaseLease(claim.lease);
   await first.close();
