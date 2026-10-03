@@ -12,7 +12,7 @@ Notion prototype is available only through the one-time archive importer.
 | Agent-role composer | Role manifest plus bounded Markdown skills and project context | General or Designer execution context and required evidence |
 | Durable workflow | PostgreSQL repository (shared) or explicit local repository, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
 | Triage control plane | Independent bounded worker pass with durable attempts/backoff | Release imported work safely, classify, reconcile exact identities, slice, question, block, or make Ready |
-| Execution runtime | Local subprocess, Codex or configured command | `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
+| Execution runtime | Per-project local subprocess or opt-in Herdr adapter | `execute({project, job, workspace, previous_failure, onStart, onRemoteStart})` returns operational result |
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | Batched browser decision sessions, CLI approval/clarification, durable questions, and MCP answers | Revision-bound atomic response set, durable audit record, exactly one readiness reevaluation |
@@ -102,13 +102,22 @@ completion. Roundhouse owns verification and shipping. This supports wrapping
 another installed agent today without changing the engine. Commands must remain
 foreground and return when their work is done.
 
-For Herdr/remote/cloud execution, implement the runtime interface and inject it
-into Engine. Add runtime selection/validation to configuration. Return correlated
-operational results and provide durable reconciliation for remote session IDs;
-local PID recovery is insufficient for remote work. The current Git delivery
-provider expects a local workspace, so a remote implementation must expose that
-workspace locally or supply a corresponding remote delivery provider. These
-adapters are extension boundaries, not claimed working integrations.
+`runtime: local` remains the default. `runtime: herdr` is an opt-in execution
+adapter requiring both `herdr.machine` and `herdr.agent`; the initial adapter
+deliberately drives an existing operator-configured agent instead of guessing how
+to provision one. It probes `herdr machine status <machine> --json`, then invokes
+`herdr --machine <machine> agent prompt <agent> <prompt> --wait --timeout <ms>`.
+Every argument is passed directly without a shell. Machine, agent, and returned
+remote IDs/status are persisted as `remote_execution` attempt metadata before and
+after the prompt. A failure is explicit and never falls back to local execution.
+
+Herdr owns only live remote execution. Roundhouse still prepares the worktree and
+owns workflow, local verification, reconciliation, commits, and shipping. The
+configured remote machine and agent must therefore be able to access the same
+absolute prepared worktree path and content visible to Roundhouse. This adapter
+does not provide remote delivery. A local Herdr CLI PID identifies only the local
+client process; interruption remains Blocked until an operator reconciles the
+persisted remote identity.
 
 ## Extending delivery
 

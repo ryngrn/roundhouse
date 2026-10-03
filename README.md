@@ -99,8 +99,10 @@ are repository-relative and contain no personal machine settings.
 The local adapter has one execution slot per state directory and an independent
 triage lease. PostgreSQL workers use atomic claims plus item, job, and project leases
 across nodes. Both support priority/fair queue order, bounded triage backoff and
-rework, exact-identity duplicate guards, and conservative crash recovery. Remote
-execution runtimes, PR creation, and merging remain extension points. Deployment is available through
+rework, exact-identity duplicate guards, and conservative crash recovery. Local is
+the default execution runtime; projects may opt into the Herdr runtime for an
+existing configured remote agent and shared worktree, while Roundhouse retains
+local verification and delivery ownership. PR creation and merging remain extension points. Deployment is available through
 the fixture provider for proof and a configurable command provider for real systems.
 
 ## Earlier interfaces

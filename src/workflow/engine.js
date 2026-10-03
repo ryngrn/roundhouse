@@ -4,7 +4,7 @@ import { digest } from "../storage/repository.js";
 import { record } from "./state.js";
 import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
-import { LocalRuntime, CommandVerifier } from "./runtime.js";
+import { createRuntime, CommandVerifier } from "./runtime.js";
 import { GitDelivery } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
@@ -51,7 +51,7 @@ function relatedWork(data, item) {
 }
 
 export class Engine {
-  constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = new LocalRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery(), clock = () => Date.now() }) {
+  constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = createRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery(), clock = () => Date.now() }) {
     const triage = { max_per_tick: 1, max_concurrent: 1, base_backoff_ms: 30_000, max_backoff_ms: 60 * 60_000, ...(config.triage ?? {}) };
     config.triage = triage;
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
@@ -621,9 +621,12 @@ export class Engine {
         try {
           const execution = await this.runtime.execute({ project, job: current, workspace: prepared.workspace,
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
-            previous_failure: current.attempts.at(-1) ?? null, onStart: this.processRecorder("jobs", id) });
+            previous_failure: current.attempts.at(-1) ?? null, onStart: this.processRecorder("jobs", id),
+            onRemoteStart: (remote_execution) => this.store.change((data) => {
+              data.jobs[id].attempts.at(-1).execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
+            }) });
           await this.store.change((data) => { data.jobs[id].attempts.at(-1).execution = execution; });
-          if (!execution.passed) throw new Error(`Executor failed (exit ${execution.exit_code}).`);
+          if (!execution.passed) throw new Error(execution.error ?? `Executor failed (exit ${execution.exit_code}).`);
           const snapshot = this.shipping.snapshot({ project, job: current, prepared });
           await this.store.change((data) => {
             data.jobs[id].attempts.at(-1).snapshot = snapshot;
