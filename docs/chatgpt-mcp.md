@@ -59,8 +59,11 @@ become events.
 Subscriptions, hashed ChatGPT conversation correlation, and delivery attempts live
 in authoritative Roundhouse state and survive restart. Roundhouse never stores the
 raw `openai/session` value. A subscription for an item submitted in that conversation
-is marked `originating_submission`; a later item follow is marked `follow`. A new
-subscription begins at the current outbox position, so old
+is marked `originating_submission`; a later item follow is marked `follow`. The
+hashed conversation reference is also part of the subscription identity, so two
+ChatGPT threads cannot overwrite one another when their owner, callback endpoint,
+and item scope are otherwise identical. A new subscription begins at the current
+outbox position, so old
 transitions are not silently replayed. Each matching transition gets a stable event
 ID. Transient delivery failures use bounded backoff with that same ID; successful,
 permanent, and exhausted deliveries remain recorded for deduplication and audit.

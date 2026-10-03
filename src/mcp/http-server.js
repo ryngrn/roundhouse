@@ -84,7 +84,7 @@ async function handleModernRequest(request, response, service, events, onMutatio
     } else if (message.method === "events/subscribe") {
       result = await events.subscribe(message.params, principalFromRequest(request), meta);
     } else if (message.method === "events/unsubscribe") {
-      result = await events.unsubscribe(message.params, principalFromRequest(request));
+      result = await events.unsubscribe(message.params, principalFromRequest(request), meta);
     } else {
       throw Object.assign(new Error("Method not found"), { code: -32601 });
     }

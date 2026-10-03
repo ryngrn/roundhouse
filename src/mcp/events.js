@@ -185,8 +185,11 @@ export const roundhouseEventDefinition = {
   },
 };
 
-function subscriptionId(owner, url, name, argumentsValue) {
-  return `sub_${sha256(`${owner}\n${url}\n${name}\n${canonical(argumentsValue)}`).slice(0, 32)}`;
+function subscriptionId(owner, url, name, argumentsValue, conversation = null) {
+  const identity = conversation
+    ? `${owner}\n${conversation}\n${url}\n${name}\n${canonical(argumentsValue)}`
+    : `${owner}\n${url}\n${name}\n${canonical(argumentsValue)}`;
+  return `sub_${sha256(identity).slice(0, 32)}`;
 }
 
 function deliveryEvent(data, outbox, subscription) {
@@ -277,7 +280,8 @@ export class McpEventBroker {
     if (params.delivery?.mode !== "webhook" || typeof params.delivery.url !== "string") throw rpcError(-32014, "Unsupported", { feature: "deliveryMode", value: params.delivery?.mode });
     const secret = validateSecret(params.delivery.secret);
     const resolved = await resolveCallback(params.delivery.url, this.allowInsecureLoopback);
-    const id = subscriptionId(owner, resolved.url.href, params.name, argumentsValue);
+    const conversation = conversationReference(meta);
+    const id = subscriptionId(owner, resolved.url.href, params.name, argumentsValue, conversation);
     const now = this.clock();
     const cacheKey = sha256(`${owner}\n${resolved.url.href}`);
     const snapshot = await this.store.read();
@@ -305,7 +309,6 @@ export class McpEventBroker {
     const refreshBefore = ttl === null ? null : new Date(now + ttl).toISOString();
     await this.store.change((data) => {
       const events = eventState(data);
-      const conversation = conversationReference(meta);
       const originating = conversation && argumentsValue.item_id
         ? events.conversations?.[conversation]?.item_ids?.includes(argumentsValue.item_id)
         : false;
@@ -340,13 +343,13 @@ export class McpEventBroker {
     return { resultType: "complete", id, refreshBefore, cursor: null, truncated: false };
   }
 
-  async unsubscribe(params, owner = "local-anonymous") {
+  async unsubscribe(params, owner = "local-anonymous", meta = {}) {
     if (params?.name !== WORK_EVENT_NAME) return { resultType: "complete" };
     const argumentsValue = validateArguments(params.arguments);
     if (params.delivery?.mode !== "webhook" || typeof params.delivery.url !== "string") throw rpcError(-32602, "InvalidParams", { reason: "invalid_delivery" });
     let href;
     try { href = new URL(params.delivery.url).href; } catch { throw rpcError(-32602, "InvalidParams", { reason: "invalid_callback_url" }); }
-    const id = subscriptionId(owner, href, params.name, argumentsValue);
+    const id = subscriptionId(owner, href, params.name, argumentsValue, conversationReference(meta));
     await this.store.change((data) => {
       const events = eventState(data);
       if (events.subscriptions[id]?.owner === owner) events.subscriptions[id].active = false;
