@@ -39,7 +39,8 @@ branch SHA. Executor output cannot select an adapter, authorize a push, or mark 
 job Shipped. Adapter credentials are process-owned and must not be included in the
 durable provisioning request.
 
-The initial `github` adapter creates private repositories or connects repositories
+The initial `github` adapter creates private repositories with GitHub's initial
+commit enabled, or connects repositories
 identified by `owner/name` (or a normal GitHub URL). Requests provide a repository
 name or identity, an absolute or relative local workspace, and optionally an initial
 branch and description. `GITHUB_TOKEN` (or `GH_TOKEN`) supplies API and HTTPS Git

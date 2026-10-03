@@ -327,6 +327,12 @@ dedicated `TEST_DATABASE_URL` is supplied and otherwise reports explicit skips.
 
 The deterministic acceptance harness proves:
 
+- zero-touch repository creation through the fixture-backed GitHub boundary,
+  restart-safe project bootstrap, verified execution through the local-Git adapter,
+  branch push confirmation, and complete provisioning-to-delivery audit evidence
+- existing-repository connection, idempotent retry, uncertain external outcomes,
+  conflicting project/repository mappings, repository-free speculative Inclusion
+  previews, and exact human approval for every sensitive repository action
 - clean server startup using temporary state and configuration
 - browser-facing HTTP/API intake, config save, worker tick, questions, approval,
   status, evidence, and restart reconstruction

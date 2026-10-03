@@ -298,8 +298,16 @@ function response(payload, { status = 200, requestId = "request-1" } = {}) {
 test("github repository adapter: creates private repositories and initializes an idempotently inspectable workspace", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-github-create-"));
   const remote = path.join(directory, "remote.git");
+  const source = path.join(directory, "provider-source");
   fs.mkdirSync(remote);
+  fs.mkdirSync(source);
   command(remote, ["init", "--bare", "--initial-branch=main"]);
+  command(source, ["init", "--initial-branch=main"]);
+  fs.writeFileSync(path.join(source, "README.md"), "provider initialized\n");
+  command(source, ["add", "README.md"]);
+  command(source, ["-c", "user.name=Roundhouse Test", "-c", "user.email=test@roundhouse.invalid", "commit", "-m", "Initial"]);
+  command(source, ["remote", "add", "origin", `file://${remote}`]);
+  command(source, ["push", "origin", "main"]);
   const workspace = path.join(directory, "workspace");
   const requests = [];
   const repository = { id: 1729, full_name: "roundhouse/example", html_url: "https://github.com/roundhouse/example",
@@ -311,10 +319,12 @@ test("github repository adapter: creates private repositories and initializes an
     idempotency_key: "github-create-example" });
 
   assert.equal(JSON.parse(requests[0].options.body).private, true);
+  assert.equal(JSON.parse(requests[0].options.body).auto_init, true);
   assert.match(requests[0].options.headers.Authorization, /^Bearer /);
   assert.equal(created.repository.identity.provider_repository_id, "1729");
   assert.equal(created.repository.lifecycle_state, "ready");
   assert.equal(created.repository.inspection.workspace, workspace);
+  assert.equal(command(workspace, ["rev-parse", "HEAD"]), command(source, ["rev-parse", "HEAD"]));
   assert.equal(command(workspace, ["remote", "get-url", "origin"]), `file://${remote}`);
   assert.equal(command(workspace, ["branch", "--show-current"]), "main");
   assert.doesNotMatch(JSON.stringify(new Store(path.join(directory, "state")).read()), /environment-only/);

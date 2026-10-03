@@ -875,7 +875,9 @@ export class GitHubRepositoryAdapter extends RepositoryAdapter {
     const endpoint = owner ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos";
     const repository = await this.#api("POST", endpoint, {
       name, private: true, description: request.description == null ? undefined : bounded(request.description, 500),
-      auto_init: false,
+      // A bootstrap commit is part of zero-touch provisioning: project
+      // validation and isolated worktrees both require an immutable base.
+      auto_init: true,
     }, "create");
     if (repository.private !== true) {
       throw new RepositoryProviderError("GitHub did not confirm that the created repository is private.", {
@@ -884,7 +886,7 @@ export class GitHubRepositoryAdapter extends RepositoryAdapter {
       });
     }
     try {
-      return await this.#connectedResult(repository, request, { newRepository: true });
+      return await this.#connectedResult(repository, request);
     } catch (error) {
       throw new RepositoryProviderError(error.message, {
         phase: "local_workspace", external_repository_state: "created_confirmed",
@@ -961,9 +963,9 @@ export class GitHubRepositoryAdapter extends RepositoryAdapter {
     return { provider_repository_id: String(repository.id), canonical_url: repository.html_url, display_name: repository.full_name };
   }
 
-  async #connectedResult(repository, request, { newRepository = false } = {}) {
+  async #connectedResult(repository, request) {
     const inspection = await this.#prepareWorkspace({ workspace: request.workspace, remote: repository.clone_url,
-      initialBranch: request.initial_branch ?? repository.default_branch ?? "main", newRepository });
+      initialBranch: request.initial_branch ?? repository.default_branch ?? "main" });
     return { identity: this.#identity(repository), lifecycle_state: inspection.ready ? "ready" : "connected", inspection };
   }
 
@@ -986,7 +988,7 @@ export class GitHubRepositoryAdapter extends RepositoryAdapter {
     return result;
   }
 
-  async #prepareWorkspace({ workspace, remote, initialBranch, newRepository }) {
+  async #prepareWorkspace({ workspace, remote, initialBranch }) {
     const absolute = path.resolve(requiredString(workspace, "workspace"));
     const branch = branchName(initialBranch);
     fs.mkdirSync(absolute, { recursive: true, mode: 0o700 });
@@ -997,12 +999,12 @@ export class GitHubRepositoryAdapter extends RepositoryAdapter {
     else if (existingRemote.stdout.trim() !== remote) throw new Error("Git remote origin already points to a different repository.");
     const head = await this.#git(absolute, ["rev-parse", "--verify", "HEAD"], { optional: true });
     if (!head.passed) {
-      const remoteBranch = newRepository ? null : await this.#git(absolute,
+      const remoteBranch = await this.#git(absolute,
         ["ls-remote", "--exit-code", "origin", `refs/heads/${branch}`], { optional: true, remote });
-      if (remoteBranch?.passed) {
+      if (remoteBranch.passed) {
         await this.#git(absolute, ["fetch", "origin", `refs/heads/${branch}:refs/remotes/origin/${branch}`], { remote });
         await this.#git(absolute, ["checkout", "-B", branch, `origin/${branch}`]);
-      } else if (newRepository || remoteBranch.exit_code === 2) {
+      } else if (remoteBranch.exit_code === 2) {
         await this.#git(absolute, ["symbolic-ref", "HEAD", `refs/heads/${branch}`]);
       } else throw new Error(`Git ls-remote failed: ${bounded(remoteBranch.stderr || remoteBranch.stdout || `exit ${remoteBranch.exit_code}`, 500)}`);
     }
@@ -1019,7 +1021,7 @@ export class GitHubRepositoryAdapter extends RepositoryAdapter {
     const status = await this.#git(absolute, ["status", "--porcelain"], { optional: true });
     const remoteUrl = remote.passed ? remote.stdout.trim() : null;
     const currentBranch = branch.passed ? branch.stdout.trim() : "";
-    return { ready: remoteUrl === expectedRemote && Boolean(currentBranch) && status.passed,
+    return { ready: remoteUrl === expectedRemote && Boolean(currentBranch) && head.passed && status.passed,
       workspace: absolute, remote: remoteUrl,
       default_ref: currentBranch || null, head: head.passed ? head.stdout.trim() : null,
       clean: status.passed ? status.stdout.trim() === "" : null };
