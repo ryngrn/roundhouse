@@ -4,3 +4,6 @@ config/projects.local.yaml
 *.log
 build/
 .neon
+.agents/
+artifacts/
+skills-lock.json
