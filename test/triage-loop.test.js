@@ -144,6 +144,25 @@ test("material ambiguity becomes focused Needs You and is not re-polled until re
   assert.equal(itemView(h.store.read(), current).display_state, "Needs a signal");
 });
 
+test("project naming remains a focused Needs You decision before configuration blocking", async () => {
+  const h = harness();
+  const item = h.store.submit({ text: "Create a new product after its durable name is chosen.", project_hint: "Unnamed product",
+    source: "test", actor: "test" }, "unnamed-project");
+  const engine = engineWith(h, async () => ({
+    project: null, project_confidence: 0.99, execution_confidence: 0,
+    sufficient_context: false, safe_to_execute: false, approval_required: false,
+    decision: "clarify", reason: "Naming changes the durable project identity.",
+    questions: [{ prompt: "What durable name should this project use?", decision_key: "project.durable_name" }],
+    dependencies: [], executor: "codex", runtime: "local", shipping_policy: "push_branch",
+    should_decompose: false, work_items: [],
+  }));
+  await engine.runTriage({ limit: 1 });
+  const current = h.store.read().items[item.id];
+  assert.equal(current.state, "Needs Clarification");
+  assert.equal(current.questions.filter((question) => question.status === "open").length, 1);
+  assert.equal(current.questions.find((question) => question.status === "open").prompt, "What durable name should this project use?");
+});
+
 test("blocked dependencies are fingerprint-gated and retry only after relevant revision change", async () => {
   const h = harness();
   h.submit("needs shared dependency");
