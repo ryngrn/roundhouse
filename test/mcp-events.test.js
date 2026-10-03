@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { Webhook } from "standardwebhooks";
 import { harness } from "./support/harness.js";
 import { Store } from "../src/workflow/store.js";
+import { Engine } from "../src/workflow/engine.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { MCP_PROTOCOL_VERSION, McpEventBroker, WORK_EVENT_NAME } from "../src/mcp/events.js";
 import { startMcpHttpServer } from "../src/mcp/http-server.js";
@@ -101,6 +102,67 @@ test("MCP Events: supported ChatGPT submission establishes an item follow withou
   assert.equal(persisted.conversation.id, stored.conversation.id);
 });
 
+test("MCP Events: originating ChatGPT subscription survives restart and receives correlated completion", async (t) => {
+  const h = harness();
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  const receiver = await callbackReceiver(secret);
+  t.after(receiver.close);
+  const conversationMeta = { "openai/session": "disposable-completion-conversation" };
+  const initialService = new RoundhouseService({ store: h.store, engine: h.engine });
+  let running = await startMcpHttpServer({
+    service: initialService,
+    eventBroker: new McpEventBroker({ service: initialService, allowInsecureLoopback: true, timeoutMs: 2_000 }),
+    port: 0,
+  });
+  t.after(async () => { if (running) await running.close(); });
+
+  const added = await rpc(running.url, "submit", "tools/call", {
+    name: "add_to_depot",
+    arguments: {
+      content: "complete the disposable callback fixture",
+      project_hint: "example",
+      idempotency_key: "originating-completion",
+    },
+  }, conversationMeta);
+  const itemId = added.result.structuredContent.item.id;
+  const subscribed = await rpc(running.url, "subscribe", "events/subscribe", {
+    name: added.result.structuredContent.follow.event,
+    arguments: added.result.structuredContent.follow.arguments,
+    delivery: { mode: "webhook", url: receiver.url, secret },
+    cursor: null,
+  }, conversationMeta);
+  const beforeRestart = new Store(h.store.directory).read().mcp_events.subscriptions[subscribed.result.id];
+  assert.equal(beforeRestart.active, true);
+  assert.equal(beforeRestart.conversation.relationship, "originating_submission");
+
+  await running.close();
+  running = null;
+  const restartedStore = new Store(h.store.directory);
+  const restartedEngine = new Engine({ store: restartedStore, config: h.config });
+  const restartedService = new RoundhouseService({ store: restartedStore, engine: restartedEngine });
+  const restartedBroker = new McpEventBroker({ service: restartedService, allowInsecureLoopback: true, timeoutMs: 2_000 });
+  running = await startMcpHttpServer({ service: restartedService, eventBroker: restartedBroker, port: 0 });
+
+  const reconstructed = restartedStore.read().mcp_events.subscriptions[subscribed.result.id];
+  assert.equal(reconstructed.active, true);
+  assert.equal(reconstructed.conversation.id, beforeRestart.conversation.id);
+  await restartedEngine.run();
+  await restartedBroker.drain();
+
+  assert.equal(receiver.received.length, 1);
+  const completion = receiver.received[0];
+  assert.equal(completion.body.data.item_id, itemId);
+  assert.equal(completion.body.data.state, "Shipped");
+  assert.equal(completion.body.data.kind, "shipped");
+  assert.equal(completion.headers["x-mcp-subscription-id"], subscribed.result.id);
+  assert.equal(completion.headers["webhook-id"], completion.body.eventId);
+  const deliveries = Object.values(restartedStore.read().mcp_events.deliveries);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].subscription_id, subscribed.result.id);
+  assert.equal(deliveries[0].event_id, completion.body.eventId);
+  assert.equal(deliveries[0].status, "delivered");
+});
+
 async function callbackReceiver(secret, { failFirstDelivery = false } = {}) {
   const received = [];
   const attempts = [];
@@ -179,6 +241,9 @@ test("MCP Events: discover, list, durable subscription, signed delivery, dedupe,
   const stored = new Store(h.store.directory).read().mcp_events.subscriptions[subscribed.result.id];
   assert.equal(stored.active, true);
   assert.equal(stored.delivery.url, receiver.url);
+  const refreshed = await rpc(running.url, "refresh", "events/subscribe", subscriptionParams);
+  assert.equal(refreshed.result.id, subscribed.result.id);
+  assert.equal(Object.keys(new Store(h.store.directory).read().mcp_events.subscriptions).length, 1);
 
   await running.close();
   running = null;

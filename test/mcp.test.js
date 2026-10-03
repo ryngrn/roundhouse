@@ -24,7 +24,7 @@ const statusWithHost = (url, host) => new Promise((resolve, reject) => {
   request.on("error", reject);
 });
 
-test("integration: MCP transport captures, queries, answers, re-evaluates, and persists Roundhouse state", async (t) => {
+test("integration: MCP transport provides polling fallback when Events are unavailable", async (t) => {
   const h = harness();
   const { client, running } = await connected(h);
   t.after(async () => { await client.close(); await running.close(); });
@@ -52,6 +52,10 @@ test("integration: MCP transport captures, queries, answers, re-evaluates, and p
   assert.equal(added.isError, undefined);
   assert.equal(added.structuredContent.item.state, "Depot");
   const itemId = added.structuredContent.item.id;
+  assert.deepEqual(added.structuredContent.follow, {
+    event: "roundhouse.work.updated",
+    arguments: { item_id: itemId, include_progress: false },
+  });
   const restarted = new Store(h.store.directory).read().items[itemId];
   assert.equal(restarted.input.text, "  ambiguous MCP idea\n");
   assert.equal(restarted.input.project_hint, "Maybe Example");

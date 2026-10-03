@@ -29,7 +29,9 @@ Manual polling remains the fallback everywhere the tools work: use
 Roundhouse's tool guidance directs ChatGPT to follow a successful submission with
 an immediate `roundhouse.work.updated` subscription for the returned item ID. This
 does not require an intervening status request. The tool result includes a typed
-`follow` target containing the event name and item arguments. The standard
+`follow` target containing the event name and item arguments; ChatGPT uses that
+target to call `events/subscribe`. Roundhouse does not claim that the follow is
+durable until that subscription request succeeds. The standard
 subscription request has exactly one of these scopes:
 
 ```json
@@ -89,7 +91,7 @@ OpenAI currently documents MCP Events on these surfaces only:
 
 - Work chats on ChatGPT web
 - Work chats in the desktop app with **Cloud** selected
-- dots
+- OpenAI dots
 
 Workspace plugin and event-trigger controls still apply. This is not universal
 mobile support. See OpenAI's current [MCP Events guide](https://developers.openai.com/plugins/build/mcp-events)
@@ -151,9 +153,9 @@ this local vertical-slice test; no custom UI is required.
 
 OpenAI's current documentation demonstrates personal plugin testing in ChatGPT Work
 on the web and says developer-mode availability depends on account and workspace
-policy. Events additionally support the desktop Work + Cloud surface and dots as
-listed above. It does not establish equivalent universal mobile support, so do not
-create a mobile-specific architecture workaround.
+policy. Events additionally support the desktop Work + Cloud surface and OpenAI
+dots as listed above. It does not establish equivalent universal mobile support,
+so do not create a mobile-specific architecture workaround.
 
 This repository supplies no public MCP hosting or OAuth service. The server is
 bound to loopback by default. OpenAI's current guidance says write actions or
