@@ -10,7 +10,7 @@ export function serviceLaunchAgent({ node, repository, home }) {
 <plist version="1.0"><dict>
   <key>Label</key><string>io.roundhouse.service</string>
   <key>ProgramArguments</key><array>
-${strings([node, `${repository}/src/server/app-server.js`])}
+${strings(["/bin/zsh", `${repository}/scripts/macos/service-wrapper.sh`, node, repository])}
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>ROUNDHOUSE_STATE_DIR</key><string>${escapeXml(`${support}/state`)}</string>

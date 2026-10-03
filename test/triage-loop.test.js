@@ -27,6 +27,69 @@ function engineWith(h, decide, options = {}) {
   return new Engine({ store: h.store, config: h.config, decision: { decide }, ...options });
 }
 
+test("shared worker serializes triage and dispatch into one control-plane cycle", async () => {
+  let active = 0;
+  let peak = 0;
+  let triageCalls = 0;
+  let dispatchCalls = 0;
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 15));
+  const engine = {
+    store: { shared: true },
+    runTriage: async () => {
+      triageCalls += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      await pause();
+      active -= 1;
+      return { triaged: 0 };
+    },
+    runDispatch: async () => {
+      dispatchCalls += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      await pause();
+      active -= 1;
+      return { executed: 0 };
+    },
+  };
+  const worker = new WorkerLoop({ service: { engine } });
+  await Promise.all([worker.tick(), worker.tick()]);
+  assert.equal(peak, 1);
+  assert.equal(triageCalls, 1);
+  assert.equal(dispatchCalls, 1);
+});
+
+test("shared worker routes one queued remote signal before triage and dispatch", async () => {
+  const order = [];
+  let queued = { id: "command-1", kind: "intake", payload: { content: "phone intake" } };
+  let finished;
+  const store = {
+    shared: true,
+    claimRemoteCommand: async () => { const command = queued; queued = null; return command; },
+    finishRemoteCommand: async (id, outcome) => { finished = { id, ...outcome }; },
+  };
+  const service = {
+    store,
+    addToDepot: async (payload, adapter) => {
+      order.push("command");
+      assert.equal(payload.content, "phone intake");
+      assert.equal(adapter.source, "remote-dashboard");
+      return { item: { id: "item-1" } };
+    },
+    engine: {
+      store,
+      runTriage: async () => { order.push("triage"); return { triaged: 0 }; },
+      runDispatch: async () => { order.push("dispatch"); return { executed: 0 }; },
+    },
+  };
+  const worker = new WorkerLoop({ service });
+  const result = await worker.tick();
+  assert.deepEqual(order, ["command", "triage", "dispatch"]);
+  assert.equal(result.remote_commands, 1);
+  assert.equal(finished.id, "command-1");
+  assert.equal(finished.result.item.id, "item-1");
+});
+
 test("continuous triage automatically evaluates new Depot work without dispatch", async () => {
   const h = harness();
   const item = h.submit("automatic control-plane evaluation");

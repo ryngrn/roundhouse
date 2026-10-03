@@ -94,8 +94,10 @@ test("postgres: two nodes racing claim exactly one job and expose its owner", { 
 
 test("postgres: racing workers execute and ship one claimed job exactly once", { skip: !enabled }, async () => {
   await reset();
-  const first = await open("worker-one", 2_000);
-  const second = await open("worker-two", 2_000);
+  // Use the production lease window: a hosted database can spend more than
+  // two seconds on the first transaction before the heartbeat is observable.
+  const first = await open("worker-one", 60_000);
+  const second = await open("worker-two", 60_000);
   const repository = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-pg-project-"));
   const project = {
     id: "project-1", name: "Project", purpose: "Test claims", success_state: "One delivery", status: "active", repository,

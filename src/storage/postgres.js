@@ -13,6 +13,7 @@ const migrations = [
   { version: 2, name: "mcp_event_state", file: path.join(here, "migrations", "002_mcp_event_state.sql") },
   { version: 3, name: "durable_item_revisions", file: path.join(here, "migrations", "003_durable_item_revisions.sql") },
   { version: 4, name: "attempt_node_identity", file: path.join(here, "migrations", "004_attempt_node_identity.sql") },
+  { version: 5, name: "remote_commands", file: path.join(here, "migrations", "005_remote_commands.sql") },
 ];
 const snapshotLock = 714_209_533;
 
@@ -24,6 +25,10 @@ function date(value, fallback = new Date().toISOString()) {
   if (!value) return fallback;
   const parsed = new Date(value);
   return Number.isNaN(parsed.valueOf()) ? fallback : parsed.toISOString();
+}
+
+function json(value) {
+  return value == null ? null : JSON.stringify(value);
 }
 
 function databaseTls(connectionString, allowInsecure) {
@@ -176,7 +181,7 @@ async function writeSnapshot(client, data) {
         attempt.node_id ?? null, attempt.node_name ?? null, attempt.failure ?? null, attempt]);
       if (attempt.execution) await client.query(`INSERT INTO roundhouse.execution_metadata
         (job_id,attempt_number,command,started_at,finished_at,exit_code,passed,timed_out,overflow,report)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [job.id, number, attempt.execution.command ?? null, attempt.execution.started_at ? date(attempt.execution.started_at) : null,
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [job.id, number, json(attempt.execution.command), attempt.execution.started_at ? date(attempt.execution.started_at) : null,
         attempt.execution.finished_at ? date(attempt.execution.finished_at) : null, attempt.execution.exit_code ?? null, attempt.execution.passed ?? null,
         attempt.execution.timed_out ?? null, attempt.execution.overflow ?? null, attempt.execution.report ?? null]);
       if (attempt.verification) {
@@ -239,7 +244,7 @@ export class PostgresStorageRepository extends StorageRepository {
   static async open({ connectionString, directory, node, allowInsecure = false, leaseMs } = {}) {
     if (!connectionString) throw new Error("DATABASE_URL is required for PostgreSQL storage.");
     const pool = new Pool({ connectionString, ssl: databaseTls(connectionString, allowInsecure), max: 12,
-      connectionTimeoutMillis: 5_000, query_timeout: 10_000, application_name: `roundhouse:${node.name}` });
+      connectionTimeoutMillis: 5_000, query_timeout: 120_000, application_name: `roundhouse:${node.name}` });
     const store = new PostgresStorageRepository({ pool, directory, node, leaseMs });
     try {
       await store.migrate();
@@ -387,6 +392,31 @@ export class PostgresStorageRepository extends StorageRepository {
       const job = result.rows[0].payload;
       return { job, lease: { resource_kind: "job", resource_key: job.id, owner_node_id: this.node.id, token } };
     });
+  }
+
+  async claimRemoteCommand() {
+    return tx(this.pool, async (client) => {
+      const result = await client.query(`WITH next AS (
+          SELECT id FROM roundhouse.remote_commands
+          WHERE status='queued' ORDER BY created_at,id
+          FOR UPDATE SKIP LOCKED LIMIT 1
+        )
+        UPDATE roundhouse.remote_commands command
+        SET status='processing', claimed_at=clock_timestamp(), claimed_by=$1
+        FROM next WHERE command.id=next.id
+        RETURNING command.id,command.kind,command.payload,command.created_at`, [this.node.id]);
+      return result.rows[0] ?? null;
+    });
+  }
+
+  async finishRemoteCommand(id, { result = null, error = null } = {}) {
+    const status = error ? "failed" : "completed";
+    const response = await this.pool.query(`UPDATE roundhouse.remote_commands
+      SET status=$2,result=$3,error=$4,finished_at=clock_timestamp()
+      WHERE id=$1 AND status='processing' AND claimed_by=$5
+      RETURNING id,status,result,error,finished_at`, [id, status, result, error, this.node.id]);
+    if (!response.rowCount) throw new Error(`Remote command ownership lost: ${id}`);
+    return response.rows[0];
   }
 
   async recoverExpiredClaims() {

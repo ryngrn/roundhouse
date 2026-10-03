@@ -49,10 +49,12 @@ the service's real `DATABASE_URL` and restart it once. Keep the JSON backup for
 audit/recovery, but do not resume JSON writes after cutover.
 
 The macOS installer deliberately does not copy a connection URL from the shell into
-a plist. Inject `DATABASE_URL` through the service manager or an operator-controlled
-secret manager, then restart the service. For a temporary launchd session this can
-be done with `launchctl setenv DATABASE_URL "$DATABASE_URL"`; arrange durable secret
-injection separately before relying on unattended restarts.
+a plist. Its service wrapper optionally loads
+`~/Library/Application Support/Roundhouse/neon.env`, provided the file is a regular
+file owned by the service user with mode `0400` or `0600`. The wrapper exports the
+pooled `DATABASE_URL`, removes `DATABASE_URL_UNPOOLED` and `NEON_BRANCH`, and then
+executes the service. `neon env pull --service postgres --file <that-path>` can
+maintain the private file without placing credentials in Git or the plist.
 
 ## Claims, leases, and failures
 

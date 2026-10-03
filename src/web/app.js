@@ -2,6 +2,33 @@ const $ = (selector) => document.querySelector(selector);
 let configuration = { projects: [] };
 let currentOverview = null;
 let activeSession = null;
+let dashboardFilters = { status: "all", project: null, search: "", sort: "priority", show: "active", view: "list" };
+
+const TRAIN_LANGUAGE = Object.freeze({
+  needs: "Needs a signal",
+  active: "Chugging along",
+  queued: "Ready to depart",
+  shipped: "Reached the station",
+  blocked: "Held up",
+  depot: "Depot",
+  next: "Next departure",
+});
+
+const trainState = (state) => {
+  if (["Needs You", "Needs Clarification", "Review"].includes(state)) return TRAIN_LANGUAGE.needs;
+  if (["Decision", "Executing", "Verification", "Rework"].includes(state)) return TRAIN_LANGUAGE.active;
+  if (state === "Ready") return TRAIN_LANGUAGE.queued;
+  if (["Shipped", "Imported History"].includes(state)) return TRAIN_LANGUAGE.shipped;
+  if (state === "Blocked") return TRAIN_LANGUAGE.blocked;
+  if (["Depot", "Imported Pending"].includes(state)) return TRAIN_LANGUAGE.depot;
+  return state;
+};
+
+function renderTrainLanguage() {
+  for (const element of document.querySelectorAll?.("[data-train-label]") || []) {
+    element.textContent = TRAIN_LANGUAGE[element.dataset.trainLabel] || element.textContent;
+  }
+}
 
 async function api(url, options = {}) {
   const response = await fetch(url, options);
@@ -25,6 +52,65 @@ const slug = (value) => String(value || "").toLowerCase().replaceAll(" ", "-");
 const projectLabel = (item) => item.project || item.project_candidate?.name || "Unassigned";
 const shortDate = (value) => value ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value)) : "—";
 
+const PROJECT_VISUALS = [
+  { match: /roundhouse/i, emoji: "🚂", accent: "#b9d76c" },
+  { match: /omnia/i, emoji: "👥", accent: "#5aa7e8" },
+  { match: /growthpath/i, emoji: "🌱", accent: "#78c89a" },
+  { match: /ryan\.?green/i, emoji: "💻", accent: "#ae8cff" },
+  { match: /inclusion/i, emoji: "♿", accent: "#e8a86f" },
+  { match: /stringed|guitar/i, emoji: "🎸", accent: "#e7b45f" },
+  { match: /cemetery/i, emoji: "🪦", accent: "#9ca1b3" },
+  { match: /family legacy/i, emoji: "🌳", accent: "#68b184" },
+  { match: /ipad|monitor/i, emoji: "📱", accent: "#72b8c9" },
+  { match: /drummer|drum/i, emoji: "🥁", accent: "#d18ce8" },
+];
+
+function projectVisual(group) {
+  const label = [group.id, group.name].filter(Boolean).join(" ");
+  return PROJECT_VISUALS.find((visual) => visual.match.test(label)) || { emoji: "📦", accent: "#78827d" };
+}
+
+function statusMatches(item, key) {
+  if (!key || key === "all") return true;
+  if (key === "needs") return item.needs_you;
+  if (key === "active") return ["Decision", "Executing", "Verification", "Rework"].includes(item.state);
+  if (key === "queued") return ["Depot", "Ready", "Imported Pending"].includes(item.state) && !item.needs_you;
+  if (key === "shipped") return ["Shipped", "Imported History", "Archived", "Reconciled"].includes(item.state);
+  if (key === "blocked") return item.state === "Blocked";
+  return true;
+}
+
+function priorityValue(item) {
+  const match = String(item.priority || "").match(/\d+/);
+  return match ? Number(match[0]) : 99;
+}
+
+function projectIsCompleted(group) {
+  return group.items.length > 0 && group.items.every((item) => ["Shipped", "Imported History", "Archived", "Reconciled"].includes(item.state));
+}
+
+function updateFilterControls() {
+  for (const button of document.querySelectorAll?.("[data-filter-key]") || []) {
+    const selected = button.dataset.filterKey === dashboardFilters.status;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  }
+  for (const button of document.querySelectorAll?.("[data-view]") || []) {
+    const selected = button.dataset.view === dashboardFilters.view;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  }
+  const clear = $("#clear-filter");
+  if (clear) clear.hidden = dashboardFilters.status === "all" && !dashboardFilters.project && !dashboardFilters.search;
+}
+
+function setDashboardFilter(next) {
+  dashboardFilters = { ...dashboardFilters, ...next };
+  updateFilterControls();
+  if (currentOverview) renderBoard(currentOverview);
+}
+
+
 function submitOnEnter(textarea, form) {
   textarea.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
@@ -38,10 +124,9 @@ function renderConnection(overview) {
   const authority = storage ? `${storage.kind}${storage.node?.name ? ` · ${storage.node.name}` : ""}` : "storage ready";
   $("#connection").textContent = `● App online · ${authority} · worker ${worker}`;
   $("#connection").className = "connection connected";
+  $("#count-all").textContent = overview.items.length;
   const countIds = { needs_you: "needs", active: "active", queued: "queued", completed: "completed", blocked: "blocked" };
-  for (const [key, id] of Object.entries(countIds)) $(`#count-${id}`).textContent = overview.counts[key];
-  const next = overview.next_departure;
-  $("#next-departure").textContent = next ? `Next departure · ${next.title}${next.priority ? ` · ${next.priority}` : ""}` : "Next departure · none ready";
+  for (const [key, id] of Object.entries(countIds)) $("#count-" + id).textContent = overview.counts[key];
 }
 
 function rowMeta(label, value, className = "") {
@@ -56,9 +141,11 @@ function workRow(item) {
   button.setAttribute("aria-label", `Open ${item.title}, ${item.display_state}`);
   const identity = node("span", undefined, "row-identity");
   const kicker = node("span", undefined, "row-kicker");
-  kicker.append(node("span", item.display_state, `state state-${slug(item.display_state)}`));
+  const state = node("span", trainState(item.display_state), `state state-${slug(item.display_state)}`);
+  state.title = item.display_state;
+  kicker.append(state);
   if (item.priority) kicker.append(node("span", item.priority, "priority"));
-  identity.append(kicker, node("strong", item.title), node("span", item.triage?.reason || item.reason || item.brief || item.summary, "row-reason"));
+  identity.append(kicker, node("strong", item.title), node("span", item.reason || item.brief || item.summary, "row-reason"));
   const facts = node("span", undefined, "row-facts");
   facts.append(
     rowMeta("Role", item.agent_role || "Unassigned"),
@@ -77,45 +164,151 @@ function workRow(item) {
 function groupStatus(items) {
   return {
     needs: items.filter((item) => item.needs_you).length,
-    active: items.filter((item) => ["Executing", "Verification", "Rework"].includes(item.state)).length,
-    queued: items.filter((item) => item.state === "Ready" && !item.needs_you).length,
-    shipped: items.filter((item) => ["Shipped", "Imported History", "Archived", "Reconciled"].includes(item.state)).length,
+    active: items.filter((item) => ["Decision", "Executing", "Verification", "Rework"].includes(item.state)).length,
+    queued: items.filter((item) => ["Depot", "Ready", "Imported Pending"].includes(item.state) && !item.needs_you).length,
+    shipped: items.filter((item) => ["Shipped", "Imported History"].includes(item.state)).length,
     blocked: items.filter((item) => item.state === "Blocked").length,
   };
 }
 
 function renderBoard(overview) {
-  const root = $("#project-board"); root.replaceChildren();
+  const root = $("#project-board");
+  root.replaceChildren();
+  root.className = "project-board view-" + dashboardFilters.view;
+
   const configured = new Map((configuration.projects || []).map((project) => [project.id, project]));
   const groups = new Map();
-  for (const project of configuration.projects || []) groups.set(`project:${project.id}`, { type: "project", id: project.id, name: project.name, detail: project.purpose, items: [] });
-  for (const candidate of Object.values(overview.project_candidates || {})) groups.set(`candidate:${candidate.id}`, { type: "candidate", id: candidate.id, name: candidate.name, detail: "Project candidate · execution not configured", items: [] });
-  groups.set("unassigned", { type: "unassigned", name: "Unknown / Unassigned", detail: "Project still needs to be identified", items: [] });
+  for (const project of configuration.projects || []) {
+    groups.set("project:" + project.id, {
+      key: "project:" + project.id, type: "project", id: project.id, name: project.name,
+      detail: project.purpose, status: project.status || "active", items: [],
+    });
+  }
+  for (const candidate of Object.values(overview.project_candidates || {})) {
+    groups.set("candidate:" + candidate.id, {
+      key: "candidate:" + candidate.id, type: "candidate", id: candidate.id, name: candidate.name,
+      detail: "Project candidate · execution not configured", status: candidate.status || "candidate", items: [],
+    });
+  }
+  groups.set("unassigned", {
+    key: "unassigned", type: "unassigned", id: "unassigned", name: "Unknown / Unassigned",
+    detail: "Project still needs to be identified", status: "candidate", items: [],
+  });
+
   for (const item of overview.items) {
-    const key = item.project ? `project:${item.project}` : item.project_candidate ? `candidate:${item.project_candidate.id}` : "unassigned";
-    if (!groups.has(key)) groups.set(key, { type: "project", id: item.project, name: configured.get(item.project)?.name || item.project, detail: "Configured project", items: [] });
+    const key = item.project ? "project:" + item.project : item.project_candidate ? "candidate:" + item.project_candidate.id : "unassigned";
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key, type: "project", id: item.project, name: configured.get(item.project)?.name || item.project,
+        detail: configured.get(item.project)?.purpose || "Configured project", status: configured.get(item.project)?.status || "active", items: [],
+      });
+    }
     groups.get(key).items.push(item);
   }
-  const ordered = [...groups.values()].filter((group) => group.items.length || group.type === "project")
-    .sort((a, b) => (a.type === "project" ? 0 : a.type === "candidate" ? 1 : 2) - (b.type === "project" ? 0 : b.type === "candidate" ? 1 : 2) || a.name.localeCompare(b.name));
-  if (!ordered.length) return root.append(node("p", "No projects or work yet.", "empty-state"));
+
+  const query = dashboardFilters.search.trim().toLowerCase();
+  let ordered = [...groups.values()]
+    .filter((group) => group.items.length || group.type === "project")
+    .filter((group) => dashboardFilters.show === "all" || (dashboardFilters.show === "completed" ? projectIsCompleted(group) : !projectIsCompleted(group) || group.status === "active"))
+    .filter((group) => !dashboardFilters.project || group.key === dashboardFilters.project)
+    .map((group) => {
+      const groupMatches = !query || [group.name, group.detail].some((value) => String(value || "").toLowerCase().includes(query));
+      let visibleItems = group.items.filter((item) => statusMatches(item, dashboardFilters.status));
+      if (query && !groupMatches) {
+        visibleItems = visibleItems.filter((item) =>
+          [item.title, item.summary, item.reason, item.brief, item.agent_role, item.priority]
+            .some((value) => String(value || "").toLowerCase().includes(query)));
+      }
+      return { ...group, visibleItems, groupMatches };
+    })
+    .filter((group) => {
+      if (dashboardFilters.status !== "all" && !group.visibleItems.length) return false;
+      if (query && !group.groupMatches && !group.visibleItems.length) return false;
+      return true;
+    });
+
+  if (dashboardFilters.sort === "name") {
+    ordered.sort((a, b) => a.name.localeCompare(b.name));
+  } else if (dashboardFilters.sort === "updated") {
+    ordered.sort((a, b) => {
+      const latest = (group) => Math.max(0, ...group.items.map((item) => Date.parse(item.updated_at || item.created_at || 0) || 0));
+      return latest(b) - latest(a) || a.name.localeCompare(b.name);
+    });
+  } else {
+    ordered.sort((a, b) => {
+      const best = (group) => Math.min(99, ...group.items.map(priorityValue));
+      return best(a) - best(b) || a.name.localeCompare(b.name);
+    });
+  }
+
+  const visibleCount = ordered.reduce((sum, group) => sum + group.visibleItems.length, 0);
+  const itemCount = $("#project-item-count");
+  if (itemCount) itemCount.textContent = visibleCount + (visibleCount === 1 ? " item" : " items");
+
+  if (!ordered.length) {
+    root.append(node("p", "No projects match these filters.", "empty-state"));
+    return;
+  }
+
   for (const group of ordered) {
-    const section = node("section", undefined, "project-group");
+    const visual = projectVisual(group);
+    const section = node("section", undefined, "project-group project-card");
+    section.style.setProperty("--project-accent", visual.accent);
+
     const heading = node("header", undefined, "project-heading");
-    const title = node("div"); title.append(node("span", group.type === "project" ? "Project" : group.type === "candidate" ? "Candidate" : "Intake", "eyebrow"), node("h3", group.name), node("p", group.detail || "", "project-detail"));
+    const identity = node("button", undefined, "project-identity");
+    identity.type = "button";
+    identity.setAttribute("aria-label", "Filter to " + group.name);
+    identity.setAttribute("aria-pressed", String(dashboardFilters.project === group.key));
+    identity.addEventListener("click", () => {
+      setDashboardFilter({ project: dashboardFilters.project === group.key ? null : group.key });
+    });
+
+    const icon = node("span", visual.emoji, "project-icon");
+    icon.setAttribute("aria-hidden", "true");
+    const copy = node("span", undefined, "project-copy");
+    copy.append(node("strong", group.name), node("span", group.detail || "", "project-detail"));
+    identity.append(icon, copy);
+
     const counts = groupStatus(group.items);
-    const atGlance = node("dl", undefined, "project-counts");
-    for (const [label, value] of [["Needs a signal", counts.needs], ["Chugging along…", counts.active], ["Ready to depart", counts.queued], ["Reached the station", counts.shipped], ["Held up", counts.blocked]]) {
-      const cell = node("div"); cell.append(node("dt", label), node("dd", String(value))); atGlance.append(cell);
+    const atGlance = node("div", undefined, "project-counts");
+    const statuses = [
+      ["needs", TRAIN_LANGUAGE.needs, counts.needs],
+      ["active", TRAIN_LANGUAGE.active, counts.active],
+      ["queued", TRAIN_LANGUAGE.queued, counts.queued],
+      ["shipped", TRAIN_LANGUAGE.shipped, counts.shipped],
+      ["blocked", TRAIN_LANGUAGE.blocked, counts.blocked],
+    ];
+    for (const [key, label, value] of statuses) {
+      if (!value) continue;
+      const filter = node("button", undefined, "project-status status-filter-" + key);
+      filter.type = "button";
+      filter.setAttribute("aria-label", "Filter " + group.name + " by " + label);
+      filter.setAttribute("aria-pressed", String(dashboardFilters.project === group.key && dashboardFilters.status === key));
+      filter.append(node("span", label), node("strong", String(value)));
+      filter.addEventListener("click", () => {
+        const same = dashboardFilters.project === group.key && dashboardFilters.status === key;
+        setDashboardFilter({ project: same ? null : group.key, status: same ? "all" : key });
+      });
+      atGlance.append(filter);
     }
-    heading.append(title, atGlance); section.append(heading);
+
+    const chevron = node("button", "›", "project-chevron");
+    chevron.type = "button";
+    chevron.setAttribute("aria-label", "Filter to " + group.name);
+    chevron.addEventListener("click", () => setDashboardFilter({ project: dashboardFilters.project === group.key ? null : group.key }));
+    heading.append(identity, atGlance, chevron);
+    section.append(heading);
+
     const labels = node("div", undefined, "row-labels");
     labels.append(node("span", "Work / current activity"), node("span", "Ownership / delivery"), node("span", "Updated"));
     section.append(labels);
+
     const rows = node("div", undefined, "work-rows");
-    if (!group.items.length) rows.append(node("p", "No current work", "empty-state compact"));
-    for (const item of group.items) rows.append(workRow(item));
-    section.append(rows); root.append(section);
+    if (!group.visibleItems.length) rows.append(node("p", "No matching work", "empty-state compact"));
+    for (const item of group.visibleItems) rows.append(workRow(item));
+    section.append(rows);
+    root.append(section);
   }
 }
 
@@ -130,7 +323,7 @@ function detailSection(title, value, className = "") {
 
 function renderOverview(item) {
   const root = node("div", undefined, "detail-grid");
-  for (const section of [detailSection("Outcome", item.outcome || item.brief || "Outcome is still being defined.", "featured"), detailSection("Triage activity", item.triage), detailSection("Brief", item.brief), detailSection("Context", item.context), detailSection("Acceptance criteria", item.acceptance_criteria)]) if (section) root.append(section);
+  for (const section of [detailSection("Outcome", item.outcome || item.brief || "Outcome is still being defined.", "featured"), detailSection("Brief", item.brief), detailSection("Context", item.context), detailSection("Acceptance criteria", item.acceptance_criteria)]) if (section) root.append(section);
   const raw = node("details", undefined, "raw-details"); raw.append(node("summary", "Raw intake"), node("p", item.raw_intake)); root.append(raw);
   if (item.legacy) { const legacy = node("details", undefined, "raw-details"); legacy.append(node("summary", "Imported record fields"), node("pre", JSON.stringify(item.legacy, null, 2))); root.append(legacy); }
   return root;
@@ -232,7 +425,7 @@ function openWork(itemId) {
   activeSession = { item: structuredClone(item), questions: structuredClone(item.questions || []), drafts: new Map(), index: 0, stale: false, tab: item.needs_you ? "decisions" : "overview" };
   $("#work-project").textContent = projectLabel(item); $("#work-dialog-title").textContent = item.title; $("#work-outcome").textContent = item.outcome || item.brief || item.summary;
   const strip = $("#work-status-strip"); strip.replaceChildren();
-  for (const value of [item.display_state, item.priority, item.agent_role ? `Role · ${item.agent_role}` : null, item.owning_node ? `Node · ${item.owning_node}` : null, `Verify · ${item.verification_status}`, `Ship · ${item.shipping_status}`].filter(Boolean)) strip.append(node("span", value));
+  for (const value of [`${trainState(item.display_state)} · ${item.display_state}`, item.priority, item.agent_role ? `Role · ${item.agent_role}` : null, item.owning_node ? `Node · ${item.owning_node}` : null, `Verify · ${item.verification_status}`, `Ship · ${item.shipping_status}`].filter(Boolean)) strip.append(node("span", value));
   $("#decision-count").textContent = item.questions.length ? String(item.questions.length) : "";
   renderActiveTab(); $("#work-dialog").showModal();
 }
@@ -250,7 +443,7 @@ function reconcileOpenSession(overview) {
 async function load() {
   try {
     const [overview, config] = await Promise.all([api("/api/overview"), api("/api/config")]); currentOverview = overview; configuration = config.configuration;
-    renderConnection(overview); renderBoard(overview); reconcileOpenSession(overview);
+    renderConnection(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
   } catch (error) { $("#connection").textContent = `● App unavailable · ${error.message}`; $("#connection").className = "connection failed"; }
 }
 
@@ -266,6 +459,21 @@ intakeForm.addEventListener("submit", async (event) => {
   } catch (error) { message.textContent = error.message; } finally { intakeSubmitting = false; }
 });
 
+for (const button of document.querySelectorAll?.("[data-filter-key]") || []) {
+  button.addEventListener("click", () => setDashboardFilter({ status: button.dataset.filterKey, project: null }));
+}
+$("#project-search")?.addEventListener("input", (event) => setDashboardFilter({ search: event.target.value }));
+$("#project-sort")?.addEventListener("change", (event) => setDashboardFilter({ sort: event.target.value }));
+$("#project-show")?.addEventListener("change", (event) => setDashboardFilter({ show: event.target.value }));
+for (const button of document.querySelectorAll?.("[data-view]") || []) {
+  button.addEventListener("click", () => setDashboardFilter({ view: button.dataset.view }));
+}
+$("#clear-filter")?.addEventListener("click", () => {
+  dashboardFilters = { ...dashboardFilters, status: "all", project: null, search: "" };
+  const search = $("#project-search"); if (search) search.value = "";
+  updateFilterControls();
+  if (currentOverview) renderBoard(currentOverview);
+});
 $("#refresh").addEventListener("click", load);
 $("#close-work").addEventListener("click", requestCloseWork);
 $("#work-dialog").addEventListener("cancel", (event) => { if (hasDrafts()) { event.preventDefault(); requestCloseWork(); } else activeSession = null; });
@@ -278,4 +486,4 @@ $("#config-form").addEventListener("submit", async (event) => {
   catch (error) { $("#config-message").textContent = error.message; }
 });
 
-load(); setInterval(load, 5000);
+renderTrainLanguage(); load(); setInterval(load, 5000);

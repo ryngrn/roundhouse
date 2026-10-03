@@ -10,6 +10,8 @@ test("macOS install configuration is loopback-local, durable, reversible, and pa
   const menu = menuLaunchAgent({ executable: "/Applications/Roundhouse Menu.app/Contents/MacOS/RoundhouseMenu", home: input.home });
   assert.match(service, /io\.roundhouse\.service/);
   assert.match(service, /Application Support\/Roundhouse\/projects\.yaml/);
+  assert.match(service, /scripts\/macos\/service-wrapper\.sh/);
+  assert.doesNotMatch(service, /DATABASE_URL/);
   assert.match(service, /Test &amp; Dev/);
   assert.match(front, /src\/server\/front-door\.js/);
   assert.match(menu, /io\.roundhouse\.menu/);
@@ -44,4 +46,8 @@ test("installer reports success only after direct app and front-door health and 
   assert.match(installer, /install\|repair\|smoke/);
   assert.match(service, /repair\)/);
   assert.match(service, /smoke\)/);
+  const wrapper = fs.readFileSync("scripts/macos/service-wrapper.sh", "utf8");
+  assert.match(wrapper, /neon\.env/);
+  assert.match(wrapper, /400\|600/);
+  assert.match(wrapper, /unset DATABASE_URL_UNPOOLED NEON_BRANCH/);
 });

@@ -30,12 +30,14 @@ test("storage: no DATABASE_URL selects the explicit single-node local repository
 });
 
 test("storage: PostgreSQL import refuses to invent credentials or alter the local snapshot", async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-import-no-db-"));
+  const rootDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-import-no-db-"));
+  const directory = path.join(rootDirectory, "state");
+  fs.mkdirSync(directory);
   fs.writeFileSync(path.join(directory, "state.json"), JSON.stringify({ schema_version: 1, items: {}, jobs: {}, projects: {}, project_candidates: {}, system_metadata: {}, outbox: [] }));
   const before = fs.readFileSync(path.join(directory, "state.json"), "utf8");
   await assert.rejects(importLocalStateToPostgres({ stateDirectory: directory, connectionString: "" }), /DATABASE_URL/);
   assert.equal(fs.readFileSync(path.join(directory, "state.json"), "utf8"), before);
-  assert.equal(fs.existsSync(path.join(path.dirname(directory), "migrations")), false);
+  assert.equal(fs.existsSync(path.join(rootDirectory, "migrations")), false);
 });
 
 test("storage: forward migrations normalize control-plane domains and contain no state blob", () => {
