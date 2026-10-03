@@ -10,6 +10,26 @@ const nonempty = (value) => typeof value === "string" && value.trim().length > 0
 export const commandValid = (command) => Array.isArray(command) && command.length > 0 && command.every((value) => nonempty(value));
 const plainObject = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
 const contractKey = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
+const credentialKey = /^(?:.*[_-])?(?:token|password|passwd|secret|credential|authorization|api[_-]?key|private[_-]?key|access[_-]?key)$/i;
+
+/** Project manifests are durable operator configuration, never a secret store. */
+export function assertNoConfigurationCredentials(value, location = "configuration") {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value) && value.some((entry) => typeof entry === "string" &&
+    /^(?:--?)?(?:[a-z0-9]+[_-])*(?:token|password|passwd|secret|credential|authorization|api[_-]?key|private[_-]?key|access[_-]?key)(?:=|$)/i.test(entry))) {
+    throw new Error(`${location} must not contain credential arguments; use the execution environment.`);
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    check(!credentialKey.test(key), `${location} must not contain credentials; use the execution environment.`);
+    if (entry && typeof entry === "object") assertNoConfigurationCredentials(entry, `${location}.${key}`);
+    if (typeof entry === "string" && /^[a-z][a-z0-9+.-]*:\/\//i.test(entry)) {
+      let parsed;
+      try { parsed = new URL(entry); } catch {}
+      const embeddedCredential = parsed?.password || (parsed?.username && ["http:", "https:"].includes(parsed.protocol));
+      check(!embeddedCredential, `${location} must not contain credentials in URLs.`);
+    }
+  }
+}
 
 function stringSet(value, field) {
   check(Array.isArray(value), `${field} must be an array.`);
@@ -92,6 +112,7 @@ function normalizeProjects(raw, root, execution) {
     const executor = project.executor ?? { kind: "codex", bin: "codex" };
     check(["codex", "command"].includes(executor.kind), "Unknown executor.");
     if (executor.kind === "command") check(commandValid(executor.command), "Executor requires an argv array.");
+    else check(executor.bin === undefined || nonempty(executor.bin), "Codex executor bin must be nonempty.");
     check((project.runtime ?? "local") === "local", "Only the local runtime is installed.");
     const timeout_ms = project.timeout_ms ?? 120 * 60_000;
     check(Number.isInteger(timeout_ms) && timeout_ms > 0, "timeout_ms must be positive.");
@@ -158,6 +179,7 @@ function normalizeProjects(raw, root, execution) {
 
 export function validateWorkflowConfig(raw, filename) {
   check(raw && typeof raw === "object" && !Array.isArray(raw), "Configuration must be an object.");
+  assertNoConfigurationCredentials(raw);
   const absolute = path.resolve(filename);
   check(raw.execution === undefined || plainObject(raw.execution), "execution must be an object.");
   for (const key of Object.keys(raw.execution ?? {})) check(["capacity", "capabilities", "resource_limits", "providers"].includes(key), `Unknown execution setting: ${key}`);

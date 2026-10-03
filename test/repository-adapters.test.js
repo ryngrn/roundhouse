@@ -4,8 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { saveWorkflowConfig } from "../src/workflow/config.js";
 import { Store } from "../src/workflow/store.js";
-import { GitHubRepositoryAdapter, RepositoryAdapterRegistry, RepositoryProvisioner, repositoryIdentity } from "../src/workflow/repository-adapters.js";
+import { GitHubRepositoryAdapter, ProjectBootstrapError, ProjectBootstrapper, RepositoryAdapterRegistry, RepositoryProvisioner, repositoryIdentity } from "../src/workflow/repository-adapters.js";
 
 function adapter(overrides = {}) {
   return {
@@ -188,4 +189,86 @@ test("github repository adapter: rejects request credentials and records bounded
     request: { name: "example", workspace: path.join(directory, "other"), github_token: "forbidden" },
     idempotency_key: "must-not-persist" }), /must not contain credentials/);
   assert.equal(Object.values(new Store(directory).read().repository_actions).length, 1);
+});
+
+function bootstrapFixture() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-project-bootstrap-"));
+  const workspace = path.join(directory, "workspace");
+  const remote = path.join(directory, "remote.git");
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(remote);
+  command(workspace, ["init", "--initial-branch=main"]);
+  command(remote, ["init", "--bare", "--initial-branch=main"]);
+  fs.writeFileSync(path.join(workspace, "README.md"), "Bootstrap context\n");
+  command(workspace, ["add", "README.md"]);
+  command(workspace, ["-c", "user.name=Roundhouse Test", "-c", "user.email=test@roundhouse.invalid", "commit", "-m", "Initial"]);
+  command(workspace, ["remote", "add", "origin", remote]);
+  const store = new Store(path.join(directory, "state"));
+  const repositoryId = "repository-1";
+  store.change((data) => {
+    data.repositories[repositoryId] = { id: repositoryId, identity: { adapter_id: "fixture-repositories", provider_repository_id: "fixture-1" },
+      lifecycle_state: "ready", revision: 1, inspection: { ready: true, workspace, remote, default_ref: "main" },
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  });
+  const project = { id: "bootstrap-example", name: "Bootstrap Example", purpose: "Exercise durable bootstrap",
+    success_state: "Validated project can execute", status: "active", repository: workspace, remote: "origin", base_ref: "main",
+    context_sources: ["README.md"], runtime: "local", executor: { kind: "command", command: [process.execPath, "executor.mjs"] },
+    policy: { allow_autonomous: true, shipping: "push_branch" },
+    verification: [{ id: "tests", command: [process.execPath, "--test"] }] };
+  return { directory, workspace, remote, store, repositoryId, project };
+}
+
+test("project bootstrap validates Git and execution policy before durably mapping an eligible project", async () => {
+  const fixture = bootstrapFixture();
+  const bootstrapper = new ProjectBootstrapper({ store: fixture.store, adapters: [] });
+  const result = await bootstrapper.bootstrap({ repository_id: fixture.repositoryId, project: fixture.project,
+    idempotency_key: "bootstrap-example", actor: "operator" });
+  assert.equal(result.project.execution_eligible, true);
+  assert.equal(result.project.repository_id, fixture.repositoryId);
+  assert.equal(result.project.configuration.runtime, "local");
+  assert.equal(result.project.configuration.policy.shipping, "push_branch");
+  assert.deepEqual(result.project.bootstrap_evidence.verification_ids, ["tests"]);
+  assert.deepEqual(result.project.bootstrap_evidence.context_sources, ["README.md"]);
+  assert.equal(result.action.kind, "bootstrap_project");
+  assert.ok(result.project.bootstrap_evidence.base_commit);
+  assert.ok(result.project.bootstrap_evidence.remote_url_digest);
+
+  const restarted = new Store(path.join(fixture.directory, "state")).read();
+  assert.equal(restarted.projects[fixture.project.id].execution_eligible, true);
+  assert.equal(restarted.workspace_mappings[result.project.workspace_mapping_id].purpose, "project");
+  const replay = await bootstrapper.bootstrapProject({ repository_id: fixture.repositoryId, project: fixture.project,
+    idempotency_key: "bootstrap-example", actor: "ignored" });
+  assert.equal(replay.action.id, result.action.id);
+  assert.equal(Object.values(fixture.store.read().repository_actions).filter((action) => action.kind === "bootstrap_project").length, 1);
+});
+
+test("project bootstrap rejects conflicting mappings with actionable evidence", async () => {
+  const fixture = bootstrapFixture();
+  const bootstrapper = new ProjectBootstrapper({ store: fixture.store, adapters: [] });
+  await bootstrapper.bootstrap({ repository_id: fixture.repositoryId, project: fixture.project, idempotency_key: "bootstrap-first" });
+  const conflict = { ...fixture.project, id: "other-project", name: "Other Project" };
+  await assert.rejects(bootstrapper.bootstrap({ repository_id: fixture.repositoryId, project: conflict,
+    idempotency_key: "bootstrap-other" }), (error) => {
+    assert.ok(error instanceof ProjectBootstrapError);
+    assert.equal(error.evidence.conflicting_project_id, fixture.project.id);
+    assert.equal(error.evidence.phase, "mapping");
+    return true;
+  });
+  await assert.rejects(bootstrapper.bootstrap({ repository_id: fixture.repositoryId, project: { ...fixture.project, base_ref: "missing" },
+    idempotency_key: "bootstrap-invalid-base" }), /Git validation failed/);
+});
+
+test("project bootstrap and project configuration reject credentials before persistence", async () => {
+  const fixture = bootstrapFixture();
+  const bootstrapper = new ProjectBootstrapper({ store: fixture.store, adapters: [] });
+  await assert.rejects(bootstrapper.bootstrap({ repository_id: fixture.repositoryId,
+    project: { ...fixture.project, provider: { api_key: "must-never-persist" } }, idempotency_key: "bootstrap-secret" }),
+  /must not contain credentials/);
+  const serialized = JSON.stringify(fixture.store.read());
+  assert.doesNotMatch(serialized, /must-never-persist|bootstrap-secret/);
+  const configFile = path.join(fixture.directory, "private-projects.yaml");
+  assert.throws(() => saveWorkflowConfig(configFile, { projects: [{ ...fixture.project,
+    executor: { kind: "command", command: [process.execPath, "executor.mjs", "--api-key=must-never-persist"] } }] }),
+  /credential arguments/);
+  assert.equal(fs.existsSync(configFile), false);
 });

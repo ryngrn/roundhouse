@@ -3,9 +3,10 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { digest } from "../storage/repository.js";
 import { runProcess } from "./runtime.js";
+import { projectContext, validateWorkflowConfig } from "./config.js";
 
 const stableId = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
-const actionKinds = new Set(["create", "connect", "inspect", "map_workspace"]);
+const actionKinds = new Set(["create", "connect", "inspect", "map_workspace", "bootstrap_project"]);
 const lifecycleStates = new Set(["provisioning", "connected", "ready", "reconciliation_required", "disconnected"]);
 
 function requiredString(value, field) {
@@ -36,8 +37,15 @@ function errorRecord(error) {
 function assertNoCredentials(value, location = "request") {
   if (!value || typeof value !== "object") return;
   for (const [key, entry] of Object.entries(value)) {
-    if (/(?:token|password|secret|credential|authorization)/i.test(key)) {
+    if (/(?:token|password|passwd|secret|credential|authorization|api[_-]?key|private[_-]?key|access[_-]?key)/i.test(key)) {
       throw new Error(`Repository ${location} must not contain credentials; supply them through the execution environment.`);
+    }
+    if (typeof entry === "string" && /^[a-z][a-z0-9+.-]*:\/\//i.test(entry)) {
+      let parsed;
+      try { parsed = new URL(entry); } catch {}
+      if (parsed?.password || (parsed?.username && ["http:", "https:"].includes(parsed.protocol))) {
+        throw new Error(`Repository ${location} must not contain credentials in URLs; supply them through the execution environment.`);
+      }
     }
     if (entry && typeof entry === "object") assertNoCredentials(entry, `${location}.${key}`);
   }
@@ -114,12 +122,13 @@ function actionResult(action, data) {
  * for inspect/reconciliation with the original request digest and provenance.
  */
 export class RepositoryProvisioner {
-  constructor({ store, adapters, clock = () => Date.now(), id = () => randomUUID() }) {
+  constructor({ store, adapters, clock = () => Date.now(), id = () => randomUUID(), run = runProcess }) {
     if (!store || typeof store.read !== "function" || typeof store.change !== "function") throw new Error("RepositoryProvisioner requires a durable store.");
     this.store = store;
     this.adapters = adapters instanceof RepositoryAdapterRegistry ? adapters : new RepositoryAdapterRegistry(adapters);
     this.clock = clock;
     this.id = id;
+    this.run = run;
   }
 
   now() { return new Date(this.clock()).toISOString(); }
@@ -152,6 +161,110 @@ export class RepositoryProvisioner {
       idempotency_key, actor, invoke: async () => ({ workspace: absoluteWorkspace }) });
     return result;
   }
+
+  /**
+   * Turns an inspected repository into an execution-eligible Roundhouse project.
+   * Validation happens before the single durable write, so a partial bootstrap
+   * can never expose an eligible project to the dispatcher.
+   */
+  async bootstrapProject({ repository_id, project, execution, idempotency_key, actor = null, config_file } = {}) {
+    requiredString(repository_id, "repository_id");
+    requiredString(idempotency_key, "Project bootstrap idempotency_key");
+    assertNoCredentials(project, "project configuration");
+    const snapshot = ensureProvisioningState(await this.store.read());
+    const repository = snapshot.repositories[repository_id];
+    if (!repository) throw new ProjectBootstrapError(`Unknown repository: ${repository_id}`, { repository_id, phase: "mapping" });
+    if (repository.lifecycle_state !== "ready" || repository.inspection?.ready !== true) {
+      throw new ProjectBootstrapError("Repository must have a successful ready inspection before project bootstrap.",
+        { repository_id, lifecycle_state: repository.lifecycle_state, phase: "repository_inspection" });
+    }
+
+    const root = repository.inspection.workspace;
+    if (!root) throw new ProjectBootstrapError("Repository inspection does not identify a local workspace.",
+      { repository_id, phase: "repository_inspection" });
+    const filename = config_file ? path.resolve(config_file) : path.join(path.dirname(path.resolve(root)), "projects.yaml");
+    let normalized;
+    try {
+      normalized = validateWorkflowConfig({ projects: [project], ...(execution ? { execution } : {}) }, filename).projects[0];
+      projectContext(normalized);
+    } catch (error) {
+      throw new ProjectBootstrapError(`Project configuration is invalid: ${error.message}`, { project_id: project?.id ?? null, phase: "configuration" });
+    }
+    if (normalized.status !== "active") throw new ProjectBootstrapError("Project must be active before it can become execution eligible.",
+      { project_id: normalized.id, phase: "policy" });
+    if (normalized.repository !== fs.realpathSync(root)) throw new ProjectBootstrapError("Project repository path conflicts with the inspected repository workspace.",
+      { project_id: normalized.id, repository_id, phase: "mapping" });
+    if (!["commit_only", "push_branch", "deploy"].includes(normalized.policy.shipping)) {
+      throw new ProjectBootstrapError(`Shipping policy is not installed: ${normalized.policy.shipping}`,
+        { project_id: normalized.id, phase: "policy", shipping: normalized.policy.shipping });
+    }
+
+    const gitEvidence = await validateGitBootstrap(normalized, repository, this.run);
+    const configuration = durableProjectConfiguration(normalized);
+    const request = { repository_id, project: configuration };
+    const request_digest = digest(request);
+    let result;
+    await this.store.change((data) => {
+      ensureProvisioningState(data);
+      const priorAction = Object.values(data.repository_actions).find((candidate) => candidate.idempotency_key === idempotency_key);
+      if (priorAction) {
+        if (priorAction.kind !== "bootstrap_project" || priorAction.request_digest !== request_digest) {
+          throw new ProjectBootstrapError("Project bootstrap idempotency key already exists with different input.",
+            { project_id: normalized.id, repository_id, phase: "idempotency", action_id: priorAction.id });
+        }
+        if (priorAction.status !== "succeeded") throw new ProjectBootstrapError("Prior project bootstrap did not succeed.",
+          { project_id: normalized.id, repository_id, phase: "idempotency", action_id: priorAction.id });
+        result = actionResult(priorAction, data);
+        result.project = clone(data.projects[normalized.id]);
+        return;
+      }
+      const projectMapping = Object.values(data.workspace_mappings).find((mapping) => mapping.project_id === normalized.id &&
+        mapping.purpose === "project" && mapping.status === "active");
+      if (projectMapping && projectMapping.repository_id !== repository_id) {
+        throw new ProjectBootstrapError("Project is already mapped to a different repository.",
+          { project_id: normalized.id, repository_id, conflicting_repository_id: projectMapping.repository_id, phase: "mapping" });
+      }
+      const repositoryMapping = Object.values(data.workspace_mappings).find((mapping) => mapping.repository_id === repository_id &&
+        mapping.purpose === "project" && mapping.status === "active");
+      if (repositoryMapping && repositoryMapping.project_id !== normalized.id) {
+        throw new ProjectBootstrapError("Repository is already mapped to a different project.",
+          { project_id: normalized.id, repository_id, conflicting_project_id: repositoryMapping.project_id, phase: "mapping" });
+      }
+      const existing = data.projects[normalized.id];
+      if (existing?.repository_id && existing.repository_id !== repository_id) {
+        throw new ProjectBootstrapError("Project metadata conflicts with its durable repository mapping.",
+          { project_id: normalized.id, repository_id, conflicting_repository_id: existing.repository_id, phase: "mapping" });
+      }
+      if (existing?.configuration_digest && existing.configuration_digest !== digest(configuration)) {
+        throw new ProjectBootstrapError("Project already exists with different execution configuration.",
+          { project_id: normalized.id, repository_id, phase: "configuration" });
+      }
+      const now = this.now();
+      const mapping = projectMapping ?? repositoryMapping ?? {
+        id: this.id(), repository_id, project_id: normalized.id, purpose: "project", status: "active", created_at: now,
+      };
+      Object.assign(mapping, { workspace: normalized.repository, updated_at: now });
+      data.workspace_mappings[mapping.id] = mapping;
+      const projectRecord = {
+        ...(existing ?? {}), id: normalized.id, name: normalized.name, status: normalized.status,
+        repository_id, workspace_mapping_id: mapping.id, execution_eligible: true,
+        configuration, configuration_digest: digest(configuration), bootstrap_revision: (existing?.bootstrap_revision ?? 0) + 1,
+        bootstrap_evidence: gitEvidence, bootstrapped_at: existing?.bootstrapped_at ?? now, updated_at: now,
+      };
+      data.projects[normalized.id] = projectRecord;
+      const action = { id: this.id(), kind: "bootstrap_project", status: "succeeded", adapter_id: repository.identity.adapter_id,
+        repository_id, idempotency_key, request_digest, request, actor, node_id: this.store.node?.id ?? null,
+        node_name: this.store.node?.name ?? null, started_at: now, finished_at: now, attempt: 1, error: null,
+        result: { project_id: normalized.id, workspace_mapping_id: mapping.id, configuration_digest: projectRecord.configuration_digest },
+        evidence: [{ at: now, phase: "bootstrap_validation", result_digest: digest(gitEvidence) }],
+      };
+      data.repository_actions[action.id] = action;
+      result = { action: clone(action), repository: clone(repository), project: clone(projectRecord) };
+    });
+    return result;
+  }
+
+  async bootstrap(options) { return this.bootstrapProject(options); }
 
   async #perform({ kind, adapter_id, request, repository_id = null, idempotency_key, actor, invoke }) {
     if (!actionKinds.has(kind)) throw new Error(`Unknown repository action: ${kind}`);
@@ -204,6 +317,7 @@ export class RepositoryProvisioner {
             workspace: response.workspace, purpose: request.purpose, status: "active", created_at: now, updated_at: now };
           current.result = { workspace_mapping_id: mappingId, workspace: response.workspace };
         } else {
+          assertNoCredentials(response, "provider result");
           const inspected = response?.identity ?? response;
           const identity = repositoryIdentity({ ...inspected, adapter_id });
           const duplicate = Object.values(data.repositories).find((candidate) => candidate.id !== repository_id &&
@@ -247,6 +361,59 @@ export class RepositoryProvisioner {
     const data = ensureProvisioningState(await this.store.read());
     return actionResult(data.repository_actions[action.id], data);
   }
+}
+
+export class ProjectBootstrapError extends Error {
+  constructor(message, evidence) {
+    super(message);
+    this.name = "ProjectBootstrapError";
+    this.evidence = evidence;
+  }
+}
+
+/** Focused facade for callers that only need project initialization. */
+export class ProjectBootstrapper extends RepositoryProvisioner {}
+
+function durableProjectConfiguration(project) {
+  const { context, filename, ...configuration } = project;
+  return clone(configuration);
+}
+
+function safeRemoteUrl(value) {
+  const remote = requiredString(value, "Git remote URL");
+  try {
+    const parsed = new URL(remote);
+    if (parsed.password || (parsed.username && ["http:", "https:"].includes(parsed.protocol))) {
+      throw new Error("Git remote URL must not contain credentials.");
+    }
+  } catch (error) {
+    if (remote.includes("://")) throw error;
+    if (/^[^/@:]+@[^:]+:/.test(remote)) return remote;
+  }
+  return remote;
+}
+
+async function gitResult(run, cwd, args) {
+  const result = await run(["git", "-C", cwd, ...args], { cwd, timeout: 30_000 });
+  if (!result.passed) throw new ProjectBootstrapError(`Git validation failed for ${args[0]}.`,
+    { phase: "git", command: args[0], exit_code: result.exit_code });
+  return result.stdout.trim();
+}
+
+async function validateGitBootstrap(project, repository, run) {
+  const root = fs.realpathSync(project.repository);
+  const top = fs.realpathSync(await gitResult(run, root, ["rev-parse", "--show-toplevel"]));
+  if (top !== root) throw new ProjectBootstrapError("Configured repository path is not the Git worktree root.",
+    { project_id: project.id, phase: "repository_path" });
+  const remoteUrl = safeRemoteUrl(await gitResult(run, root, ["remote", "get-url", project.remote]));
+  if (repository.inspection.remote && safeRemoteUrl(repository.inspection.remote) !== remoteUrl) {
+    throw new ProjectBootstrapError("Configured Git remote conflicts with the inspected repository remote.",
+      { project_id: project.id, repository_id: repository.id, remote: project.remote, phase: "remote" });
+  }
+  const baseCommit = await gitResult(run, root, ["rev-parse", "--verify", `${project.base_ref}^{commit}`]);
+  return { repository_path: root, remote: project.remote, remote_url_digest: digest(remoteUrl), base_ref: project.base_ref,
+    base_commit: baseCommit, runtime: project.runtime, executor: project.executor.kind, shipping: project.policy.shipping,
+    verification_ids: project.verification.map((check) => check.id), context_sources: [...(project.context_sources ?? [])] };
 }
 
 class RepositoryProviderError extends Error {
