@@ -98,8 +98,8 @@ export function projectExecutionEligible(project, execution, capabilities = exec
 export function executionReservation(project, job = null) {
   const repositoryRequired = job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository);
   const repository = project.repository ?? null;
-  const locks = repository ? [`repository:${repository}`] : [];
-  if (repository && project.policy?.shipping !== "commit_only") locks.push(`delivery:${repository}:${project.remote ?? "origin"}`);
+  const locks = repository && repositoryRequired ? [`repository:${repository}`] : [];
+  if (repository && repositoryRequired && project.policy?.shipping !== "commit_only") locks.push(`delivery:${repository}:${project.remote ?? "origin"}`);
   if (project.policy?.shipping === "deploy") {
     locks.push(`deployment:${project.deployment?.kind ?? "unknown"}:${project.deployment?.environment ?? "production"}`);
   }

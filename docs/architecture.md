@@ -119,10 +119,11 @@ smallest matching capability set wins, with provider ID as a deterministic tie-b
 The selected provider and required capabilities are retained with execution evidence.
 This generic contract covers research, connected-source actions, scheduling,
 artifact persistence, and human-task handling without importing their provider APIs
-or policy into the Engine. A command adapter receives the normalized work packet on
-stdin in the prepared workspace. Exit zero means operational success; stdout may be
-empty or contain one JSON object with provider-owned result references. Verification
-and delivery remain Roundhouse-owned boundaries.
+or policy into the Engine. A command adapter receives the normalized work packet,
+durable run identity, and input digest on stdin in the prepared workspace. Exit zero
+means operational success; stdout may be empty or contain one JSON object with
+provider-owned results. Repository-free runs require a structured result or
+workspace artifact. Verification and delivery remain Roundhouse-owned boundaries.
 
 For a new CLI executor, configure `executor.kind: command` with an argv array.
 It receives JSON on stdin containing `work`, `project_context`, and
@@ -167,9 +168,12 @@ Implement a provider that acquires resource ownership, prepares the target,
 captures an immutable candidate identity, checks identity after verification, and
 ships only passing evidence. Return repository/resource reference, branch/version,
 commit/artifact identity, timestamp, verification and optional PR/deployment data.
-Register other supported policies explicitly. A document provider can use artifact
-versions in place of Git SHAs while retaining the same lifecycle. Non-code delivery
-is not implemented by the current Git adapter.
+`durable_output` embeds bounded artifact bodies, hashes, provider provenance, and a
+versioned reference in authoritative state while also writing an inspection
+manifest. It uses artifact versions in place of Git SHAs while retaining the same
+intent-before-delivery, verification, completion, failure, and reconciliation
+lifecycle. Structured results can represent sourced briefs, findings, plans,
+records, and next-action requests without a commit or deployment.
 
 ## Configuration and audit trust
 

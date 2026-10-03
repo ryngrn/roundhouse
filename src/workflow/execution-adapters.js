@@ -72,13 +72,14 @@ class CommandExecutionAdapter {
     this.command = configuration.command;
   }
 
-  async execute({ project, job, workspace, previous_failure, onStart }) {
+  async execute({ project, job, workspace, previous_failure, onStart, run }) {
     const { agent_profile: agentProfile, ...boundedProjectContext } = job.project_context;
     const packet = {
       work: job.work,
       project_context: boundedProjectContext,
       previous_failure,
       provider: { id: this.id, capabilities: this.capabilities },
+      run,
     };
     const result = await runProcess(this.command, {
       cwd: workspace,
@@ -108,6 +109,7 @@ export class CapabilityRuntime {
   async execute(request) {
     const required = requiredExecutionCapabilities(request.project, request.job);
     const adapter = this.registry.require(required);
+    if (request.run) request.run.provider_id = adapter.id;
     const result = await adapter.execute(request);
     return { ...result, provider: { id: adapter.id, capabilities: [...adapter.capabilities], required } };
   }

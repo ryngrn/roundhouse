@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import { agentRoleIds } from "./roles.js";
 
-export const shippingModes = ["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy"];
+export const shippingModes = ["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy", "durable_output", "artifact"];
 const check = (value, message) => { if (!value) throw new Error(message); };
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 export const commandValid = (command) => Array.isArray(command) && command.length > 0 && command.every((value) => nonempty(value));
@@ -64,7 +64,7 @@ function normalizeProjects(raw, root, execution) {
       review_after_shipping: false,
       project_confidence: 0.85,
       execution_confidence: 0.85,
-      shipping: "push_branch",
+      shipping: project.repository_required === false ? "durable_output" : "push_branch",
       continuation: "stop_after_job",
       max_rework_attempts: 1,
       ...(project.policy ?? {}),
@@ -82,6 +82,8 @@ function normalizeProjects(raw, root, execution) {
     check(typeof repository_required === "boolean", `Project ${project.id} repository_required must be boolean.`);
     check(!repository_required || nonempty(project.repository), `Project ${project.id} requires a repository.`);
     if (runtime === "herdr" && !machineLocal) check(nonempty(project.repository), `Project ${project.id} shared-worktree Herdr runtime requires a repository.`);
+    check(repository_required || ["durable_output", "artifact"].includes(policy.shipping),
+      `Repository-free project ${project.id} requires durable_output shipping.`);
     const repository = nonempty(project.repository) ? fs.realpathSync(path.resolve(root, project.repository)) : null;
     const verification = project.verification ?? [];
     check(Array.isArray(verification), "Verification must be an array.");
