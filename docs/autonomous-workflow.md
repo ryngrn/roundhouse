@@ -73,6 +73,17 @@ produce durable, specific readiness and scheduler evidence. The installed delive
 adapter is still Git-only, so repository-free execution also remains ineligible until
 a repository-independent delivery provider is installed.
 
+`execution.providers` registers replaceable execution adapters. Every provider has a
+stable ID and declares the capability combinations it can handle. `kind: project`
+uses the project's existing Codex or command executor; `kind: command` invokes the
+provider's configured argv contract. Selection is provider-neutral: Roundhouse picks
+the matching provider with the fewest unrelated capabilities and uses its ID as the
+stable tie-breaker. Capabilities that exist only across separate providers are not
+silently composed, so unsupported combinations remain Ready but unallocated with
+durable `provider_unavailable` evidence. Research, connected-source work, scheduling,
+artifact persistence, external actions, and human-task handling are ordinary
+capability identifiers; the workflow contains no policy specific to any provider.
+
 ## Agent roles and skills
 
 Agent roles are context and skill bundles, separate from the executor and local

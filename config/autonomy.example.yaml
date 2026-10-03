@@ -8,6 +8,12 @@ execution:
   # Global execution slots default to one when this block is omitted.
   capacity: 1
   capabilities: [local]
+  # Providers are selected solely from each slice's required capabilities. A
+  # project provider preserves the existing Codex/command executor path.
+  providers:
+    - id: local-software
+      kind: project
+      capabilities: [local]
   resource_limits:
     workspace: 1
 projects:

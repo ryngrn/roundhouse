@@ -13,7 +13,7 @@ through the one-time archive importer.
 | Durable workflow | Authoritative Mac Studio local repository, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
 | Hosted relay | Aiven dashboard projection and remote-command queue | Mirror canonical job records without becoming workflow authority |
 | Triage control plane | Independent bounded worker pass with durable attempts/backoff | Release imported work safely, classify, reconcile exact identities, slice, question, block, or make Ready |
-| Execution runtime | Per-project local subprocess or opt-in Herdr adapter | `execute({project, job, workspace, previous_failure, onStart, onRemoteStart})` returns operational result |
+| Execution runtime | Capability-selected provider over local Codex, opt-in Herdr, project command, or registered command adapters | Providers declare stable IDs/capabilities; `execute({project, job, workspace, previous_failure, onStart, onRemoteStart})` returns operational result |
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | Batched browser decision sessions, CLI approval/clarification, durable questions, and MCP answers | Revision-bound atomic response set, durable audit record, exactly one readiness reevaluation |
@@ -111,6 +111,18 @@ facts with the assessment made inside the atomic claim transaction. The CLI, API
 and control room project these records after restart instead of interpreting logs.
 
 ## Extending execution
+
+Execution providers are registered under `execution.providers` and selected only by
+the union of project and slice capability requirements. A provider must support the
+entire set; Roundhouse never guesses an order for composing partial providers. The
+smallest matching capability set wins, with provider ID as a deterministic tie-break.
+The selected provider and required capabilities are retained with execution evidence.
+This generic contract covers research, connected-source actions, scheduling,
+artifact persistence, and human-task handling without importing their provider APIs
+or policy into the Engine. A command adapter receives the normalized work packet on
+stdin in the prepared workspace. Exit zero means operational success; stdout may be
+empty or contain one JSON object with provider-owned result references. Verification
+and delivery remain Roundhouse-owned boundaries.
 
 For a new CLI executor, configure `executor.kind: command` with an argv array.
 It receives JSON on stdin containing `work`, `project_context`, and

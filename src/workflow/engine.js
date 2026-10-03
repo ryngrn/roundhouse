@@ -5,6 +5,7 @@ import { record } from "./state.js";
 import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
 import { createRuntime, CommandVerifier } from "./runtime.js";
+import { CapabilityRuntime } from "./execution-adapters.js";
 import { GitDelivery, git } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
@@ -114,10 +115,12 @@ function relatedWork(data, item) {
 }
 
 export class Engine {
-  constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = createRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery(), clock = () => Date.now() }) {
+  constructor({ store, config, decision = new DecisionProvider(config.decision), runtime, verifier = new CommandVerifier(), shipping = new GitDelivery(), clock = () => Date.now() }) {
     const triage = { max_per_tick: 1, max_concurrent: 1, base_backoff_ms: 30_000, max_backoff_ms: 60 * 60_000, ...(config.triage ?? {}) };
     config.triage = triage;
     config.execution = { capacity: 1, capabilities: [], resource_limits: {}, ...(config.execution ?? {}) };
+    const providers = config.execution.providers ?? [{ id: "local-project", kind: "project", capabilities: [...config.execution.capabilities] }];
+    runtime ??= new CapabilityRuntime(providers, createRuntime());
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
   processRecorder(collection, id) {

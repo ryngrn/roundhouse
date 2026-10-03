@@ -1,3 +1,5 @@
+import { requiredExecutionCapabilities, selectExecutionProvider } from "./execution-adapters.js";
+
 const emptyScheduler = (capacity) => ({
   version: 2,
   capacity,
@@ -66,14 +68,14 @@ export function recordAllocation(data, project, capacity = 1, at = new Date().to
   return allocation;
 }
 
-function requiredCapabilities(project, job) {
-  return [...new Set([...(project.required_capabilities ?? []), ...(job?.work?.required_capabilities ?? [])])];
-}
-
 export function executionEligibility(project, execution, capabilities = execution.capabilities, job = null) {
-  const missing = requiredCapabilities(project, job).filter((capability) => !capabilities.includes(capability));
+  const required = requiredExecutionCapabilities(project, job);
+  const missing = required.filter((capability) => !capabilities.includes(capability));
   const reasons = [];
   if (missing.length) reasons.push({ code: "capability_mismatch", message: `Missing capabilities: ${missing.join(", ")}.`, missing });
+  if (!missing.length && execution.providers && !selectExecutionProvider(execution.providers, required)) {
+    reasons.push({ code: "provider_unavailable", message: `No execution provider supports the required capability combination: ${required.length ? required.join(", ") : "(none)"}.`, required });
+  }
   if ((job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository)) && !project.repository) {
     reasons.push({ code: "repository_unavailable", message: "This slice requires a repository, but the project has none configured." });
   }
@@ -105,7 +107,7 @@ export function executionReservation(project, job = null) {
     project_id: project.id,
     project_limit: project.max_concurrent_runs ?? 1,
     capacity_units: 1,
-    required_capabilities: requiredCapabilities(project, job),
+    required_capabilities: requiredExecutionCapabilities(project, job),
     repository: { required: repositoryRequired, configured: Boolean(repository), value: repository },
     resources: { ...(project.resource_requirements ?? {}) },
     locks,
@@ -129,6 +131,11 @@ export function reservationAssessment(active, candidate, execution, capabilities
   });
   const constraints = {
     capability: { required: [...(candidate.required_capabilities ?? [])], available: [...capabilities], missing: missingCapabilities, fits: !missingCapabilities.length },
+    provider: (() => {
+      if (!execution.providers || missingCapabilities.length) return { selected: null, fits: !execution.providers || Boolean(missingCapabilities.length) };
+      const selected = selectExecutionProvider(execution.providers, candidate.required_capabilities ?? []);
+      return { selected: selected?.id ?? null, fits: Boolean(selected) };
+    })(),
     capacity: { requested: candidate.capacity_units ?? 1, used: capacityUsed, limit: execution.capacity, fits: capacityUsed + (candidate.capacity_units ?? 1) <= execution.capacity },
     project: { project_id: candidate.project_id, active: projectUsed, limit: candidate.project_limit ?? 1, fits: projectUsed < (candidate.project_limit ?? 1) },
     resources,
@@ -136,12 +143,13 @@ export function reservationAssessment(active, candidate, execution, capabilities
     repository: { ...(candidate.repository ?? { required: true, configured: true, value: null }),
       fits: !(candidate.repository?.required && !candidate.repository?.configured) },
   };
-  return { fits: constraints.capability.fits && constraints.capacity.fits && constraints.project.fits
+  return { fits: constraints.capability.fits && constraints.provider.fits && constraints.capacity.fits && constraints.project.fits
     && constraints.resources.every((resource) => resource.fits) && constraints.locks.fits && constraints.repository.fits, constraints };
 }
 
 function deferralReason(checks, reservation) {
   if (!reservation.constraints.capability.fits) return { code: "capability_mismatch", message: `Missing capabilities: ${reservation.constraints.capability.missing.join(", ")}.` };
+  if (!reservation.constraints.provider.fits) return { code: "provider_unavailable", message: `No execution provider supports the required capability combination: ${reservation.constraints.capability.required.length ? reservation.constraints.capability.required.join(", ") : "(none)"}.` };
   if (!reservation.constraints.repository.fits) return { code: "repository_unavailable", message: "This slice requires a repository, but the project has none configured." };
   const failed = Object.entries(checks).find(([, value]) => !value.passed);
   if (failed) return { code: failed[0], message: failed[1].reason };
