@@ -12,14 +12,14 @@ struct Counts: Decodable {
     }
 }
 
-struct Overview: Decodable { let counts: Counts }
 struct Notice: Decodable {
     let id: String
     let kind: String
     let title: String
     let message: String
 }
-struct NoticePage: Decodable {
+struct LocalSnapshot: Decodable {
+    let counts: Counts
     let notifications: [Notice]
     let cursor: String?
 }
@@ -81,10 +81,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func poll() {
         DispatchQueue.main.async { self.applyStatusIcon() }
-        URLSession.shared.dataTask(with: directBase.appendingPathComponent("api/overview")) { [weak self] data, response, error in
+        let defaults = UserDefaults.standard
+        let previous = defaults.string(forKey: "notificationCursor")
+        var components = URLComponents(url: directBase.appendingPathComponent("api/local-snapshot"), resolvingAgainstBaseURL: false)!
+        if let previous { components.queryItems = [URLQueryItem(name: "after", value: previous)] }
+        URLSession.shared.dataTask(with: components.url!) { [weak self] data, response, error in
             guard let self else { return }
             guard let data, error == nil, (response as? HTTPURLResponse)?.statusCode == 200,
-                  let overview = try? JSONDecoder().decode(Overview.self, from: data) else {
+                  let snapshot = try? JSONDecoder().decode(LocalSnapshot.self, from: data) else {
                 DispatchQueue.main.async {
                     self.health.title = "● App service unavailable"
                     self.counts.title = "Counts unavailable"
@@ -97,35 +101,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 let frontHealthy = frontError == nil && (frontResponse as? HTTPURLResponse)?.statusCode == 200
                 DispatchQueue.main.async {
                     self.health.title = frontHealthy ? "● App and front door healthy" : "● Front door unavailable · app healthy"
-                    self.counts.title = "Needs a signal \(overview.counts.needsYou) · Chugging along \(overview.counts.active) · Held up \(overview.counts.blocked)"
+                    self.counts.title = "Needs a signal \(snapshot.counts.needsYou) · Chugging along \(snapshot.counts.active) · Held up \(snapshot.counts.blocked)"
                     self.applyStatusIcon()
-                    self.item.button?.title = !frontHealthy ? "!" : overview.counts.needsYou > 0 || overview.counts.blocked > 0 ? "•" : ""
+                    self.item.button?.title = !frontHealthy ? "!" : snapshot.counts.needsYou > 0 || snapshot.counts.blocked > 0 ? "•" : ""
                 }
             }.resume()
+            self.deliverNotifications(snapshot)
         }.resume()
-        pollNotifications()
     }
 
-    private func pollNotifications() {
+    private func deliverNotifications(_ page: LocalSnapshot) {
         let defaults = UserDefaults.standard
-        let previous = defaults.string(forKey: "notificationCursor")
         let initialized = defaults.bool(forKey: "notificationsInitialized")
-        var components = URLComponents(url: base.appendingPathComponent("api/notifications"), resolvingAgainstBaseURL: false)!
-        if let previous { components.queryItems = [URLQueryItem(name: "after", value: previous)] }
-        URLSession.shared.dataTask(with: components.url!) { data, _, _ in
-            guard let data, let page = try? JSONDecoder().decode(NoticePage.self, from: data) else { return }
-            if initialized {
-                for notice in page.notifications where notice.kind == "needs_you" || notice.kind == "failure" || notice.kind == "completion" {
-                    let content = UNMutableNotificationContent()
-                    content.title = notice.title
-                    content.body = notice.message
-                    content.sound = notice.kind == "completion" ? nil : .default
-                    UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: notice.id, content: content, trigger: nil))
-                }
+        if initialized {
+            for notice in page.notifications where notice.kind == "needs_you" || notice.kind == "failure" || notice.kind == "completion" {
+                let content = UNMutableNotificationContent()
+                content.title = notice.title
+                content.body = notice.message
+                content.sound = notice.kind == "completion" ? nil : .default
+                UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: notice.id, content: content, trigger: nil))
             }
-            if let cursor = page.cursor { defaults.set(cursor, forKey: "notificationCursor") }
-            defaults.set(true, forKey: "notificationsInitialized")
-        }.resume()
+        }
+        if let cursor = page.cursor { defaults.set(cursor, forKey: "notificationCursor") }
+        defaults.set(true, forKey: "notificationsInitialized")
     }
 
     private func launchctl(_ arguments: [String]) {

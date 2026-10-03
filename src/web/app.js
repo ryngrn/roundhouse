@@ -32,7 +32,14 @@ function renderTrainLanguage() {
 
 async function api(url, options = {}) {
   const response = await fetch(url, options);
-  const data = await response.json();
+  let data;
+  if (typeof response.text === "function") {
+    const raw = await response.text();
+    try { data = raw ? JSON.parse(raw) : {}; }
+    catch { data = { error: raw.trim() || `Request failed (${response.status})` }; }
+  } else {
+    data = await response.json();
+  }
   if (!response.ok) {
     const error = new Error(data.error || `Request failed (${response.status})`);
     error.code = data.code; error.conflict = data.conflict; error.status = response.status;
@@ -440,11 +447,22 @@ function reconcileOpenSession(overview) {
   }
 }
 
-async function load() {
+let loadTail = Promise.resolve();
+let pendingLoads = 0;
+async function readAndRender() {
   try {
     const [overview, config] = await Promise.all([api("/api/overview"), api("/api/config")]); currentOverview = overview; configuration = config.configuration;
     renderConnection(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
   } catch (error) { $("#connection").textContent = `● App unavailable · ${error.message}`; $("#connection").className = "connection failed"; }
+}
+function load() {
+  pendingLoads += 1;
+  const queuedLoad = loadTail.then(readAndRender).finally(() => { pendingLoads -= 1; });
+  loadTail = queuedLoad;
+  return queuedLoad;
+}
+function loadCoalesced() {
+  return pendingLoads > 0 ? loadTail : load();
 }
 
 const intakeDialog = $("#intake-dialog");
@@ -498,4 +516,16 @@ $("#config-form").addEventListener("submit", async (event) => {
   catch (error) { $("#config-message").textContent = error.message; }
 });
 
-renderTrainLanguage(); updateFilterControls(); load(); setInterval(load, 5000);
+if (typeof window !== "undefined") {
+  let lifecycleRefreshTimer;
+  const refreshAfterLifecycleChange = () => {
+    clearTimeout(lifecycleRefreshTimer);
+    lifecycleRefreshTimer = setTimeout(() => {
+      loadCoalesced();
+    }, 150);
+  };
+  window.addEventListener("pageshow", refreshAfterLifecycleChange);
+  window.addEventListener("focus", refreshAfterLifecycleChange);
+  document.addEventListener?.("visibilitychange", () => { if (document.visibilityState === "visible") refreshAfterLifecycleChange(); });
+}
+renderTrainLanguage(); updateFilterControls(); load();

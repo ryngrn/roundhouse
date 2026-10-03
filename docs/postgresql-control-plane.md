@@ -71,9 +71,10 @@ MCP delivery state are committed with domain state, so restart preserves deliver
 intent and idempotency.
 
 There is no offline multi-master mode. When PostgreSQL is unavailable, workers must
-not use stale JSON or continue autonomous work. `/health` reports disconnected,
-read-only storage health; restoring database connectivity is required before work
-continues.
+not use stale JSON or continue autonomous work. `/health` is deliberately local
+process liveness and does not wake PostgreSQL; an explicit overview/status read
+reports storage connectivity. Restoring database connectivity is required before
+work continues.
 
 ## Backup, restore, and integration tests
 

@@ -7,8 +7,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import YAML from "yaml";
 import { RoundhouseService } from "../workflow/service.js";
 import { handleMcpRequest } from "../mcp/http-server.js";
-import { McpEventBroker } from "../mcp/events.js";
+import { McpEventBroker, McpEventDrainScheduler } from "../mcp/events.js";
 import { WorkerLoop } from "./worker.js";
+import { HttpWakeSource } from "./wake-source.js";
+import { openPostgresRelay, RelayProjectionPublisher } from "../relay/postgres-relay.js";
 import { openStorage } from "../storage/open.js";
 
 const webRoot = fileURLToPath(new URL("../web/", import.meta.url));
@@ -64,6 +66,43 @@ function verifyOrigin(request, allowedOrigins) {
   if (origin && !allowedOrigins.has(origin.toLowerCase())) throw Object.assign(new Error("Forbidden Origin"), { status: 403 });
 }
 
+function localStorageIdentity(store) {
+  return {
+    kind: store?.kind ?? (store?.shared ? "postgresql" : "local"),
+    shared: Boolean(store?.shared),
+    authoritative: true,
+    checked: false,
+    node: store?.node ? { id: store.node.id, name: store.node.name, capabilities: store.node.capabilities } : null,
+  };
+}
+
+async function overviewFor(roundhouse, loop) {
+  const storage = await roundhouse.getStorageStatus();
+  if (!storage.connected) return { items: [], needs_you: [], counts: {},
+    connection: { local_service: "connected", storage, worker: loop.status() } };
+  const status = await roundhouse.getWorkStatus();
+  const needs = await roundhouse.getNeedsHuman();
+  return {
+    ...status,
+    needs_you: needs.questions,
+    counts: {
+      needs_you: status.items.filter((item) => item.needs_you).length,
+      active: status.items.filter((item) => ["Executing", "Verification", "Rework"].includes(item.state)).length,
+      queued: status.items.filter((item) => item.state === "Ready").length,
+      completed: status.items.filter((item) => ["Shipped", "Imported History", "Archived", "Reconciled"].includes(item.state)).length,
+      blocked: status.items.filter((item) => item.state === "Blocked").length,
+    },
+    connection: {
+      local_service: "connected",
+      mcp: "available",
+      endpoint: "/mcp",
+      chatgpt: "managed externally; local connection state is not observable",
+      worker: loop.status(),
+      storage,
+    },
+  };
+}
+
 export async function startRoundhouseServer({
   stateDirectory,
   configFile,
@@ -72,8 +111,11 @@ export async function startRoundhouseServer({
   allowedHosts = [],
   service,
   worker,
-  workerIntervalMs = 2000,
   autoStartWorker = true,
+  wakeSubscribeUrl = process.env.ROUNDHOUSE_WAKE_SUBSCRIBE_URL,
+  wakeSource,
+  remoteRelay,
+  relayConnectionString = process.env.ROUNDHOUSE_RELAY_DATABASE_URL,
 } = {}) {
   const defaults = defaultLocalPaths();
   const state = stateDirectory ?? defaults.stateDirectory;
@@ -82,9 +124,56 @@ export async function startRoundhouseServer({
   const ownedStore = service ? null : await openStorage({ directory: state });
   const roundhouse = service ?? new RoundhouseService({ store: ownedStore, configFile: config });
   await roundhouse.initialize?.();
+  const relay = remoteRelay === undefined ? openPostgresRelay({ connectionString: relayConnectionString }) : remoteRelay;
+  const ownsRelay = remoteRelay === undefined && Boolean(relay);
   const events = new McpEventBroker({ service: roundhouse });
-  const loop = worker ?? new WorkerLoop({ service: roundhouse, eventBroker: events, intervalMs: workerIntervalMs, onError: (error) => process.stderr.write(`Worker: ${error.message}\n`) });
-  loop.eventBroker ??= events;
+  const eventDrain = new McpEventDrainScheduler({ broker: events, onError: (error) => process.stderr.write(`MCP event delivery: ${error.message}\n`) });
+  const loop = worker ?? new WorkerLoop({ service: roundhouse, eventBroker: eventDrain, commandQueue: relay,
+    onError: (error) => process.stderr.write(`Worker: ${error.message}\n`) });
+  loop.eventBroker ??= eventDrain;
+  loop.commandQueue ??= relay;
+  let localSnapshot = {
+    captured_at: null,
+    items: [], needs_you: [], counts: { needs_you: 0, active: 0, queued: 0, completed: 0, blocked: 0 },
+    notifications: [], cursor: null,
+    connection: { local_service: "connected", worker: loop.status(), storage: localStorageIdentity(roundhouse.store) },
+  };
+  const notificationPositions = new Map();
+  let cachedNotifications = [];
+  const refreshLocalSnapshot = async () => {
+    try {
+      const previousCursor = localSnapshot.cursor;
+      const [overview, notices] = await Promise.all([overviewFor(roundhouse, loop), roundhouse.getNotifications({ after: previousCursor ?? undefined })]);
+      if (previousCursor) notificationPositions.set(previousCursor, cachedNotifications.length);
+      for (const notice of notices.notifications) {
+        cachedNotifications.push(notice);
+        notificationPositions.set(notice.id, cachedNotifications.length);
+      }
+      if (notices.cursor) notificationPositions.set(notices.cursor, cachedNotifications.length);
+      localSnapshot = { ...overview, notifications: cachedNotifications, cursor: notices.cursor, captured_at: new Date().toISOString() };
+    } catch (error) {
+      localSnapshot = { ...localSnapshot, captured_at: new Date().toISOString(), snapshot_error: error.message,
+        connection: { ...localSnapshot.connection, worker: loop.status() } };
+    }
+  };
+  const projectionPublisher = new RelayProjectionPublisher({
+    relay,
+    project: async () => ({
+      schema_version: 1,
+      overview: localSnapshot,
+      configuration: roundhouse.getConfiguration().configuration,
+    }),
+    onError: (error) => process.stderr.write(`Relay projection: ${error.message}\n`),
+  });
+  const previousOnCycle = loop.onCycle ?? (async () => {});
+  loop.onCycle = async (result) => {
+    await previousOnCycle(result);
+    await refreshLocalSnapshot();
+    projectionPublisher.trigger();
+  };
+  await refreshLocalSnapshot();
+  projectionPublisher.trigger();
+  const wakes = wakeSource ?? new HttpWakeSource({ url: wakeSubscribeUrl, wake: () => loop.wake() });
   const allowed = new Set([host, "roundhouse", ...(host === "127.0.0.1" ? ["localhost", "::1"] : []), ...allowedHosts].map((value) => value.toLowerCase()));
   const origins = new Set([
     "http://roundhouse",
@@ -98,41 +187,24 @@ export async function startRoundhouseServer({
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? host}`);
       if (url.pathname === "/mcp") {
         if (!["POST", "GET", "DELETE", "OPTIONS"].includes(request.method ?? "")) return send(response, 405, { error: "Method Not Allowed" });
-        return await handleMcpRequest(request, response, roundhouse, events);
+        return await handleMcpRequest(request, response, roundhouse, events, { onMutation: () => loop.wake() });
       }
       if (request.method === "GET" && assets.has(url.pathname)) {
         const [filename, type] = assets.get(url.pathname);
         return send(response, 200, fs.readFileSync(path.join(webRoot, filename), "utf8"), type);
       }
       if (request.method === "GET" && url.pathname === "/health") {
-        const storage = await roundhouse.getStorageStatus();
-        return send(response, 200, { status: storage.connected ? "ok" : "degraded", service: "roundhouse", storage, worker: loop.status(), mcp: "/mcp" });
+        return send(response, 200, { status: "ok", service: "roundhouse", storage: localStorageIdentity(roundhouse.store), worker: loop.status(), mcp: "/mcp" });
+      }
+      if (request.method === "GET" && url.pathname === "/api/local-snapshot") {
+        const after = url.searchParams.get("after");
+        const notifications = after ? localSnapshot.notifications.slice(notificationPositions.get(after) ?? localSnapshot.notifications.length) : localSnapshot.notifications;
+        return send(response, 200, { ...localSnapshot, notifications });
       }
       if (request.method === "GET" && url.pathname === "/api/overview") {
-        const storage = await roundhouse.getStorageStatus();
-        if (!storage.connected) return send(response, 503, { items: [], needs_you: [], counts: {},
-          connection: { local_service: "connected", storage, worker: loop.status() } });
-        const status = await roundhouse.getWorkStatus();
-        const needs = await roundhouse.getNeedsHuman();
-        return send(response, 200, {
-          ...status,
-          needs_you: needs.questions,
-          counts: {
-            needs_you: status.items.filter((item) => item.needs_you).length,
-            active: status.items.filter((item) => ["Executing", "Verification", "Rework"].includes(item.state)).length,
-            queued: status.items.filter((item) => item.state === "Ready").length,
-            completed: status.items.filter((item) => ["Shipped", "Imported History", "Archived", "Reconciled"].includes(item.state)).length,
-            blocked: status.items.filter((item) => item.state === "Blocked").length,
-          },
-          connection: {
-            local_service: "connected",
-            mcp: "available",
-            endpoint: "/mcp",
-            chatgpt: "managed externally; local connection state is not observable",
-            worker: loop.status(),
-            storage,
-          },
-        });
+        const overview = await overviewFor(roundhouse, loop);
+        if (overview.connection.storage.connected === false) return send(response, 503, overview);
+        return send(response, 200, overview);
       }
       if (request.method === "GET" && url.pathname === "/api/config") return send(response, 200, roundhouse.getConfiguration());
       if (request.method === "PUT" && url.pathname === "/api/config") {
@@ -226,15 +298,20 @@ export async function startRoundhouseServer({
   const address = httpServer.address();
   for (const allowedHost of allowedHosts) origins.add(`http://${allowedHost.toLowerCase()}:${address.port}`);
   if (autoStartWorker) loop.start();
+  wakes.start();
   return {
     server: httpServer,
     service: roundhouse,
     worker: loop,
     url: `http://${host}:${address.port}`,
     close: async () => {
-      loop.stop();
+      wakes.stop();
+      eventDrain.stop();
+      projectionPublisher.stop();
+      await loop.stop();
       await new Promise((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
       if (ownedStore) await ownedStore.close();
+      if (ownsRelay) await relay.close().catch(() => {});
     },
   };
 }

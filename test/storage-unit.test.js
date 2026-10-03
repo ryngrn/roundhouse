@@ -21,12 +21,18 @@ test("storage: node identity is stable while name and capabilities remain operat
   assert.equal(fs.statSync(path.join(directory, "node-identity.json")).mode & 0o777, 0o600);
 });
 
-test("storage: no DATABASE_URL selects the explicit single-node local repository", async () => {
+test("storage: local is the default authority even when DATABASE_URL exists", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-local-storage-"));
-  const store = await openStorage({ directory, env: {} });
+  const store = await openStorage({ directory, env: { DATABASE_URL: "postgresql://should-not-be-used.invalid/db" } });
   assert.equal(store.kind, "local");
   assert.equal(store.shared, false);
   assert.match(store.status().warning, /single-node/);
+});
+
+test("storage: PostgreSQL authority requires an explicit storage mode", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-postgres-mode-"));
+  await assert.rejects(openStorage({ directory, env: { ROUNDHOUSE_STORAGE_MODE: "postgresql" } }), /requires DATABASE_URL/);
+  await assert.rejects(openStorage({ directory, env: { ROUNDHOUSE_STORAGE_MODE: "wat" } }), /Unsupported ROUNDHOUSE_STORAGE_MODE/);
 });
 
 test("storage: PostgreSQL import refuses to invent credentials or alter the local snapshot", async () => {

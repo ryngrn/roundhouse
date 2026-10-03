@@ -25,7 +25,8 @@ workflow state. The former Notion Roundhouse Depot is archive/reference only; ne
 For shared/multi-node installs, PostgreSQL is authoritative; Neon is the intended
 hosted provider. Local JSON storage is only for explicit single-node development,
 tests, and pre-cutover bootstrap. See the [PostgreSQL control-plane and cutover
-guide](docs/postgresql-control-plane.md).
+guide](docs/postgresql-control-plane.md). The idle control plane is event-driven;
+see the [wake, read, and execution boundaries](docs/event-driven-control-plane.md).
 
 ## Install on one Mac
 
@@ -71,7 +72,8 @@ when Codex is unavailable.
 Start from [the autonomy configuration](config/autonomy.example.yaml), saved outside
 your repository, or use the control room's validated private configuration editor.
 Configure its repository, context, checks, and delivery policy. The installed
-background worker automatically notices new and newly answered work. CLI operation
+background worker runs on startup, local mutations, and disposable wake messages
+rather than polling PostgreSQL. CLI operation
 remains available:
 
 ```sh
@@ -89,6 +91,7 @@ are repository-relative and contain no personal machine settings.
 
 - [Behavior, configuration, approvals, recovery, and test contracts](docs/autonomous-workflow.md)
 - [Architecture and adapter extension guide](docs/architecture.md)
+- [Event-driven control-plane wake and read boundaries](docs/event-driven-control-plane.md)
 - [PostgreSQL operations, migration, backup, and recovery](docs/postgresql-control-plane.md)
 - [Notion Depot archive and one-time cutover](docs/chatgpt-rdc-bridge.md)
 - [ChatGPT MCP adapter setup and testing](docs/chatgpt-mcp.md)

@@ -141,6 +141,21 @@ test("local front door proxies only the canonical roundhouse host", async (t) =>
   assert.equal((await request(url, "/", { host: "localhost" })).status, 403);
 });
 
+test("front door returns structured JSON when the app service is unavailable", async (t) => {
+  const front = await startFrontDoor({ port: 0, targetPort: 65534 });
+  t.after(() => new Promise((resolve, reject) => front.close((error) => error ? reject(error) : resolve())));
+  const address = front.address();
+  const url = `http://127.0.0.1:${address.port}`;
+  const apiResponse = await request(url, "/api/overview", { host: "roundhouse" });
+  assert.equal(apiResponse.status, 503);
+  assert.match(apiResponse.type, /application\/json/);
+  assert.equal(apiResponse.json().code, "service_unavailable");
+  assert.match(apiResponse.json().error, /service unavailable/i);
+  const pageResponse = await request(url, "/", { host: "roundhouse" });
+  assert.equal(pageResponse.status, 503);
+  assert.match(pageResponse.type, /text\/plain/);
+});
+
 test("served browser client gives Depot textarea conversational keyboard behavior", async (t) => {
   const h = harness();
   const running = await startRoundhouseServer({ service: new RoundhouseService({ store: h.store, engine: h.engine }), port: 0, autoStartWorker: false });

@@ -1,14 +1,18 @@
 export class WorkerLoop {
-  constructor({ service, eventBroker = null, intervalMs = 2000, onError = () => {} }) {
+  constructor({ service, eventBroker = null, commandQueue = null, onCycle = async () => {}, onError = () => {} }) {
     this.service = service;
     this.eventBroker = eventBroker;
-    this.intervalMs = intervalMs;
+    this.commandQueue = commandQueue;
+    this.onCycle = onCycle;
     this.onError = onError;
     this.triageRunning = null;
     this.dispatchRunning = null;
     this.commandRunning = null;
     this.cycleRunning = null;
-    this.timer = null;
+    this.started = false;
+    this.stopped = false;
+    this.wakeRequested = false;
+    this.wakeDrain = null;
     this.lastRun = null;
     this.lastError = null;
     this.lastTriage = null;
@@ -30,30 +34,42 @@ export class WorkerLoop {
   }
 
   async remoteCommandTick() {
-    const store = this.service.store;
-    if (!store?.claimRemoteCommand || this.commandRunning) return this.commandRunning ?? { remote_commands: 0 };
+    const queue = this.commandQueue;
+    if (!queue?.claimRemoteCommand || this.commandRunning) return this.commandRunning ?? { remote_commands: 0 };
     this.commandRunning = (async () => {
-      const command = await store.claimRemoteCommand();
-      if (!command) { this.commandError = null; return { remote_commands: 0 }; }
+      let processed = 0;
+      let lastError;
       try {
-        let result;
-        if (command.kind === "intake") {
-          result = await this.service.addToDepot(command.payload, { source: "remote-dashboard", actor: "ryan" });
-        } else if (command.kind === "decision_session") {
-          result = await this.service.answerDecisionSession({ ...command.payload, actor: "ryan" });
-        } else {
-          throw new Error(`Unsupported remote command: ${command.kind}`);
+        while (true) {
+          const command = await queue.claimRemoteCommand();
+          if (!command) break;
+          processed += 1;
+          try {
+            let result;
+            if (command.kind === "intake") {
+              result = await this.service.addToDepot(command.payload, { source: "remote-dashboard", actor: "ryan" });
+            } else if (command.kind === "decision_session") {
+              result = await this.service.answerDecisionSession({ ...command.payload, actor: "ryan" });
+            } else {
+              throw new Error(`Unsupported remote command: ${command.kind}`);
+            }
+            await queue.finishRemoteCommand(command.id, { result });
+            this.lastCommand = new Date().toISOString();
+            this.commandError = null;
+          } catch (error) {
+            await queue.finishRemoteCommand(command.id, { error: error.message }).catch(() => {});
+            this.commandError = error.message;
+            lastError = error.message;
+            this.onError(error);
+          }
         }
-        await store.finishRemoteCommand(command.id, { result });
-        this.lastCommand = new Date().toISOString();
-        this.commandError = null;
-        return { remote_commands: 1 };
       } catch (error) {
-        await store.finishRemoteCommand(command.id, { error: error.message }).catch(() => {});
         this.commandError = error.message;
+        lastError = error.message;
         this.onError(error);
-        return { remote_commands: 1, remote_command_error: error.message };
       }
+      if (!processed && !lastError) this.commandError = null;
+      return { remote_commands: processed, ...(lastError ? { remote_command_error: lastError } : {}) };
     })();
     try { return await this.commandRunning; }
     finally { this.commandRunning = null; }
@@ -64,12 +80,11 @@ export class WorkerLoop {
     this.triageRunning = (async () => {
       try {
         const result = this.service.engine ? await this.service.engine.runTriage() : { triaged: 0 };
-        const events = this.eventBroker ? await this.eventBroker.drain() : { attempted: 0 };
         this.lastTriage = new Date().toISOString();
         this.lastRun = this.lastTriage;
         this.triageError = null;
         if (!this.dispatchError) this.lastError = null;
-        return { ...result, event_deliveries_attempted: events.attempted };
+        return result;
       } catch (error) { return { triaged: 0, ...this.handleError("triage", error) }; }
       finally { this.triageRunning = null; }
     })();
@@ -92,47 +107,57 @@ export class WorkerLoop {
     return this.dispatchRunning;
   }
 
-  sharedControlPlane() {
-    return Boolean(this.service.engine?.store?.shared);
-  }
-
   async tick() {
     if (this.cycleRunning) return this.cycleRunning;
     this.cycleRunning = (async () => {
-      // Shared PostgreSQL state is snapshot-serialized. Run triage and dispatch
-      // as one control-plane cycle so this process never waits on its own
-      // long-lived snapshot transaction. Local file storage keeps the same
-      // deterministic ordering for manual ticks.
-      const commands = this.sharedControlPlane() ? await this.remoteCommandTick() : { remote_commands: 0 };
+      // Remote commands are an optional relay concern. The local store remains
+      // authoritative, so a relay failure must never prevent local triage or dispatch.
+      const commands = this.commandQueue ? await this.remoteCommandTick() : { remote_commands: 0 };
       const triage = await this.triageTick();
       const dispatch = await this.dispatchTick();
-      return { ...commands, ...triage, ...dispatch, triaged: triage.triaged ?? 0, executed: dispatch.executed ?? 0,
+      const events = this.eventBroker ? await this.eventBroker.drain() : { attempted: 0 };
+      const result = { ...commands, ...triage, ...dispatch, triaged: triage.triaged ?? 0, executed: dispatch.executed ?? 0,
+        event_deliveries_attempted: events.attempted ?? 0,
         error: commands.remote_command_error ?? triage.error ?? dispatch.error };
+      await this.onCycle(result);
+      return result;
     })();
     try { return await this.cycleRunning; }
     finally { this.cycleRunning = null; }
   }
 
   wake() {
-    queueMicrotask(() => {
-      if (this.sharedControlPlane()) this.tick();
-      else { this.triageTick(); this.dispatchTick(); }
-    });
+    if (this.stopped) return Promise.resolve();
+    this.wakeRequested = true;
+    if (!this.wakeDrain) {
+      this.wakeDrain = Promise.resolve().then(async () => {
+        while (this.wakeRequested && !this.stopped) {
+          this.wakeRequested = false;
+          // A signal received while any cycle is active must cause a distinct
+          // cycle after that work finishes; awaiting the active promise alone
+          // would otherwise consume and lose the signal.
+          if (this.cycleRunning) await this.cycleRunning;
+          await this.tick();
+        }
+      }).catch(this.onError).finally(() => {
+        this.wakeDrain = null;
+        if (this.wakeRequested && !this.stopped) this.wake();
+      });
+    }
+    return this.wakeDrain;
   }
 
   start() {
-    if (this.timer) return;
-    this.timer = setInterval(() => {
-      if (this.sharedControlPlane()) this.tick();
-      else { this.triageTick(); this.dispatchTick(); }
-    }, this.intervalMs);
-    this.timer.unref();
-    this.wake();
+    if (this.started) return this.wakeDrain;
+    this.started = true;
+    this.stopped = false;
+    return this.wake();
   }
 
   stop() {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.stopped = true;
+    this.wakeRequested = false;
+    return Promise.allSettled([this.wakeDrain, this.cycleRunning].filter(Boolean));
   }
 
   status() {

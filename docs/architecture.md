@@ -16,7 +16,7 @@ Notion prototype is available only through the one-time archive importer.
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | Batched browser decision sessions, CLI approval/clarification, durable questions, and MCP answers | Revision-bound atomic response set, durable audit record, exactly one readiness reevaluation |
-| Status adapters | Browser polling, MCP status tools, and MCP Events webhooks | Project/item-scoped projection of durable outbox transitions |
+| Status adapters | Explicit/lifecycle browser reads, local cached menu status, MCP status tools, and MCP Events webhooks | Project/item-scoped projection of durable outbox transitions |
 
 The Engine imports no Notion SDK and contains no Codex command-line flags. Runtime state is distinct from product state: a process exiting
 does not decide that work is Shipped or needs Review.
@@ -36,7 +36,7 @@ a structured conflict and zero answers are applied. The legacy MCP
 `answer_question` tool remains available for external single-question clients.
 
 The combined local server owns the browser control room, JSON API, MCP endpoint,
-and independent bounded triage and dispatch loops. HTTP handlers contain no routing,
+and event-driven bounded triage and dispatch cycles. HTTP handlers contain no routing,
 approval, execution, or shipping policy. A long execution does not starve triage.
 The loops call the same Engine used by the CLI, so worker locks, item leases, durable
 backoff, and conservative recovery continue to govern both paths.
@@ -90,8 +90,8 @@ Claim intent, runtime process IDs, candidate commits, verification evidence, and
 delivery intent are persisted at their boundaries. A restart never assumes an
 interrupted external action did not happen. Recovery is conservative and retains
 artifacts. PostgreSQL-backed nodes heartbeat their stable installation identities
-and advertised capabilities. The installed LaunchAgent keeps the local server and
-its polling worker alive.
+only while safety-critical work owns a lease. The installed LaunchAgent keeps the
+local server alive; an HTTP wake stream and local mutations trigger worker cycles.
 
 ## Extending execution
 

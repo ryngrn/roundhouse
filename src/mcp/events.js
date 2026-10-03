@@ -429,7 +429,70 @@ export class McpEventBroker {
       await this.deliverClaim(claim);
       attempted += 1;
     }
-    return { attempted };
+    const data = await this.store.read();
+    const retryTimes = Object.values(eventState(data).deliveries)
+      .filter((delivery) => ["pending", "retry"].includes(delivery.status))
+      .map((delivery) => Date.parse(delivery.next_attempt_at))
+      .filter(Number.isFinite);
+    return { attempted, next_retry_at: retryTimes.length ? new Date(Math.min(...retryTimes)).toISOString() : null };
+  }
+}
+
+export class McpEventDrainScheduler {
+  constructor({ broker, clock = () => Date.now(), setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, onError = () => {} }) {
+    this.broker = broker;
+    this.clock = clock;
+    this.setTimeoutFn = setTimeoutFn;
+    this.clearTimeoutFn = clearTimeoutFn;
+    this.onError = onError;
+    this.timer = null;
+    this.running = null;
+    this.pending = false;
+    this.stopped = false;
+  }
+
+  drain() { return this.trigger(); }
+
+  trigger() {
+    if (this.stopped) return Promise.resolve({ attempted: 0 });
+    this.pending = true;
+    if (this.timer) this.clearTimeoutFn(this.timer);
+    this.timer = null;
+    if (!this.running) {
+      this.running = Promise.resolve().then(async () => {
+        let result = { attempted: 0, next_retry_at: null };
+        while (this.pending && !this.stopped) {
+          this.pending = false;
+          result = await this.broker.drain();
+        }
+        if (!this.stopped && result.next_retry_at) this.schedule(result.next_retry_at);
+        return result;
+      }).catch((error) => {
+        this.onError(error);
+        return { attempted: 0, error: error.message };
+      }).finally(() => {
+        this.running = null;
+        if (this.pending && !this.stopped) this.trigger();
+      });
+    }
+    return this.running;
+  }
+
+  schedule(nextRetryAt) {
+    if (this.stopped) return;
+    const delay = Math.max(0, Date.parse(nextRetryAt) - this.clock());
+    this.timer = this.setTimeoutFn(() => {
+      this.timer = null;
+      this.trigger();
+    }, delay);
+    this.timer.unref?.();
+  }
+
+  stop() {
+    this.stopped = true;
+    this.pending = false;
+    if (this.timer) this.clearTimeoutFn(this.timer);
+    this.timer = null;
   }
 }
 

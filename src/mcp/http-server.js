@@ -3,8 +3,8 @@ import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { RoundhouseService } from "../workflow/service.js";
-import { callRoundhouseTool, createRoundhouseMcpServer, roundhouseToolCatalog } from "./server.js";
-import { MCP_PROTOCOL_VERSION, McpEventBroker, principalFromRequest } from "./events.js";
+import { callRoundhouseTool, createRoundhouseMcpServer, roundhouseToolCatalog, roundhouseToolChangesState } from "./server.js";
+import { MCP_PROTOCOL_VERSION, McpEventBroker, McpEventDrainScheduler, principalFromRequest } from "./events.js";
 import { openStorage } from "../storage/open.js";
 
 function requestHostname(value) {
@@ -40,7 +40,7 @@ function modernResponse(response, status, payload) {
   }).end(JSON.stringify(payload));
 }
 
-async function handleModernRequest(request, response, service, events) {
+async function handleModernRequest(request, response, service, events, onMutation) {
   let message;
   try {
     message = await jsonRequest(request);
@@ -71,6 +71,7 @@ async function handleModernRequest(request, response, service, events) {
     } else if (message.method === "tools/call") {
       try {
         result = { resultType: "complete", ...(await callRoundhouseTool(service, message.params?.name, message.params?.arguments ?? {})), isError: false };
+        if (roundhouseToolChangesState(message.params?.name)) Promise.resolve().then(onMutation).catch(() => {});
       } catch (error) {
         if (error.code === -32602) throw error;
         result = { resultType: "complete", content: [{ type: "text", text: error.message }], isError: true };
@@ -93,7 +94,7 @@ async function handleModernRequest(request, response, service, events) {
   }
 }
 
-export async function handleMcpRequest(request, response, service, eventBroker) {
+export async function handleMcpRequest(request, response, service, eventBroker, { onMutation = async () => {} } = {}) {
   response.setHeader("access-control-allow-origin", "*");
   response.setHeader("access-control-expose-headers", "Mcp-Session-Id, MCP-Protocol-Version");
   if (request.method === "OPTIONS") {
@@ -104,9 +105,9 @@ export async function handleMcpRequest(request, response, service, eventBroker) 
     return;
   }
   if (request.method === "POST" && request.headers["mcp-protocol-version"] === MCP_PROTOCOL_VERSION) {
-    return handleModernRequest(request, response, service, eventBroker ?? new McpEventBroker({ service }));
+    return handleModernRequest(request, response, service, eventBroker ?? new McpEventBroker({ service }), onMutation);
   }
-  const server = createRoundhouseMcpServer(service);
+  const server = createRoundhouseMcpServer(service, { onMutation });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   response.on("close", () => {
     transport.close().catch(() => {});
@@ -122,8 +123,8 @@ export async function startMcpHttpServer({ stateDirectory, configFile, host = "1
   const roundhouse = service ?? new RoundhouseService({ store: ownedStore, configFile });
   await roundhouse.initialize?.();
   const events = eventBroker ?? new McpEventBroker({ service: roundhouse });
-  const eventTimer = setInterval(() => events.drain().catch(() => {}), 2_000);
-  eventTimer.unref();
+  const eventDrain = new McpEventDrainScheduler({ broker: events });
+  eventDrain.trigger();
   const hostnames = new Set([host, ...(host === "127.0.0.1" ? ["localhost", "::1"] : []), ...allowedHosts].map((value) => value.toLowerCase()));
   const httpServer = createServer(async (request, response) => {
     if (!hostnames.has(requestHostname(request.headers.host))) {
@@ -140,7 +141,7 @@ export async function startMcpHttpServer({ stateDirectory, configFile, host = "1
       return;
     }
     try {
-      await handleMcpRequest(request, response, roundhouse, events);
+      await handleMcpRequest(request, response, roundhouse, events, { onMutation: () => eventDrain.trigger() });
     } catch (error) {
       if (!response.headersSent) response.writeHead(500, { "content-type": "text/plain; charset=utf-8" }).end("Internal Server Error");
     }
@@ -155,7 +156,7 @@ export async function startMcpHttpServer({ stateDirectory, configFile, host = "1
     url: `http://${host}:${address.port}/mcp`,
     eventBroker: events,
     close: async () => {
-      clearInterval(eventTimer);
+      eventDrain.stop();
       await new Promise((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
       if (ownedStore) await ownedStore.close();
     },

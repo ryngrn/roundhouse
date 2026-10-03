@@ -307,7 +307,7 @@ test("acceptance: real browser UI works on insecure roundhouse-compatible HTTP",
   await expectText(page, "#config-message", /Project id must be a stable lowercase slug/);
 });
 
-test("acceptance: real browser Needs a signal drafts and approvals survive polling", async (t) => {
+test("acceptance: real browser Needs a signal drafts survive explicit refreshes", async (t) => {
   if (!fs.existsSync(chrome)) return t.skip("Google Chrome is not installed.");
   const fixture = tempProject({ approvalRequired: false, autonomous: true });
   const running = await startRoundhouseServer({
@@ -344,13 +344,22 @@ test("acceptance: real browser Needs a signal drafts and approvals survive polli
   await answer.fill("Manual README inspection plus the configured clean-git check is acceptable.");
   await page.evaluate(() => document.querySelector("#refresh").click());
   assert.equal(await page.locator("#decision-answer").inputValue(), "Manual README inspection plus the configured clean-git check is acceptable.");
-  await page.getByRole("button", { name: "Submit 1 answer" }).click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes("/decision-session") && response.status() === 200),
+    page.getByRole("button", { name: "Submit 1 answer" }).click(),
+  ]);
   await page.getByRole("button", { name: /Open human review acceptance, Needs a signal/ }).click();
   await expectText(page, "#work-modal-content", /Approve the verified disposable change/);
   await page.locator("#decision-answer").fill("approve");
-  await page.getByRole("button", { name: "Submit 1 answer" }).click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes("/decision-session") && response.status() === 200),
+    page.getByRole("button", { name: "Submit 1 answer" }).click(),
+  ]);
   await postJson(running.url, "/api/worker/tick", {});
-  await page.locator("#refresh").click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/api/overview") && response.status() === 200),
+    page.locator("#refresh").click(),
+  ]);
   await page.locator('[data-filter-key="all"]').click();
   await expectText(page, "#project-board", /Reached the station\s*1/);
   assert.equal(Object.values(new Store(fixture.stateDirectory).read().jobs)[0].state, "Shipped");

@@ -82,7 +82,7 @@ test("shared worker routes one queued remote signal before triage and dispatch",
       runDispatch: async () => { order.push("dispatch"); return { executed: 0 }; },
     },
   };
-  const worker = new WorkerLoop({ service });
+  const worker = new WorkerLoop({ service, commandQueue: store });
   const result = await worker.tick();
   assert.deepEqual(order, ["command", "triage", "dispatch"]);
   assert.equal(result.remote_commands, 1);

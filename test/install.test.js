@@ -22,8 +22,8 @@ test("menu bar companion remains a thin native HTTP client with service controls
   const source = fs.readFileSync("macos/RoundhouseMenu/main.swift", "utf8");
   assert.match(source, /import AppKit/);
   assert.match(source, /http:\/\/roundhouse/);
-  assert.match(source, /api\/overview/);
-  assert.match(source, /api\/notifications/);
+  assert.match(source, /api\/local-snapshot/);
+  assert.doesNotMatch(source, /api\/overview|api\/notifications/);
   assert.match(source, /notificationCursor/);
   assert.match(source, /Open Roundhouse/);
   assert.match(source, /Start Service/);
@@ -57,6 +57,8 @@ test("installer reports success only after direct app and front-door health and 
   assert.match(service, /smoke\)/);
   const wrapper = fs.readFileSync("scripts/macos/service-wrapper.sh", "utf8");
   assert.match(wrapper, /neon\.env/);
+  assert.match(wrapper, /relay\.env/);
+  assert.match(wrapper, /ROUNDHOUSE_STORAGE_MODE/);
   assert.match(wrapper, /400\|600/);
   assert.match(wrapper, /unset DATABASE_URL_UNPOOLED NEON_BRANCH/);
 });

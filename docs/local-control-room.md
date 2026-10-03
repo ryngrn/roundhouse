@@ -27,8 +27,8 @@ a root-owned LaunchDaemon for the loopback port-80 proxy. It asks for `sudo` onl
 for the latter two system changes.
 
 The menu helper is an unsigned development build made with `swiftc`. It is a native
-AppKit menu extra, not another control surface. It can open Roundhouse, show health
-and counts, and start, stop, or restart the service. Its durable event cursor
+AppKit menu extra, not another control surface. It can open Roundhouse, show local
+health and last-known cached counts, and start, stop, or restart the service. Its durable event cursor
 prevents repeat notifications. It notifies only for Needs You, blocked/failure, and
 shipped events. Signing, notarization, and a DMG remain release-distribution work
 that requires Apple credentials.
@@ -51,7 +51,8 @@ health endpoint and the canonical front-door health endpoint return healthy. A
 failed user-service bootstrap is cleared and retried once. The smoke paths are
 idempotent and do not unload either service. The menu helper reports app-service
 and front-door failures separately and labels counts unavailable when the app
-cannot provide an authoritative overview.
+cannot provide its in-memory snapshot. Its periodic requests use only `/health`
+and `/api/local-snapshot`; neither endpoint queries PostgreSQL.
 
 Uninstall removes both launchd jobs and the marked host entry. It deliberately
 keeps state and private project configuration in Application Support; the operator

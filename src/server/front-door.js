@@ -17,7 +17,13 @@ export function startFrontDoor({ host = "127.0.0.1", port = 80, targetHost = "12
       upstreamResponse.pipe(response);
     });
     upstream.on("error", () => {
-      if (!response.headersSent) response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+      if (response.headersSent) return response.end();
+      if ((request.url ?? "").startsWith("/api/")) {
+        response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "Roundhouse service unavailable. The local service is not running.", code: "service_unavailable" }));
+        return;
+      }
+      response.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
       response.end("Roundhouse is starting.");
     });
     request.pipe(upstream);

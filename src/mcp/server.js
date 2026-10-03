@@ -135,7 +135,11 @@ export async function callRoundhouseTool(service, name, input = {}) {
   return value;
 }
 
-export function createRoundhouseMcpServer(service) {
+export function roundhouseToolChangesState(name) {
+  return toolSpecs.some((spec) => spec.name === name && spec.annotations.readOnlyHint === false);
+}
+
+export function createRoundhouseMcpServer(service, { onMutation = async () => {} } = {}) {
   const server = new McpServer(
     { name: "roundhouse-depot", version: "0.1.0" },
     { instructions: "Capture intent verbatim. Project hints are non-authoritative. Roundhouse owns inference, questions, planning, priority, readiness, and execution policy. Use answer_question only with the current durable question revision.", maxToolInputElements: 1_000 },
@@ -150,7 +154,11 @@ export function createRoundhouseMcpServer(service) {
       inputSchema: shape,
       outputSchema: outputShape,
       annotations: spec.annotations,
-    }, async (input) => callRoundhouseTool(service, spec.name, input));
+    }, async (input) => {
+      const value = await callRoundhouseTool(service, spec.name, input);
+      if (spec.annotations.readOnlyHint === false) Promise.resolve().then(onMutation).catch(() => {});
+      return value;
+    });
   }
 
   return server;
