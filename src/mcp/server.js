@@ -23,7 +23,9 @@ const itemSchema = z.object({
   reason: z.string().nullable(), question: z.string().nullable(), question_id: z.string().nullable(), question_revision: z.number().nullable(),
   outcome: z.string().nullable(),
   imported: z.boolean(), provenance: z.unknown().nullable(), legacy: z.unknown().nullable(),
-  requires_reevaluation: z.boolean(), execution_eligible: z.boolean(), created_at: z.string().nullable(), updated_at: z.string().nullable(),
+  requires_reevaluation: z.boolean(), execution_eligible: z.boolean(),
+  execution_ineligibility_reasons: z.array(z.object({ code: z.string(), message: z.string(), missing: z.array(z.string()).optional() })),
+  created_at: z.string().nullable(), updated_at: z.string().nullable(),
   evidence: z.object({
     checks: z.array(z.object({ id: z.string(), passed: z.boolean(), exit_code: z.number().optional(), source: z.string(), summary: z.string().optional(), artifacts: z.array(z.string()).optional() })),
     deliveries: z.array(z.object({

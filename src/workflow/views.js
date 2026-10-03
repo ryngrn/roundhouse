@@ -77,6 +77,7 @@ export function itemView(data, item) {
     legacy,
     requires_reevaluation: item.requires_reevaluation === true,
     execution_eligible: item.execution_eligible !== false,
+    execution_ineligibility_reasons: item.execution_ineligibility_reasons ?? [],
     triage: item.triage ? {
       status: item.triage.status ?? null,
       reason: item.triage.reason ?? item.history.at(-1)?.reason ?? null,

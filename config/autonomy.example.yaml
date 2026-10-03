@@ -16,6 +16,10 @@ projects:
     purpose: Deliver useful improvements to this project.
     success_state: Requested improvements pass project checks and reach a delivery branch.
     status: active
+    # Existing software projects default to true. Set false to model work that
+    # does not require Git; a repository-independent delivery provider is still
+    # needed before such work can execute.
+    repository_required: true
     repository: /absolute/path/to/a/clean/repository
     base_ref: HEAD
     remote: origin
