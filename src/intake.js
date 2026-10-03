@@ -11,13 +11,18 @@ const stableMetricKey = (value) => typeof value === "string" && /^[a-z][a-z0-9_]
 const stableReference = (value) => typeof value === "string" && /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/i.test(value);
 const validTimestamp = (value) => nonempty(value) && Number.isFinite(Date.parse(value));
 const captureId = (value) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+const materialBriefFields = new Set([
+  "outcome", "scope", "acceptance_criteria", "assumptions", "required_capabilities",
+  "decision_references", "design_artifacts",
+]);
 
 function readinessReason(code, message) { return { code, message }; }
 
 /**
- * Readiness is derived from one immutable Brief revision. References and
- * approval deliberately bind to that same revision so copying them forward
- * cannot silently authorize changed work.
+ * Readiness is derived from one immutable material Brief revision. References
+ * and approval deliberately bind to that material revision so copying them
+ * forward cannot silently authorize changed work, while lifecycle-only audit
+ * records can retain valid evidence.
  */
 export function evaluateBriefReadiness(brief) {
   const reasons = [];
@@ -33,14 +38,14 @@ export function evaluateBriefReadiness(brief) {
   }
 
   const decisions = Array.isArray(brief.decision_references) ? brief.decision_references : [];
-  const staleDecisions = decisions.filter((reference) => reference.brief_revision !== brief.revision);
+  const staleDecisions = decisions.filter((reference) => reference.brief_revision !== brief.material_revision);
   if (staleDecisions.length) {
-    reasons.push(readinessReason("stale_decision_references", `Refresh decision references for Brief revision ${brief.revision}: ${staleDecisions.map((reference) => reference.id).join(", ")}.`));
+    reasons.push(readinessReason("stale_decision_references", `Refresh decision references for material Brief revision ${brief.material_revision}: ${staleDecisions.map((reference) => reference.id).join(", ")}.`));
   }
 
-  if (!brief.approval) reasons.push(readinessReason("missing_approval", `Approve Brief revision ${brief.revision}.`));
-  else if (brief.approval.brief_revision !== brief.revision) {
-    reasons.push(readinessReason("stale_approval", `Approval covers Brief revision ${brief.approval.brief_revision}, not current revision ${brief.revision}.`));
+  if (!brief.approval) reasons.push(readinessReason("missing_approval", `Approve material Brief revision ${brief.material_revision}.`));
+  else if (brief.approval.brief_revision !== brief.material_revision) {
+    reasons.push(readinessReason("stale_approval", `Approval covers material Brief revision ${brief.approval.brief_revision}, not current material revision ${brief.material_revision}.`));
   }
 
   const requiredArtifacts = Array.isArray(brief.required_design_artifacts) ? brief.required_design_artifacts : [];
@@ -52,11 +57,11 @@ export function evaluateBriefReadiness(brief) {
   }
   const staleArtifacts = requiredArtifacts
     .map((id) => artifactsById.get(id))
-    .filter((artifact) => artifact && artifact.brief_revision !== brief.revision);
+    .filter((artifact) => artifact && artifact.brief_revision !== brief.material_revision);
   if (staleArtifacts.length) {
-    reasons.push(readinessReason("stale_design_artifacts", `Refresh design artifacts for Brief revision ${brief.revision}: ${staleArtifacts.map((artifact) => artifact.id).join(", ")}.`));
+    reasons.push(readinessReason("stale_design_artifacts", `Refresh design artifacts for material Brief revision ${brief.material_revision}: ${staleArtifacts.map((artifact) => artifact.id).join(", ")}.`));
   }
-  return { ready: reasons.length === 0, evaluated_revision: brief.revision, reasons };
+  return { ready: reasons.length === 0, evaluated_revision: brief.revision, evaluated_material_revision: brief.material_revision, reasons };
 }
 
 function withReadiness(brief) {
@@ -87,6 +92,7 @@ function validateBrief(brief, intake) {
   requireValue(captureId(brief.id), "Brief requires a valid id.");
   requireValue(brief.intake_id === intake.id && brief.intake_revision === intake.revision, "Brief must reference its immutable Intake revision.");
   requireValue(Number.isInteger(brief.revision) && brief.revision > 0, "Brief revision must be a positive integer.");
+  requireValue(Number.isInteger(brief.material_revision) && brief.material_revision > 0 && brief.material_revision <= brief.revision, "Brief material revision must be a positive integer no greater than its audit revision.");
   requireValue(brief.project_id === null || nonempty(brief.project_id), "Brief project_id must be null or nonempty.");
   requireValue(brief.outcome === null || nonempty(brief.outcome), "Brief outcome must be null or nonempty.");
   requireValue(brief.scope === null || nonempty(brief.scope), "Brief scope must be null or nonempty.");
@@ -104,7 +110,7 @@ function validateBrief(brief, intake) {
   requireValue(brief.approval === null || (brief.approval && Number.isInteger(brief.approval.brief_revision) && brief.approval.brief_revision > 0 && nonempty(brief.approval.actor) && validTimestamp(brief.approval.approved_at)), "Brief approval is invalid.");
   requireValue(["draft", "needs_clarification", "slice_ready"].includes(brief.status), "Brief status is invalid.");
   const readiness = evaluateBriefReadiness(brief);
-  requireValue(brief.readiness?.evaluated_revision === brief.revision && brief.readiness?.ready === readiness.ready && JSON.stringify(brief.readiness.reasons) === JSON.stringify(readiness.reasons), "Brief readiness must match its current revision and material inputs.");
+  requireValue(brief.readiness?.evaluated_revision === brief.revision && brief.readiness?.evaluated_material_revision === brief.material_revision && brief.readiness?.ready === readiness.ready && JSON.stringify(brief.readiness.reasons) === JSON.stringify(readiness.reasons), "Brief readiness must match its current revision and material inputs.");
   requireValue(brief.status === (readiness.ready ? "slice_ready" : (brief.project_id ? "draft" : "needs_clarification")), "Brief status must match readiness.");
   requireValue(brief.execution_eligible === false, "Capture Briefs cannot create executable work.");
   requireValue(nonempty(brief.classification?.rationale), "Brief classification requires a visible rationale.");
@@ -197,7 +203,7 @@ export function createCapture(input, projects) {
   const decisionReferences = (input.decision_references ?? []).map((reference) => structuredClone(reference));
   const designArtifacts = (input.design_artifacts ?? []).map((artifact) => structuredClone(artifact));
   const brief = withReadiness({
-    ...base, id: randomUUID(), intake_id: intake.id, intake_revision: 1,
+    ...base, material_revision: 1, id: randomUUID(), intake_id: intake.id, intake_revision: 1,
     project_id: project?.id ?? null,
     classification: {
       method: explicit ? "explicit" : "project-name-match",
@@ -273,10 +279,12 @@ export function appendBriefRevision(directory, intakeId, changes) {
   const revision = capture.brief.revision + 1;
   const changed = structuredClone(changes);
   if (changed.decision_references) changed.decision_ids = changed.decision_references.map((reference) => reference.id);
+  const materialChanged = Object.keys(changed).some((key) => materialBriefFields.has(key) && JSON.stringify(changed[key]) !== JSON.stringify(capture.brief[key]));
   const brief = withReadiness({
     ...capture.brief,
     ...changed,
     revision,
+    material_revision: capture.brief.material_revision + (materialChanged ? 1 : 0),
     updated_at: new Date().toISOString(),
   });
   validateBrief(brief, capture.intake);

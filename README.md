@@ -110,11 +110,12 @@ the fixture provider for proof and a configurable command provider for real syst
 `config/intake-projects.example.yaml` and `config/intake.example.json`. It does not
 execute or approve work. Each capture atomically stores an immutable `intake.json`
 and append-only, numbered Brief revisions under `intakes/<intake-id>/briefs/`.
-Every revision persists derived readiness with stable, human-readable reasons. A
-Brief is `slice_ready` only when outcome, scope, acceptance criteria, project
-context, same-revision decision references and approval, and any project-required
-design artifacts are valid. Revising material content makes copied approval,
-decision references, and required artifacts stale; capture records remain
+Every audit revision persists derived readiness with stable, human-readable reasons.
+A separate material revision advances when outcome, scope, acceptance criteria,
+context, decisions, or artifacts change. A Brief is `slice_ready` only when project
+context and evidence are valid for that material revision. Lifecycle-only updates
+retain still-valid evidence, while material edits make copied approval, decision
+references, and required artifacts stale; capture records remain
 `execution_eligible: false` even when ready, so this prototype cannot create or
 dispatch executable work.
 

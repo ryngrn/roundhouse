@@ -25,6 +25,7 @@ test("capture survives reload with original words and immutable context snapshot
   assert.equal(record.brief.project_context.weight, 1);
   assert.equal(record.brief.project_context.max_concurrent_runs, 1);
   assert.equal(record.brief.status, "draft");
+  assert.equal(record.brief.material_revision, 1);
   record.intake.text = "overwrite attempt";
   assert.throws(() => saveCapture(dir, record), /Intake already exists/);
   assert.equal(loadCapture(dir, record.intake.id).intake.text, input.text);
@@ -71,7 +72,7 @@ test("Brief readiness requires revision-bound material inputs and never grants e
     approval: { brief_revision: 2, actor: "operator", approved_at: "2026-10-03T12:00:00.000Z" },
   });
   assert.equal(ready.status, "slice_ready");
-  assert.deepEqual(ready.readiness, { ready: true, evaluated_revision: 2, reasons: [] });
+  assert.deepEqual(ready.readiness, { ready: true, evaluated_revision: 2, evaluated_material_revision: 2, reasons: [] });
   assert.equal(ready.execution_eligible, false);
   assert.deepEqual(ready.decision_ids, ["decision.scope"]);
 
@@ -81,11 +82,63 @@ test("Brief readiness requires revision-bound material inputs and never grants e
   assert.deepEqual(changed.readiness.reasons.map((reason) => reason.code), [
     "stale_decision_references", "stale_approval", "stale_design_artifacts",
   ]);
-  assert.match(changed.readiness.reasons[1].message, /revision 2.*current revision 3/);
+  assert.match(changed.readiness.reasons[1].message, /revision 2.*current material revision 3/);
 
   const persisted = loadCapture(dir, record.intake.id);
   assert.deepEqual(persisted.brief.readiness, evaluateBriefReadiness(persisted.brief));
   assert.deepEqual(persisted.brief_revisions.map((brief) => brief.status), ["draft", "slice_ready", "draft"]);
+});
+
+test("each material Brief field invalidates readiness and stale approval cannot authorize it", (t) => {
+  const materialChanges = [
+    ["outcome", "A materially revised outcome."],
+    ["scope", "A materially revised scope."],
+    ["acceptance_criteria", ["A materially revised criterion is observable."]],
+    ["assumptions", ["A new operating-context assumption."]],
+    ["required_capabilities", ["A newly required capability."]],
+    ["decision_references", [{ id: "decision.revised", brief_revision: 2 }]],
+    ["design_artifacts", [{ id: "supporting-flow", brief_revision: 2, uri: "artifact://supporting-flow-v2" }]],
+  ];
+
+  for (const [field, value] of materialChanges) {
+    const dir = temporary(t);
+    const record = createCapture({
+      ...input, project_id: "roundhouse", outcome: "Approved outcome.", scope: "Approved scope.",
+      acceptance_criteria: ["Approved behavior is observable."],
+      decision_references: [{ id: "decision.approved", brief_revision: 1 }],
+      design_artifacts: [{ id: "supporting-flow", brief_revision: 1, uri: "artifact://supporting-flow-v1" }],
+      approval: { brief_revision: 1, actor: "operator", approved_at: "2026-10-03T12:00:00.000Z" },
+    }, projects);
+    saveCapture(dir, record);
+    assert.equal(record.brief.readiness.ready, true, field);
+
+    const revised = appendBriefRevision(dir, record.intake.id, { [field]: value });
+    assert.equal(revised.revision, 2, field);
+    assert.equal(revised.material_revision, 2, field);
+    assert.equal(revised.readiness.ready, false, field);
+    assert.ok(revised.readiness.reasons.some((reason) => reason.code === "stale_approval"), field);
+    assert.equal(revised.status, "draft", field);
+  }
+});
+
+test("non-material lifecycle updates retain readiness evidence", (t) => {
+  const dir = temporary(t);
+  const record = createCapture({
+    ...input, project_id: "roundhouse", outcome: "Approved outcome.", scope: "Approved scope.",
+    acceptance_criteria: ["Approved behavior is observable."],
+    decision_references: [{ id: "decision.approved", brief_revision: 1 }],
+    approval: { brief_revision: 1, actor: "operator", approved_at: "2026-10-03T12:00:00.000Z" },
+  }, projects);
+  saveCapture(dir, record);
+
+  const lifecycleUpdate = appendBriefRevision(dir, record.intake.id, {
+    approval: { brief_revision: 1, actor: "reviewer", approved_at: "2026-10-03T13:00:00.000Z" },
+  });
+  assert.equal(lifecycleUpdate.revision, 2);
+  assert.equal(lifecycleUpdate.material_revision, 1);
+  assert.deepEqual(lifecycleUpdate.readiness, { ready: true, evaluated_revision: 2, evaluated_material_revision: 1, reasons: [] });
+  assert.equal(lifecycleUpdate.status, "slice_ready");
+  assert.deepEqual(loadCapture(dir, record.intake.id).brief_revisions.map((brief) => brief.revision), [1, 2]);
 });
 
 test("slice-ready status cannot be asserted without matching derived readiness", (t) => {
