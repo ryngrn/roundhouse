@@ -10,7 +10,7 @@ import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 import { Unblocker } from "./unblocker.js";
-import { eligibleProjectHead, executionReservation, projectExecutionEligible, recordAllocation, reservationFits, schedulerState, weightedAllocation } from "./scheduler.js";
+import { dispatchConsiderations, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -1003,30 +1003,45 @@ export class Engine {
         if (running.size) await Promise.race(running);
       };
       while (started < this.config.max_jobs_per_run || running.size) {
-        if (started >= this.config.max_jobs_per_run || running.size >= this.config.execution.capacity) {
+        if (started >= this.config.max_jobs_per_run) {
+          await settleOne();
+          continue;
+        }
+        if (running.size >= this.config.execution.capacity) {
+          const state = await this.store.read();
+          const waiting = dispatchConsiderations(state, this.config.projects, this.config.execution, {
+            projectId,
+            stopped,
+            activeReservations: [...reservations.values()],
+            canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
+          }).filter((entry) => !reservations.has(entry.job.id));
+          if (waiting.length) await this.store.change((data) => recordDispatchRound(data, waiting, null,
+            this.config.execution.capacity, new Date(this.clock()).toISOString()));
           await settleOne();
           continue;
         }
         const state = await this.store.read();
-        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required
-          && projectExecutionEligible(p, this.config.execution)
-          && (isMachineLocal(p) || (this.shipping.canDispatch?.(p) ?? true))
-          && Object.values(state.jobs).filter((job) => job.project_id === p.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < p.max_concurrent_runs)
-          .map((project) => ({ project, job: eligibleProjectHead(state, project.id) }))
-          .filter(({ job }) => job);
+        const considerations = dispatchConsiderations(state, this.config.projects, this.config.execution, {
+          projectId,
+          stopped,
+          activeReservations: [...reservations.values()],
+          canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
+        });
         // Weighted turns across projects; only each project's queue head may compete.
-        const scheduler = state.system_metadata.execution_scheduler;
-        candidates.sort((a, b) => weightedAllocation(scheduler, a.project) - weightedAllocation(scheduler, b.project) || a.project.id.localeCompare(b.project.id));
-        const selected = candidates.find(({ project }) => reservationFits([...reservations.values()], executionReservation(project), this.config.execution));
+        const selected = considerations.filter((entry) => entry.eligible)
+          .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id))[0];
+        const at = new Date(this.clock()).toISOString();
         if (!selected) {
+          if (considerations.length) await this.store.change((data) => recordDispatchRound(data, considerations, null, this.config.execution.capacity, at));
           if (running.size) { await settleOne(); continue; }
           break;
         }
         const { project, job } = selected;
         const reservation = executionReservation(project);
         await this.store.change((data) => {
+          recordDispatchRound(data, considerations, job.id, this.config.execution.capacity, at);
           data.projects[project.id] = { ...data.projects[project.id], active: true };
-          recordAllocation(data, project, this.config.execution.capacity, new Date(this.clock()).toISOString());
+          recordAllocation(data, project, this.config.execution.capacity, at);
           data.jobs[job.id].owning_node_id = this.store.node?.id ?? null;
           data.jobs[job.id].owning_node = this.store.node?.name ?? null;
         });
@@ -1069,23 +1084,47 @@ export class Engine {
       await Promise.race(running);
     };
     while (started < this.config.max_jobs_per_run || running.size) {
-      if (started >= this.config.max_jobs_per_run || running.size >= this.config.execution.capacity) {
+      if (started >= this.config.max_jobs_per_run) {
+        await settleOne();
+        continue;
+      }
+      if (running.size >= this.config.execution.capacity) {
+        snapshot = await this.store.read();
+        const activeReservations = Object.values(snapshot.jobs)
+          .filter((job) => job.owning_node_id || ["Executing", "Verification", "Rework"].includes(job.state))
+          .map((job) => this.config.projects.find((project) => project.id === job.project_id))
+          .filter(Boolean)
+          .map(executionReservation);
+        const waiting = dispatchConsiderations(snapshot, this.config.projects, this.config.execution, {
+          projectId,
+          stopped,
+          activeReservations,
+          canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
+        }).filter((entry) => !snapshot.jobs[entry.job.id]?.owning_node_id
+          && !["Executing", "Verification", "Rework"].includes(snapshot.jobs[entry.job.id]?.state));
+        if (waiting.length) await this.store.change((data) => recordDispatchRound(data, waiting, null,
+          this.config.execution.capacity, new Date(this.clock()).toISOString()));
         await settleOne();
         continue;
       }
       snapshot = await this.store.read();
       if (hasImportedTriageBarrier(snapshot)) break;
-      const candidates = this.config.projects.filter((project) => (!projectId || project.id === projectId)
-        && project.status === "active" && !stopped.has(project.id) && !snapshot.projects[project.id]?.blocked
-        && !snapshot.projects[project.id]?.stop && !snapshot.projects[project.id]?.review_required
-        && projectExecutionEligible(project, this.config.execution)
-        && (isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true))
-        && Object.values(snapshot.jobs).filter((job) => job.project_id === project.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < project.max_concurrent_runs)
-        .map((project) => ({ project, job: eligibleProjectHead(snapshot, project.id) }))
-        .filter(({ job }) => job);
-      const scheduler = snapshot.system_metadata.execution_scheduler;
-      candidates.sort((a, b) => weightedAllocation(scheduler, a.project) - weightedAllocation(scheduler, b.project) || a.project.id.localeCompare(b.project.id));
+      const activeReservations = Object.values(snapshot.jobs)
+        .filter((job) => job.owning_node_id || ["Executing", "Verification", "Rework"].includes(job.state))
+        .map((job) => this.config.projects.find((project) => project.id === job.project_id))
+        .filter(Boolean)
+        .map(executionReservation);
+      const considerations = dispatchConsiderations(snapshot, this.config.projects, this.config.execution, {
+        projectId,
+        stopped,
+        activeReservations,
+        canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
+      });
+      const candidates = considerations.filter((entry) => entry.eligible)
+        .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id));
+      const at = new Date(this.clock()).toISOString();
       if (!candidates.length) {
+        if (considerations.length) await this.store.change((data) => recordDispatchRound(data, considerations, null, this.config.execution.capacity, at));
         if (running.size) { await settleOne(); continue; }
         break;
       }
@@ -1094,16 +1133,28 @@ export class Engine {
         leaseMs: this.store.leaseMs,
         execution: this.config.execution,
         reservations,
+        returnEvidence: true,
       });
-      if (!claim) {
+      for (const evidence of claim?.claim_evidence ?? []) {
+        const consideration = considerations.find((entry) => entry.job.id === evidence.job_id);
+        if (!consideration) continue;
+        consideration.reservation = { fits: evidence.fits, constraints: evidence.constraints };
+        consideration.eligible = Object.values(consideration.checks).every((check) => check.passed) && evidence.fits;
+      }
+      if (!claim?.job) {
+        await this.store.change((data) => recordDispatchRound(data, considerations, null, this.config.execution.capacity, at, {
+          code: "atomic_claim_unavailable",
+          message: "Another worker won the atomic claim or consumed a capacity, project, resource, or lock constraint.",
+        }));
         if (running.size) { await settleOne(); continue; }
         break;
       }
       const project = candidates.find(({ job }) => job.id === claim.job.id)?.project;
       if (!project) throw new Error("Claimed job was not an eligible project queue head.");
       await this.store.change((data) => {
+        recordDispatchRound(data, considerations, claim.job.id, this.config.execution.capacity, at);
         data.projects[project.id] = { ...data.projects[project.id], active: true };
-        recordAllocation(data, project, this.config.execution.capacity, new Date(this.clock()).toISOString());
+        recordAllocation(data, project, this.config.execution.capacity, at);
       });
       started += 1;
       if (project.policy.continuation === "stop_after_job") stopped.add(project.id);

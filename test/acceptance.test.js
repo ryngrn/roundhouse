@@ -176,6 +176,12 @@ test("acceptance: HTTP workflow clarifies once, approves, executes, verifies, fi
   const restartedStatus = restarted.getWorkStatus();
   assert.equal(restartedStatus.items[0].state, "Shipped");
   assert.equal(restartedStatus.items[0].evidence.deliveries[0].deployment.status, "succeeded");
+  assert.equal(restartedStatus.allocations.latest.acceptance.result, "allocated");
+  assert.equal(restartedStatus.allocations.latest.acceptance.eligible, true);
+  assert.equal(restartedStatus.allocations.latest.acceptance.queue.position, 1);
+  assert.equal(restartedStatus.allocations.latest.acceptance.constraints.capacity.limit, 1);
+  assert.deepEqual(restartedStatus.allocations.latest.acceptance.constraints.capability.missing, []);
+  assert.equal(restartedStatus.items[0].jobs[0].allocation.reason.code, "allocated");
 });
 
 test("acceptance: autonomous HTTP workflow reaches Completed without human interaction", async (t) => {
@@ -297,6 +303,12 @@ test("acceptance: real browser UI works on insecure roundhouse-compatible HTTP",
   await page.locator('[data-filter-key="all"]').click();
   await expectText(page, "#project-board", /Reached the station\s*1/);
   await expectText(page, "#project-board", /autonomous acceptance/);
+  await expectText(page, "#project-board", /Dispatch · allocated .* queue 1\/1 .* capacity 0\+1\/1 .* locks clear/);
+  await page.locator(".work-row").first().click();
+  await page.locator('[data-tab="evidence"]').click();
+  await expectText(page, "#work-modal-content", /Allocation decisions/);
+  await expectText(page, "#work-modal-content", /allocated · slice .* · eligible · queue .* weight 1, score 0, rank 1/);
+  await page.locator("#close-work").click();
 
   await page.locator("#edit-config").click();
   const configEditor = page.locator("#config-editor");

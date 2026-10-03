@@ -7,6 +7,7 @@ import { harness } from "./support/harness.js";
 import { Store } from "../src/workflow/store.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { startMcpHttpServer } from "../src/mcp/http-server.js";
+import { roundhouseToolCatalog } from "../src/mcp/server.js";
 
 async function connected(h) {
   const service = new RoundhouseService({ store: h.store, engine: h.engine });
@@ -95,6 +96,8 @@ test("integration: MCP transport captures, queries, answers, re-evaluates, and p
 test("service: intake validation and idempotency conflicts stay in the normalized adapter boundary", () => {
   const h = harness();
   const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const statusTool = roundhouseToolCatalog.find((tool) => tool.name === "get_work_status");
+  assert.ok(statusTool.outputSchema.properties.allocations);
   assert.throws(() => service.addToDepot({ content: "" }), /nonempty/);
   assert.throws(() => service.addToDepot({ content: "idea", attachments: Array(21).fill({}) }), /at most 20/);
   service.addToDepot({ content: "first", idempotency_key: "same" });

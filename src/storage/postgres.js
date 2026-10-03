@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { StorageRepository, digest } from "./repository.js";
 import { record, transition } from "../workflow/state.js";
-import { reservationFits } from "../workflow/scheduler.js";
+import { reservationAssessment } from "../workflow/scheduler.js";
 
 const { Pool } = pg;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -369,6 +369,7 @@ export class PostgresStorageRepository extends StorageRepository {
     const leaseMs = typeof options === "number" ? options : (options.leaseMs ?? this.leaseMs);
     const execution = typeof options === "number" ? null : options.execution;
     const reservations = typeof options === "number" ? {} : (options.reservations ?? {});
+    const returnEvidence = typeof options !== "number" && options.returnEvidence === true;
     const token = randomUUID();
     return tx(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
@@ -395,6 +396,7 @@ export class PostgresStorageRepository extends StorageRepository {
       });
       let selected;
       let reservation;
+      const claimEvidence = [];
       for (const candidate of candidates) {
         const proposed = reservations[candidate.id] ?? {
           project_id: candidate.project_id,
@@ -405,13 +407,15 @@ export class PostgresStorageRepository extends StorageRepository {
           locks: [],
         };
         const policy = execution ?? { capacity: Number.MAX_SAFE_INTEGER, capabilities: proposed.required_capabilities, resource_limits: {} };
-        if (!execution || reservationFits(active, proposed, policy)) {
+        const assessment = reservationAssessment(active, proposed, policy);
+        claimEvidence.push({ job_id: candidate.id, ...assessment });
+        if (!execution || assessment.fits) {
           selected = candidate;
           reservation = proposed;
           break;
         }
       }
-      if (!selected) return null;
+      if (!selected) return returnEvidence ? { job: null, claim_evidence: claimEvidence } : null;
       const payload = { operation: "execution", reservation };
       const result = await client.query(`INSERT INTO roundhouse.resource_leases
         (resource_kind,resource_key,owner_node_id,token,acquired_at,heartbeat_at,expires_at,payload)
@@ -420,10 +424,11 @@ export class PostgresStorageRepository extends StorageRepository {
           acquired_at=EXCLUDED.acquired_at,heartbeat_at=EXCLUDED.heartbeat_at,expires_at=EXCLUDED.expires_at,payload=EXCLUDED.payload
         WHERE roundhouse.resource_leases.expires_at<=clock_timestamp()
         RETURNING resource_key`, [selected.id, this.node.id, token, leaseMs, payload]);
-      if (!result.rowCount) return null;
+      if (!result.rowCount) return returnEvidence ? { job: null, claim_evidence: claimEvidence } : null;
       await client.query("UPDATE roundhouse.jobs SET owning_node_id=$2 WHERE id=$1", [selected.id, this.node.id]);
       const job = selected.payload;
-      return { job, lease: { resource_kind: "job", resource_key: job.id, owner_node_id: this.node.id, token, reservation } };
+      return { job, lease: { resource_kind: "job", resource_key: job.id, owner_node_id: this.node.id, token, reservation },
+        ...(returnEvidence ? { claim_evidence: claimEvidence } : {}) };
     });
   }
 

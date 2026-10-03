@@ -178,6 +178,17 @@ function groupStatus(items) {
   };
 }
 
+function allocationSummary(decision) {
+  if (!decision) return null;
+  const capability = decision.constraints.capability;
+  const capacity = decision.constraints.capacity;
+  const locks = decision.constraints.locks;
+  const fit = capability.missing.length ? `missing ${capability.missing.join(", ")}` : "capabilities fit";
+  const conflict = locks.conflicts.length ? `locks ${locks.conflicts.join(", ")}` : "locks clear";
+  const resources = decision.constraints.resources.map((resource) => `${resource.resource} ${resource.used}+${resource.requested}/${resource.limit}`).join(", ") || "no counted resources";
+  return `${decision.result} · slice ${decision.job_id} · ${decision.eligible ? "eligible" : "ineligible"} · queue ${decision.queue.position}/${decision.queue.length} · weight ${decision.fairness.weight}, score ${decision.fairness.weighted_allocation}, rank ${decision.fairness.rank || "—"} · ${fit} · capacity ${capacity.used}+${capacity.requested}/${capacity.limit} · project ${decision.constraints.project.active}/${decision.constraints.project.limit} · ${resources} · ${conflict} · ${decision.reason.message}`;
+}
+
 function renderBoard(overview) {
   const root = $("#project-board");
   root.replaceChildren();
@@ -188,7 +199,7 @@ function renderBoard(overview) {
   for (const project of configuration.projects || []) {
     groups.set("project:" + project.id, {
       key: "project:" + project.id, type: "project", id: project.id, name: project.name,
-      detail: project.purpose, status: project.status || "active", items: [],
+      detail: project.purpose, status: project.status || "active", items: [], allocation: overview.allocations?.latest?.[project.id] ?? null,
     });
   }
   for (const candidate of Object.values(overview.project_candidates || {})) {
@@ -208,6 +219,7 @@ function renderBoard(overview) {
       groups.set(key, {
         key, type: "project", id: item.project, name: configured.get(item.project)?.name || item.project,
         detail: configured.get(item.project)?.purpose || "Configured project", status: configured.get(item.project)?.status || "active", items: [],
+        allocation: overview.allocations?.latest?.[item.project] ?? null,
       });
     }
     groups.get(key).items.push(item);
@@ -306,6 +318,8 @@ function renderBoard(overview) {
     chevron.addEventListener("click", () => setDashboardFilter({ project: dashboardFilters.project === group.key ? null : group.key }));
     heading.append(identity, atGlance, chevron);
     section.append(heading);
+    const allocation = allocationSummary(group.allocation);
+    if (allocation) section.append(node("p", `Dispatch · ${allocation}`, "allocation-summary"));
 
     const labels = node("div", undefined, "row-labels");
     labels.append(node("span", "Work / current activity"), node("span", "Ownership / delivery"), node("span", "Updated"));
@@ -386,6 +400,8 @@ async function submitDecisionSession() {
 
 function evidenceView(item) {
   const root = node("div", undefined, "detail-grid");
+  const allocations = item.jobs.flatMap((job) => job.allocation_history || []).map(allocationSummary).filter(Boolean);
+  root.append(detailSection("Allocation decisions", allocations.length ? allocations : ["No dispatch decision recorded yet."]));
   root.append(detailSection("Verification", item.evidence.checks.length ? item.evidence.checks.map((check) => `${check.passed ? "Passed" : "Failed"} · ${check.id}${check.summary ? ` — ${check.summary}` : ""}`) : ["No verification evidence recorded yet."]));
   const delivery = node("section", undefined, "detail-section"); delivery.append(node("h3", "Shipping & previews"));
   if (!item.evidence.deliveries.length) delivery.append(node("p", "No shipping evidence recorded yet."));
