@@ -697,8 +697,12 @@ export class Engine {
     if (resolvedCommit !== commit) throw new Error("Reconciliation requires the full exact commit SHA.");
     const branchCommit = git(project.repository, ["rev-parse", "--verify", `${branch}^{commit}`]);
     if (branchCommit !== resolvedCommit) throw new Error("Reconciliation branch does not resolve to the supplied commit.");
-    const priorCommit = snapshot.projects[job.project_id]?.last_commit;
-    if (priorCommit) git(project.repository, ["merge-base", "--is-ancestor", priorCommit, resolvedCommit]);
+    const preparedBase = job.prepared?.base ?? null;
+    if (preparedBase) git(project.repository, ["merge-base", "--is-ancestor", preparedBase, resolvedCommit]);
+    for (const dependencyId of job.dependencies ?? []) {
+      const dependencyCommit = snapshot.jobs[dependencyId]?.shipping?.commit ?? null;
+      if (dependencyCommit) git(project.repository, ["merge-base", "--is-ancestor", dependencyCommit, resolvedCommit]);
+    }
     let remote = null;
     let pushed = false;
     if (project.policy.shipping === "push_branch" || (project.policy.shipping === "deploy" && project.deployment?.push_branch)) {
