@@ -15,16 +15,79 @@ const envelope = {
   "io.modelcontextprotocol/clientCapabilities": {},
 };
 
-async function rpc(url, id, method, params = {}) {
+async function rpc(url, id, method, params = {}, meta = {}) {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", "mcp-protocol-version": MCP_PROTOCOL_VERSION },
-    body: JSON.stringify({ jsonrpc: "2.0", id, method, params: { ...params, _meta: envelope } }),
+    body: JSON.stringify({ jsonrpc: "2.0", id, method, params: { ...params, _meta: { ...envelope, ...meta } } }),
   });
   const body = await response.json();
   assert.equal(response.headers.get("mcp-protocol-version"), MCP_PROTOCOL_VERSION);
   return body;
 }
+
+test("MCP Events: supported ChatGPT submission establishes an item follow without a status read", async (t) => {
+  const h = harness();
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  const receiver = await callbackReceiver(secret);
+  t.after(receiver.close);
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  let running = await startMcpHttpServer({
+    service,
+    eventBroker: new McpEventBroker({ service, allowInsecureLoopback: true, timeoutMs: 2_000 }),
+    port: 0,
+  });
+  t.after(async () => { if (running) await running.close(); });
+  const conversationMeta = { "openai/session": "chatgpt-conversation-private-value" };
+
+  const added = await rpc(running.url, 1, "tools/call", {
+    name: "add_to_depot",
+    arguments: { content: "follow this submission", idempotency_key: "originating-follow" },
+  }, conversationMeta);
+  const itemId = added.result.structuredContent.item.id;
+  assert.equal(added.result.structuredContent.item.state, "Depot");
+  assert.deepEqual(added.result.structuredContent.follow, {
+    event: WORK_EVENT_NAME,
+    arguments: { item_id: itemId, include_progress: false },
+  });
+
+  const subscribed = await rpc(running.url, 2, "events/subscribe", {
+    name: added.result.structuredContent.follow.event,
+    arguments: added.result.structuredContent.follow.arguments,
+    delivery: { mode: "webhook", url: receiver.url, secret },
+    cursor: null,
+  }, conversationMeta);
+  assert.match(subscribed.result.id, /^sub_[a-f0-9]{32}$/);
+
+  const snapshot = new Store(h.store.directory).read();
+  const stored = snapshot.mcp_events.subscriptions[subscribed.result.id];
+  assert.deepEqual(stored.arguments, { item_id: itemId, include_progress: false });
+  assert.equal(stored.conversation.source, "chatgpt");
+  assert.equal(stored.conversation.relationship, "originating_submission");
+  assert.match(stored.conversation.id, /^conversation_[a-f0-9]{32}$/);
+  assert.equal(JSON.stringify(snapshot).includes("chatgpt-conversation-private-value"), false);
+  assert.deepEqual(snapshot.mcp_events.conversations[stored.conversation.id].item_ids, [itemId]);
+
+  const existingItem = service.addToDepot({ content: "follow existing work", idempotency_key: "later-follow" }).item;
+  const followed = await rpc(running.url, 3, "events/subscribe", {
+    name: WORK_EVENT_NAME,
+    arguments: { item_id: existingItem.id },
+    delivery: { mode: "webhook", url: receiver.url, secret },
+    cursor: null,
+  }, conversationMeta);
+  const followedState = new Store(h.store.directory).read().mcp_events.subscriptions[followed.result.id];
+  assert.equal(followedState.conversation.id, stored.conversation.id);
+  assert.equal(followedState.conversation.relationship, "follow");
+
+  await running.close();
+  running = null;
+  const restartedService = new RoundhouseService({ store: new Store(h.store.directory), engine: h.engine });
+  const restarted = new McpEventBroker({ service: restartedService, allowInsecureLoopback: true, timeoutMs: 2_000 });
+  running = await startMcpHttpServer({ service: restartedService, eventBroker: restarted, port: 0 });
+  const persisted = new Store(h.store.directory).read().mcp_events.subscriptions[subscribed.result.id];
+  assert.equal(persisted.active, true);
+  assert.equal(persisted.conversation.id, stored.conversation.id);
+});
 
 async function callbackReceiver(secret, { failFirstDelivery = false } = {}) {
   const received = [];

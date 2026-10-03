@@ -26,8 +26,11 @@ tool schemas, and the Events methods described below.
 
 Manual polling remains the fallback everywhere the tools work: use
 `get_work_status` and `get_needs_human`. On currently supported ChatGPT surfaces,
-a conversation can instead subscribe to `roundhouse.work.updated` with exactly one
-of these scopes:
+Roundhouse's tool guidance directs ChatGPT to follow a successful submission with
+an immediate `roundhouse.work.updated` subscription for the returned item ID. This
+does not require an intervening status request. The tool result includes a typed
+`follow` target containing the event name and item arguments. The standard
+subscription request has exactly one of these scopes:
 
 ```json
 {
@@ -53,8 +56,11 @@ Set `include_progress: true` explicitly to also receive meaningful `Executing`,
 `Verification`, and `Rework` transitions. Process output and terminal noise never
 become events.
 
-Subscriptions and delivery attempts live in the private Roundhouse state file and
-survive restart. A new subscription begins at the current outbox position, so old
+Subscriptions, hashed ChatGPT conversation correlation, and delivery attempts live
+in authoritative Roundhouse state and survive restart. Roundhouse never stores the
+raw `openai/session` value. A subscription for an item submitted in that conversation
+is marked `originating_submission`; a later item follow is marked `follow`. A new
+subscription begins at the current outbox position, so old
 transitions are not silently replayed. Each matching transition gets a stable event
 ID. Transient delivery failures use bounded backoff with that same ID; successful,
 permanent, and exhausted deliveries remain recorded for deduplication and audit.
@@ -179,8 +185,9 @@ In one ChatGPT Work conversation:
    command.
 4. Ask for status. Restart the MCP process and ask again to confirm persistence.
 
-For Events on a supported surface, ask ChatGPT in the same conversation to monitor
-the returned item ID. Confirm callback verification and subscription persistence,
+For Events on a supported surface, submit from the conversation and confirm ChatGPT
+immediately follows the returned item ID without first calling a status tool. Confirm
+callback verification, originating-conversation correlation, and subscription persistence,
 then cause a Needs You or Shipped transition. The update should arrive in that
 conversation without calling a polling tool. Stop monitoring and confirm
 `events/unsubscribe` makes later matching transitions silent.

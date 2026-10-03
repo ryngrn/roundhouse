@@ -19,6 +19,12 @@ const notificationStates = new Set(["Needs Clarification", "Review", "Blocked", 
 const progressStates = new Set(["Executing", "Verification", "Rework"]);
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const conversationReference = (meta) => {
+  const session = meta?.["openai/session"];
+  return typeof session === "string" && session.trim() && session.length <= 1_000
+    ? `conversation_${sha256(session.trim()).slice(0, 32)}`
+    : null;
+};
 const canonical = (value) => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
@@ -234,6 +240,26 @@ export class McpEventBroker {
     return { resultType: "complete", events: [roundhouseEventDefinition] };
   }
 
+  async recordOriginatingItem(itemId, meta) {
+    const conversation = conversationReference(meta);
+    if (!conversation) return null;
+    await this.store.change((data) => {
+      const events = eventState(data);
+      events.conversations ??= {};
+      const previous = events.conversations[conversation];
+      const itemIds = [...new Set([...(previous?.item_ids ?? []), itemId])];
+      events.conversations[conversation] = {
+        id: conversation,
+        source: "chatgpt",
+        item_ids: itemIds,
+        last_item_id: itemId,
+        created_at: previous?.created_at ?? new Date(this.clock()).toISOString(),
+        updated_at: new Date(this.clock()).toISOString(),
+      };
+    });
+    return conversation;
+  }
+
   async authorize(argumentsValue) {
     const data = await this.store.read();
     if (argumentsValue.item_id && !data.items[argumentsValue.item_id]) throw rpcError(-32011, "NotFound", { kind: "item" });
@@ -244,7 +270,7 @@ export class McpEventBroker {
     }
   }
 
-  async subscribe(params, owner = "local-anonymous") {
+  async subscribe(params, owner = "local-anonymous", meta = {}) {
     if (params?.name !== WORK_EVENT_NAME) throw rpcError(-32011, "NotFound", { kind: "event" });
     const argumentsValue = validateArguments(params.arguments);
     await this.authorize(argumentsValue);
@@ -279,6 +305,10 @@ export class McpEventBroker {
     const refreshBefore = ttl === null ? null : new Date(now + ttl).toISOString();
     await this.store.change((data) => {
       const events = eventState(data);
+      const conversation = conversationReference(meta);
+      const originating = conversation && argumentsValue.item_id
+        ? events.conversations?.[conversation]?.item_ids?.includes(argumentsValue.item_id)
+        : false;
       const previous = events.subscriptions[id];
       const continuing = previous?.active && (!previous.refresh_before || Date.parse(previous.refresh_before) > now);
       const rotation = previous?.secret && previous.secret !== secret
@@ -293,6 +323,11 @@ export class McpEventBroker {
         name: params.name,
         arguments: argumentsValue,
         delivery: { mode: "webhook", url: resolved.url.href },
+        conversation: conversation ? {
+          id: conversation,
+          source: "chatgpt",
+          relationship: originating ? "originating_submission" : "follow",
+        } : previous?.conversation ?? null,
         secret,
         ...rotation,
         created_at: previous?.created_at ?? new Date(now).toISOString(),

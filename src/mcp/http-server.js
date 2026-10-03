@@ -13,7 +13,7 @@ function requestHostname(value) {
 }
 
 const serverInfo = { name: "roundhouse-depot", version: "0.1.0" };
-const instructions = "Capture intent verbatim. Roundhouse owns project inference, material questions, planning, priority, readiness, execution policy, verification, and shipping. Use answer_question only with the current durable question revision.";
+const instructions = "Capture intent verbatim. Roundhouse owns project inference, material questions, planning, priority, readiness, execution policy, verification, and shipping. Use answer_question only with the current durable question revision. On event-capable ChatGPT surfaces, after add_to_depot succeeds, immediately subscribe this conversation to roundhouse.work.updated with the returned item ID; do not call a status tool first. Poll with get_work_status and get_needs_human when Events are unavailable.";
 
 async function jsonRequest(request) {
   let body = "";
@@ -71,6 +71,9 @@ async function handleModernRequest(request, response, service, events, onMutatio
     } else if (message.method === "tools/call") {
       try {
         result = { resultType: "complete", ...(await callRoundhouseTool(service, message.params?.name, message.params?.arguments ?? {})), isError: false };
+        if (message.params?.name === "add_to_depot" && result.structuredContent?.item?.id) {
+          await events.recordOriginatingItem(result.structuredContent.item.id, meta);
+        }
         if (roundhouseToolChangesState(message.params?.name)) Promise.resolve().then(onMutation).catch(() => {});
       } catch (error) {
         if (error.code === -32602) throw error;
@@ -79,7 +82,7 @@ async function handleModernRequest(request, response, service, events, onMutatio
     } else if (message.method === "events/list") {
       result = events.list();
     } else if (message.method === "events/subscribe") {
-      result = await events.subscribe(message.params, principalFromRequest(request));
+      result = await events.subscribe(message.params, principalFromRequest(request), meta);
     } else if (message.method === "events/unsubscribe") {
       result = await events.unsubscribe(message.params, principalFromRequest(request));
     } else {

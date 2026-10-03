@@ -40,6 +40,10 @@ const questionSchema = z.object({
 const nextDepartureSchema = z.object({
   item_id: z.string(), job_id: z.string(), project_id: z.string(), title: z.string(), priority: z.string().nullable(),
 });
+const followSchema = z.object({
+  event: z.literal("roundhouse.work.updated"),
+  arguments: z.object({ item_id: z.string(), include_progress: z.boolean() }),
+});
 
 function result(structuredContent, text) {
   return { structuredContent, content: [{ type: "text", text }] };
@@ -67,13 +71,14 @@ const toolSpecs = [
   {
     name: "add_to_depot",
     title: "Add to Roundhouse Depot",
-    description: "Durably capture the user's original intent and relevant conversation context in Roundhouse. Use project_hint only when the user supplied a likely project; Roundhouse performs project inference and planning.",
+    description: "Durably capture the user's original intent and relevant conversation context in Roundhouse. Use project_hint only when the user supplied a likely project; Roundhouse performs project inference and planning. On event-capable ChatGPT surfaces, immediately follow a successful submission by subscribing this conversation to roundhouse.work.updated with the returned item ID; do not request status first. Other clients can poll with get_work_status and get_needs_human.",
     input: addToDepotInput,
-    output: z.object({ item: itemSchema, durable: z.boolean() }),
+    output: z.object({ item: itemSchema, durable: z.boolean(), follow: followSchema }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     run: async (service, input) => {
       const value = await service.addToDepot(input, { source: "chatgpt:mcp", actor: "chatgpt-user" });
-      return result(value, `Saved item ${value.item.id} in Roundhouse: ${value.item.state}.`);
+      const structured = { ...value, follow: { event: "roundhouse.work.updated", arguments: { item_id: value.item.id, include_progress: false } } };
+      return result(structured, `Saved item ${value.item.id} in Roundhouse: ${value.item.state}. Event-capable ChatGPT conversations should now use the returned follow target; no status lookup is needed.`);
     },
   },
   {
