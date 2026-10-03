@@ -102,6 +102,13 @@ test("service: intake validation and idempotency conflicts stay in the normalize
   const service = new RoundhouseService({ store: h.store, engine: h.engine });
   const statusTool = roundhouseToolCatalog.find((tool) => tool.name === "get_work_status");
   assert.ok(statusTool.outputSchema.properties.allocations);
+  const itemSchema = statusTool.outputSchema.properties.items.items;
+  assert.ok(itemSchema.properties.jobs.items.properties.revision);
+  assert.ok(itemSchema.properties.jobs.items.properties.reviews);
+  assert.ok(itemSchema.properties.jobs.items.properties.merge);
+  const deliverySchema = itemSchema.properties.evidence.properties.deliveries.items.properties;
+  assert.ok(deliverySchema.pull_request);
+  assert.ok(deliverySchema.pr_url);
   assert.throws(() => service.addToDepot({ content: "" }), /nonempty/);
   assert.throws(() => service.addToDepot({ content: "idea", attachments: Array(21).fill({}) }), /at most 20/);
   service.addToDepot({ content: "first", idempotency_key: "same" });
