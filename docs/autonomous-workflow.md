@@ -61,6 +61,18 @@ that could materially change the product outcome, scope, risk, authority, or an
 irreversible action. Automated tests establish what they actually check, not
 arbitrary product correctness; select meaningful project checks.
 
+Repository requirements and execution capabilities are separate contracts. Existing
+software projects remain repository-backed by default. A project can set
+`repository_required: false` and omit `repository` and executable verification
+commands; each generated slice then records its own `repository_required` value and
+`required_capabilities`. Capability identifiers can describe research, integration,
+scheduling, artifact production, external actions, human tasks, or installation-
+specific facilities. Requirements do not need to be currently available in
+`execution.capabilities`: unavailable requirements keep the slice unallocated and
+produce durable, specific readiness and scheduler evidence. The installed delivery
+adapter is still Git-only, so repository-free execution also remains ineligible until
+a repository-independent delivery provider is installed.
+
 ## Agent roles and skills
 
 Agent roles are context and skill bundles, separate from the executor and local

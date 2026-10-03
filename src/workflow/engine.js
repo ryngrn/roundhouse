@@ -10,7 +10,7 @@ import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 import { Unblocker } from "./unblocker.js";
-import { dispatchConsiderations, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
+import { dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -171,6 +171,10 @@ export class Engine {
       const project = configuredProject ? executionProjectContext(configuredProject, role) : null;
       const decision = project ? inferRoutineAcceptanceCriteria(proposed, project, item, role) : proposed;
       let route = routeDecision(decision, project ? [project] : projects, selectedProject);
+      const executionEligibilityReasons = route.state === "Ready" && project
+        ? decision.work_items.flatMap((work) => executionEligibility(project, this.config.execution,
+          this.config.execution.capabilities, { work }).reasons)
+        : [];
       if (leaseHeartbeatError) throw leaseHeartbeatError;
       if (this.store.shared) await this.store.assertLease(decisionLease);
       await this.store.change((data) => {
@@ -239,7 +243,8 @@ export class Engine {
           this.store.move(data, current, "Needs Clarification", "Decision referenced unknown dependencies.");
         } else {
           this.store.move(data, current, route.state, route.reason);
-          current.execution_eligible = route.state === "Ready";
+          current.execution_eligible = route.state === "Ready" && executionEligibilityReasons.length === 0;
+          current.execution_ineligibility_reasons = executionEligibilityReasons;
           if (route.state === "Ready") this.createJobs(data, current);
         }
         if (["Needs Clarification", "Review"].includes(current.state)) {
@@ -338,6 +343,8 @@ export class Engine {
       const authorized = { ...contextualProject, policy: { ...contextualProject.policy, allow_autonomous: true, approval_required: false } };
       const route = routeDecision(decision, [authorized], item.selected_project ?? item.input.project_id);
       if (route.state !== "Ready") throw new Error(`Approval cannot bypass readiness: ${route.reason}`);
+      const eligibilityReasons = decision.work_items.flatMap((work) => executionEligibility(authorized, this.config.execution,
+        this.config.execution.capabilities, { work }).reasons);
       item.approval = { actor, revision, at: new Date().toISOString() };
       const question = (item.questions ?? []).findLast((candidate) => candidate.status === "open");
       if (question) {
@@ -347,6 +354,8 @@ export class Engine {
         question.updated_at = item.approval.at;
       }
       this.store.move(data, item, "Ready", `Approved by ${actor}.`);
+      item.execution_eligible = eligibilityReasons.length === 0;
+      item.execution_ineligibility_reasons = eligibilityReasons;
       this.createJobs(data, item);
       data.projects[item.project_id] ??= {};
       return item;
@@ -1038,7 +1047,7 @@ export class Engine {
           break;
         }
         const { project, job } = selected;
-        const reservation = executionReservation(project);
+        const reservation = executionReservation(project, job);
         await this.store.change((data) => {
           recordDispatchRound(data, considerations, job.id, this.config.execution.capacity, at);
           data.projects[project.id] = { ...data.projects[project.id], active: true };
@@ -1093,9 +1102,9 @@ export class Engine {
         snapshot = await this.store.read();
         const activeReservations = Object.values(snapshot.jobs)
           .filter((job) => job.owning_node_id || ["Executing", "Verification", "Rework"].includes(job.state))
-          .map((job) => this.config.projects.find((project) => project.id === job.project_id))
-          .filter(Boolean)
-          .map(executionReservation);
+          .map((job) => ({ job, project: this.config.projects.find((project) => project.id === job.project_id) }))
+          .filter(({ project }) => Boolean(project))
+          .map(({ project, job }) => executionReservation(project, job));
         const waiting = dispatchConsiderations(snapshot, this.config.projects, this.config.execution, {
           projectId,
           stopped,
@@ -1112,9 +1121,9 @@ export class Engine {
       if (hasImportedTriageBarrier(snapshot)) break;
       const activeReservations = Object.values(snapshot.jobs)
         .filter((job) => job.owning_node_id || ["Executing", "Verification", "Rework"].includes(job.state))
-        .map((job) => this.config.projects.find((project) => project.id === job.project_id))
-        .filter(Boolean)
-        .map(executionReservation);
+        .map((job) => ({ job, project: this.config.projects.find((project) => project.id === job.project_id) }))
+        .filter(({ project }) => Boolean(project))
+        .map(({ project, job }) => executionReservation(project, job));
       const considerations = dispatchConsiderations(snapshot, this.config.projects, this.config.execution, {
         projectId,
         stopped,
@@ -1129,7 +1138,7 @@ export class Engine {
         if (running.size) { await settleOne(); continue; }
         break;
       }
-      const reservations = Object.fromEntries(candidates.map(({ project, job }) => [job.id, executionReservation(project)]));
+      const reservations = Object.fromEntries(candidates.map(({ project, job }) => [job.id, executionReservation(project, job)]));
       const claim = await this.store.claimJob(candidates.map(({ job }) => job.id), {
         leaseMs: this.store.leaseMs,
         execution: this.config.execution,

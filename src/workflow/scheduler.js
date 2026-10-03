@@ -66,10 +66,26 @@ export function recordAllocation(data, project, capacity = 1, at = new Date().to
   return allocation;
 }
 
-export function projectExecutionEligible(project, execution, capabilities = execution.capabilities) {
-  if (project.max_concurrent_runs > execution.capacity) return false;
-  if ((project.required_capabilities ?? []).some((capability) => !capabilities.includes(capability))) return false;
-  return Object.entries(project.resource_requirements ?? {}).every(([resource, amount]) => amount <= (execution.resource_limits[resource] ?? 0));
+function requiredCapabilities(project, job) {
+  return [...new Set([...(project.required_capabilities ?? []), ...(job?.work?.required_capabilities ?? [])])];
+}
+
+export function executionEligibility(project, execution, capabilities = execution.capabilities, job = null) {
+  const missing = requiredCapabilities(project, job).filter((capability) => !capabilities.includes(capability));
+  const reasons = [];
+  if (missing.length) reasons.push({ code: "capability_mismatch", message: `Missing capabilities: ${missing.join(", ")}.`, missing });
+  if ((job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository)) && !project.repository) {
+    reasons.push({ code: "repository_unavailable", message: "This slice requires a repository, but the project has none configured." });
+  }
+  if (project.max_concurrent_runs > execution.capacity) reasons.push({ code: "configured_project_limit", message: "Project concurrency exceeds global execution capacity." });
+  for (const [resource, amount] of Object.entries(project.resource_requirements ?? {})) {
+    if (amount > (execution.resource_limits[resource] ?? 0)) reasons.push({ code: "resource_unavailable", message: `Required resource ${resource} is unavailable.` });
+  }
+  return { eligible: reasons.length === 0, reasons };
+}
+
+export function projectExecutionEligible(project, execution, capabilities = execution.capabilities, job = null) {
+  return executionEligibility(project, execution, capabilities, job).eligible;
 }
 
 /**
@@ -77,10 +93,11 @@ export function projectExecutionEligible(project, execution, capabilities = exec
  * strings so workers with different configuration object identities still agree
  * about repository and delivery conflicts.
  */
-export function executionReservation(project) {
-  const repository = project.repository ?? `project:${project.id}`;
-  const locks = [`repository:${repository}`];
-  if (project.policy?.shipping !== "commit_only") locks.push(`delivery:${repository}:${project.remote ?? "origin"}`);
+export function executionReservation(project, job = null) {
+  const repositoryRequired = job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository);
+  const repository = project.repository ?? null;
+  const locks = repository ? [`repository:${repository}`] : [];
+  if (repository && project.policy?.shipping !== "commit_only") locks.push(`delivery:${repository}:${project.remote ?? "origin"}`);
   if (project.policy?.shipping === "deploy") {
     locks.push(`deployment:${project.deployment?.kind ?? "unknown"}:${project.deployment?.environment ?? "production"}`);
   }
@@ -88,7 +105,8 @@ export function executionReservation(project) {
     project_id: project.id,
     project_limit: project.max_concurrent_runs ?? 1,
     capacity_units: 1,
-    required_capabilities: [...(project.required_capabilities ?? [])],
+    required_capabilities: requiredCapabilities(project, job),
+    repository: { required: repositoryRequired, configured: Boolean(repository), value: repository },
     resources: { ...(project.resource_requirements ?? {}) },
     locks,
   };
@@ -115,15 +133,18 @@ export function reservationAssessment(active, candidate, execution, capabilities
     project: { project_id: candidate.project_id, active: projectUsed, limit: candidate.project_limit ?? 1, fits: projectUsed < (candidate.project_limit ?? 1) },
     resources,
     locks: { requested: [...(candidate.locks ?? [])], conflicts: lockConflicts, fits: !lockConflicts.length },
+    repository: { ...(candidate.repository ?? { required: true, configured: true, value: null }),
+      fits: !(candidate.repository?.required && !candidate.repository?.configured) },
   };
   return { fits: constraints.capability.fits && constraints.capacity.fits && constraints.project.fits
-    && constraints.resources.every((resource) => resource.fits) && constraints.locks.fits, constraints };
+    && constraints.resources.every((resource) => resource.fits) && constraints.locks.fits && constraints.repository.fits, constraints };
 }
 
 function deferralReason(checks, reservation) {
+  if (!reservation.constraints.capability.fits) return { code: "capability_mismatch", message: `Missing capabilities: ${reservation.constraints.capability.missing.join(", ")}.` };
+  if (!reservation.constraints.repository.fits) return { code: "repository_unavailable", message: "This slice requires a repository, but the project has none configured." };
   const failed = Object.entries(checks).find(([, value]) => !value.passed);
   if (failed) return { code: failed[0], message: failed[1].reason };
-  if (!reservation.constraints.capability.fits) return { code: "capability_mismatch", message: `Missing capabilities: ${reservation.constraints.capability.missing.join(", ")}.` };
   if (!reservation.constraints.capacity.fits) return { code: "capacity_exhausted", message: `Execution capacity ${reservation.constraints.capacity.used}/${reservation.constraints.capacity.limit} is in use.` };
   if (!reservation.constraints.project.fits) return { code: "project_limit", message: `Project concurrency ${reservation.constraints.project.active}/${reservation.constraints.project.limit} is in use.` };
   const resource = reservation.constraints.resources.find((entry) => !entry.fits);
@@ -169,7 +190,9 @@ export function dispatchConsiderations(data, projects, execution, {
         project_gate: { passed: !runtime.blocked && !runtime.stop && !runtime.review_required,
           reason: projectGateReason },
         shipping: { passed: shippingSupported, reason: shippingSupported
-          ? "The delivery provider supports this project." : "The delivery provider cannot dispatch this project." },
+          ? "The delivery provider supports this project."
+          : project.repository ? "The configured delivery provider cannot dispatch this project."
+            : "The installed Git delivery provider requires a configured repository; no repository-independent delivery provider is installed." },
         configured_project_limit: { passed: project.max_concurrent_runs <= execution.capacity,
           reason: project.max_concurrent_runs <= execution.capacity
             ? `Configured project concurrency ${project.max_concurrent_runs} is within global capacity ${execution.capacity}.`
@@ -182,7 +205,7 @@ export function dispatchConsiderations(data, projects, execution, {
           reason: waitingDependencies.length ? `Queue head is waiting for: ${waitingDependencies.map((dependency) => `${dependency.id} (${dependency.state})`).join(", ")}.`
             : dependencies.length ? "All queue-head dependencies are shipped." : "Queue head has no dependencies." },
       };
-      const reservation = reservationAssessment(activeReservations, executionReservation(project), execution);
+      const reservation = reservationAssessment(activeReservations, executionReservation(project, job), execution);
       const eligible = Object.values(checks).every((check) => check.passed) && reservation.fits;
       const fairness = {
         weight: project.weight,

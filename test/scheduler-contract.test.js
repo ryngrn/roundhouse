@@ -33,9 +33,55 @@ test("scheduler contract: invalid capacity, capability, project limit, and resou
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { capacity: 0 } }, filename), /execution.capacity/);
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { capacity: 2, capabilities: ["GPU"] } }, filename), /stable lowercase/);
   assert.throws(() => validateWorkflowConfig(manifest(directory, { max_concurrent_runs: 2 }), filename), /global execution capacity/);
-  assert.throws(() => validateWorkflowConfig({ ...manifest(directory, { required_capabilities: ["gpu"] }), execution: { capabilities: [] } }, filename), /undeclared execution capability/);
+  const unavailable = validateWorkflowConfig({ ...manifest(directory, { required_capabilities: ["gpu"] }), execution: { capabilities: [] } }, filename);
+  assert.deepEqual(unavailable.projects[0].required_capabilities, ["gpu"]);
+  assert.equal(projectExecutionEligible(unavailable.projects[0], unavailable.execution), false);
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { resource_limits: { gpu: 0 } } }, filename), /positive integer/);
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory, { resource_requirements: { gpu: 2 } }), execution: { resource_limits: { gpu: 1 } } }, filename), /more gpu/);
+});
+
+test("scheduler contract: repository requirements are independent from capability requirements", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-repository-optional-"));
+  const filename = path.join(directory, "config.yaml");
+  const config = validateWorkflowConfig({
+    execution: { capabilities: ["research"] },
+    projects: [{
+      id: "research", name: "Research", purpose: "Trace sources", success_state: "A reviewable artifact exists", status: "active",
+      repository_required: false, required_capabilities: ["research", "artifact"], verification: [],
+    }],
+  }, filename);
+  assert.equal(config.projects[0].repository, undefined);
+  assert.equal(config.projects[0].repository_required, false);
+  assert.deepEqual(config.projects[0].required_capabilities, ["research", "artifact"]);
+  assert.equal(projectExecutionEligible(config.projects[0], config.execution), false);
+  assert.throws(() => validateWorkflowConfig({
+    projects: [{ id: "invalid", name: "Invalid", purpose: "Test", success_state: "Done", status: "active", verification: [] }],
+  }, filename), /requires a repository/);
+});
+
+test("scheduler contract: slice capabilities produce durable, specific ineligibility evidence", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-slice-capability-"));
+  const store = new Store(directory);
+  const project = { id: "operations", status: "active", weight: 1, max_concurrent_runs: 1, repository_required: false,
+    required_capabilities: ["research"], resource_requirements: {}, policy: { shipping: "commit_only" } };
+  const job = { id: "operations-job", parent_id: "item", project_id: "operations", position: 0, state: "Ready", dependencies: [],
+    attempts: [], history: [], work: { title: "Coordinate follow-up", repository_required: false,
+      required_capabilities: ["integration", "scheduling", "artifact", "external-action", "human-task"] } };
+  store.change((data) => {
+    data.projects.operations = {};
+    data.items.item = { id: "item", project_id: "operations", state: "Ready", input: { text: "Coordinate" }, questions: [], history: [], job_ids: [job.id] };
+    data.jobs[job.id] = job;
+    const considerations = dispatchConsiderations(data, [project], {
+      capacity: 1, capabilities: ["research", "integration", "scheduling", "artifact"], resource_limits: {},
+    }, { canDispatch: () => true });
+    assert.equal(considerations[0].eligible, false);
+    assert.deepEqual(considerations[0].reservation.constraints.capability.missing, ["external-action", "human-task"]);
+    recordDispatchRound(data, considerations, null, 1, "2026-01-01T00:00:00.000Z");
+  });
+  const evidence = statusView(new Store(directory).read()).allocations.latest.operations;
+  assert.equal(evidence.reason.code, "capability_mismatch");
+  assert.match(evidence.reason.message, /external-action, human-task/);
+  assert.deepEqual(evidence.constraints.repository, { required: false, configured: false, value: null, fits: true });
 });
 
 test("scheduler contract: weighted allocation state is durable across store reconstruction", () => {

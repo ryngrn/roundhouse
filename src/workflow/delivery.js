@@ -16,6 +16,7 @@ export function git(cwd, args, optional = false) {
 
 export class GitDelivery {
   canDispatch(project) {
+    if (!project.repository) return false;
     if (!project.self_hosting) return true;
     if (git(project.repository, ["status", "--porcelain"])) return false;
     const common = git(project.repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
@@ -23,6 +24,7 @@ export class GitDelivery {
   }
   supports(projectOrPolicy) {
     if (typeof projectOrPolicy === "string") return ["commit_only", "push_branch"].includes(projectOrPolicy);
+    if (!projectOrPolicy.repository) return false;
     return ["commit_only", "push_branch"].includes(projectOrPolicy.policy.shipping) ||
       (projectOrPolicy.policy.shipping === "deploy" && Boolean(deploymentProvider(projectOrPolicy)));
   }
