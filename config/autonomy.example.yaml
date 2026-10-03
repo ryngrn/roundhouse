@@ -4,6 +4,12 @@ decision:
   kind: codex
   bin: codex
 max_jobs_per_run: 20
+execution:
+  # Global execution slots default to one when this block is omitted.
+  capacity: 1
+  capabilities: [local]
+  resource_limits:
+    workspace: 1
 projects:
   - id: example
     name: Example
@@ -16,6 +22,9 @@ projects:
     context_sources: [README.md]
     weight: 1
     max_concurrent_runs: 1
+    required_capabilities: [local]
+    resource_requirements:
+      workspace: 1
     runtime: local
     executor:
       kind: codex

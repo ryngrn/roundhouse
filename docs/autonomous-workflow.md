@@ -170,12 +170,19 @@ when other independent work exists. A decomposition automatically chains its job
 Project queues initially use submission/decomposition order. Project weights select
 dispatch turns when multiple project queues have work.
 
-The local worker has **one execution slot per state directory**. A worker
-lease and repository lease prevent simultaneous ownership. It does not yet open
-parallel CLI windows across projects. `max_concurrent_runs` is retained in the
-domain configuration for later capacity expansion, not advertised as active
-parallel execution. Each invocation is bounded by `max_jobs_per_run`; rerun the
-worker to handle additional queued or newly submitted requests.
+Execution capacity defaults to **one slot**, preserving the behavior of existing
+installations. The durable configuration contract also records per-project limits,
+runtime capability requirements, and integer resource limits/requirements. A
+project cannot declare more concurrency or resources than the global execution
+policy provides. The current local worker still serializes ownership with a worker
+lease and does not open parallel CLI windows; the capacity contract allows shared
+schedulers to make eligibility decisions without inferring operator intent. Each
+invocation is bounded by `max_jobs_per_run`; rerun the worker to handle additional
+queued or newly submitted requests.
+
+Weighted dispatch progress is stored in `system_metadata.execution_scheduler`.
+Its allocation counters, selection sequence, and timestamps survive worker restarts,
+so restarting a worker does not reset a project's place in weighted allocation.
 
 Approval refers to the current item revision, so stale answers cannot approve
 revised work:

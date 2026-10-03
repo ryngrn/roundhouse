@@ -9,6 +9,7 @@ import { GitDelivery } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
+import { projectExecutionEligible, recordAllocation, schedulerState, weightedAllocation } from "./scheduler.js";
 
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
@@ -54,6 +55,7 @@ export class Engine {
   constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = new LocalRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery(), clock = () => Date.now() }) {
     const triage = { max_per_tick: 1, max_concurrent: 1, base_backoff_ms: 30_000, max_backoff_ms: 60 * 60_000, ...(config.triage ?? {}) };
     config.triage = triage;
+    config.execution = { capacity: 1, capabilities: [], resource_limits: {}, ...(config.execution ?? {}) };
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
   processRecorder(collection, id) {
@@ -703,14 +705,17 @@ export class Engine {
       const snapshot = await this.store.read();
       if (hasImportedTriageBarrier(snapshot)) return { executed: 0, triage_barrier: true, ...snapshot };
       if (Object.values(snapshot.jobs).some((job) => ["Executing", "Verification", "Rework"].includes(job.state))) throw new Error("Interrupted execution requires recovery, not automatic replay.");
+      await this.store.change((data) => schedulerState(data, this.config.execution.capacity));
       const stopped = new Set();
       while (executed < this.config.max_jobs_per_run) {
         const state = await this.store.read();
         const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review")
+          && projectExecutionEligible(p, this.config.execution)
           && (this.shipping.canDispatch?.(p) ?? true)
           && Object.values(state.jobs).filter((job) => job.project_id === p.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < p.max_concurrent_runs);
         // Weighted turns across projects; each project's own order is preserved.
-        candidates.sort((a, b) => ((state.projects[a.id]?.turns ?? 0) / a.weight) - ((state.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
+        const scheduler = state.system_metadata.execution_scheduler;
+        candidates.sort((a, b) => weightedAllocation(scheduler, a) - weightedAllocation(scheduler, b) || a.id.localeCompare(b.id));
         let selected;
         for (const project of candidates) {
           const job = Object.values(state.jobs).filter((j) => j.project_id === project.id && j.state === "Ready" && j.dependencies.every((id) => state.jobs[id]?.state === "Shipped"))
@@ -720,7 +725,8 @@ export class Engine {
         if (!selected) break;
         const { project, job } = selected;
         await this.store.change((data) => {
-          data.projects[project.id] = { ...data.projects[project.id], active: true, turns: (data.projects[project.id]?.turns ?? 0) + 1 };
+          data.projects[project.id] = { ...data.projects[project.id], active: true };
+          recordAllocation(data, project, this.config.execution.capacity, new Date(this.clock()).toISOString());
           data.jobs[job.id].owning_node_id = this.store.node?.id ?? null;
           data.jobs[job.id].owning_node = this.store.node?.name ?? null;
         });
@@ -741,6 +747,7 @@ export class Engine {
     if (projectId && !this.config.projects.some((project) => project.id === projectId)) throw new Error("Unknown project filter.");
     await this.store.heartbeatNode("online");
     await this.store.recoverExpiredClaims();
+    await this.store.change((data) => schedulerState(data, this.config.execution.capacity));
 
     let snapshot;
     const stopped = new Set();
@@ -751,16 +758,19 @@ export class Engine {
         && project.status === "active" && !stopped.has(project.id) && !snapshot.projects[project.id]?.blocked
         && !snapshot.projects[project.id]?.stop && !snapshot.projects[project.id]?.review_required
         && !Object.values(snapshot.items).some((item) => item.project_id === project.id && item.state === "Review")
+        && projectExecutionEligible(project, this.config.execution)
         && (this.shipping.canDispatch?.(project) ?? true)
         && Object.values(snapshot.jobs).filter((job) => job.project_id === project.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < project.max_concurrent_runs);
-      candidates.sort((a, b) => ((snapshot.projects[a.id]?.turns ?? 0) / a.weight) - ((snapshot.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
+      const scheduler = snapshot.system_metadata.execution_scheduler;
+      candidates.sort((a, b) => weightedAllocation(scheduler, a) - weightedAllocation(scheduler, b) || a.id.localeCompare(b.id));
       if (!candidates.length) break;
       const claim = await this.store.claimJob(candidates.map((project) => project.id));
       if (!claim) break;
       const project = candidates.find((candidate) => candidate.id === claim.job.project_id);
       try {
         await this.store.change((data) => {
-          data.projects[project.id] = { ...data.projects[project.id], active: true, turns: (data.projects[project.id]?.turns ?? 0) + 1 };
+          data.projects[project.id] = { ...data.projects[project.id], active: true };
+          recordAllocation(data, project, this.config.execution.capacity, new Date(this.clock()).toISOString());
         });
         const didExecute = await this.execute(claim.job.id, project, claim.lease);
         if (!didExecute) break;
