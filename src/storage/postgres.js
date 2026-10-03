@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { StorageRepository, digest } from "./repository.js";
 import { record, transition } from "../workflow/state.js";
+import { reservationFits } from "../workflow/scheduler.js";
 
 const { Pool } = pg;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -364,12 +365,14 @@ export class PostgresStorageRepository extends StorageRepository {
     });
   }
 
-  async claimJob(jobIds, leaseMs = this.leaseMs) {
+  async claimJob(jobIds, options = this.leaseMs) {
+    const leaseMs = typeof options === "number" ? options : (options.leaseMs ?? this.leaseMs);
+    const execution = typeof options === "number" ? null : options.execution;
+    const reservations = typeof options === "number" ? {} : (options.reservations ?? {});
     const token = randomUUID();
     return tx(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
-      const result = await client.query(`WITH candidate AS (
-          SELECT j.id FROM roundhouse.jobs j
+      const candidates = await rows(client, `SELECT j.id,j.project_id,j.payload FROM roundhouse.jobs j
           LEFT JOIN roundhouse.resource_leases l ON l.resource_kind='job' AND l.resource_key=j.id AND l.expires_at>clock_timestamp()
           WHERE j.state='Ready' AND j.id=ANY($1::text[]) AND l.resource_key IS NULL
             AND NOT EXISTS (
@@ -377,20 +380,50 @@ export class PostgresStorageRepository extends StorageRepository {
               LEFT JOIN roundhouse.jobs dependency ON dependency.id=d.depends_on_job_id
               WHERE d.job_id=j.id AND dependency.state IS DISTINCT FROM 'Shipped'
             )
-          ORDER BY array_position($1::text[],j.id) LIMIT 1 FOR UPDATE OF j SKIP LOCKED
-        ), lease AS (
-          INSERT INTO roundhouse.resource_leases(resource_kind,resource_key,owner_node_id,token,acquired_at,heartbeat_at,expires_at,payload)
-          SELECT 'job',id,$2,$3,clock_timestamp(),clock_timestamp(),clock_timestamp()+($4 * interval '1 millisecond'),'{}'::jsonb FROM candidate
-          ON CONFLICT (resource_kind,resource_key) DO UPDATE SET owner_node_id=EXCLUDED.owner_node_id,token=EXCLUDED.token,
-            acquired_at=EXCLUDED.acquired_at,heartbeat_at=EXCLUDED.heartbeat_at,expires_at=EXCLUDED.expires_at,payload=EXCLUDED.payload
-          WHERE roundhouse.resource_leases.expires_at<=clock_timestamp()
-          RETURNING resource_key
-        )
-        UPDATE roundhouse.jobs j SET owning_node_id=$2 FROM lease WHERE j.id=lease.resource_key
-        RETURNING j.id,j.payload`, [jobIds, this.node.id, token, leaseMs]);
+          ORDER BY array_position($1::text[],j.id) FOR UPDATE OF j SKIP LOCKED`, [jobIds]);
+      const activeRows = await rows(client, `SELECT l.payload,j.project_id,j.payload AS job_payload
+        FROM roundhouse.resource_leases l
+        LEFT JOIN roundhouse.jobs j ON j.id=l.resource_key
+        WHERE l.resource_kind='job' AND l.expires_at>clock_timestamp()`);
+      const active = activeRows.map((row) => row.payload?.reservation ?? {
+        project_id: row.project_id,
+        project_limit: 1,
+        capacity_units: 1,
+        required_capabilities: row.job_payload?.project_context?.required_capabilities ?? [],
+        resources: row.job_payload?.project_context?.resource_requirements ?? {},
+        locks: row.job_payload?.project_context?.repository ? [`repository:${row.job_payload.project_context.repository}`] : [],
+      });
+      let selected;
+      let reservation;
+      for (const candidate of candidates) {
+        const proposed = reservations[candidate.id] ?? {
+          project_id: candidate.project_id,
+          project_limit: 1,
+          capacity_units: 1,
+          required_capabilities: [],
+          resources: {},
+          locks: [],
+        };
+        const policy = execution ?? { capacity: Number.MAX_SAFE_INTEGER, capabilities: proposed.required_capabilities, resource_limits: {} };
+        if (!execution || reservationFits(active, proposed, policy)) {
+          selected = candidate;
+          reservation = proposed;
+          break;
+        }
+      }
+      if (!selected) return null;
+      const payload = { operation: "execution", reservation };
+      const result = await client.query(`INSERT INTO roundhouse.resource_leases
+        (resource_kind,resource_key,owner_node_id,token,acquired_at,heartbeat_at,expires_at,payload)
+        VALUES ('job',$1,$2,$3,clock_timestamp(),clock_timestamp(),clock_timestamp()+($4 * interval '1 millisecond'),$5)
+        ON CONFLICT (resource_kind,resource_key) DO UPDATE SET owner_node_id=EXCLUDED.owner_node_id,token=EXCLUDED.token,
+          acquired_at=EXCLUDED.acquired_at,heartbeat_at=EXCLUDED.heartbeat_at,expires_at=EXCLUDED.expires_at,payload=EXCLUDED.payload
+        WHERE roundhouse.resource_leases.expires_at<=clock_timestamp()
+        RETURNING resource_key`, [selected.id, this.node.id, token, leaseMs, payload]);
       if (!result.rowCount) return null;
-      const job = result.rows[0].payload;
-      return { job, lease: { resource_kind: "job", resource_key: job.id, owner_node_id: this.node.id, token } };
+      await client.query("UPDATE roundhouse.jobs SET owning_node_id=$2 WHERE id=$1", [selected.id, this.node.id]);
+      const job = selected.payload;
+      return { job, lease: { resource_kind: "job", resource_key: job.id, owner_node_id: this.node.id, token, reservation } };
     });
   }
 
@@ -423,9 +456,10 @@ export class PostgresStorageRepository extends StorageRepository {
     return tx(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
       const data = await readSnapshot(client);
-      const expired = await rows(client, `SELECT j.id FROM roundhouse.jobs j
+      const expired = await rows(client, `SELECT j.id,l.payload AS lease_payload FROM roundhouse.jobs j
         LEFT JOIN roundhouse.resource_leases l ON l.resource_kind='job' AND l.resource_key=j.id
-        WHERE j.state IN ('Executing','Verification','Rework') AND (l.resource_key IS NULL OR l.expires_at<=clock_timestamp())`);
+        WHERE (j.state IN ('Executing','Verification','Rework') AND (l.resource_key IS NULL OR l.expires_at<=clock_timestamp()))
+          OR (j.state='Ready' AND l.expires_at<=clock_timestamp() AND l.payload->>'operation'='execution')`);
       const expiredItems = await rows(client, `SELECT i.id FROM roundhouse.depot_items i
         LEFT JOIN roundhouse.resource_leases l ON l.resource_kind='item' AND l.resource_key=i.id
         WHERE i.state='Decision' AND COALESCE((i.payload->>'awaiting_decision')::boolean,false)=false

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { Store } from "../src/workflow/store.js";
-import { eligibleProjectHead, projectExecutionEligible, projectQueueHead, recordAllocation, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
+import { eligibleProjectHead, executionReservation, projectExecutionEligible, projectQueueHead, recordAllocation, reservationFits, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
 
 function manifest(repository, changes = {}) {
   return {
@@ -71,4 +71,24 @@ test("scheduler contract: only the earliest unfinished project slice can be elig
   assert.equal(eligibleProjectHead(data, "alpha").id, "head");
   data.jobs.head.state = "Executing";
   assert.equal(eligibleProjectHead(data, "alpha"), null);
+});
+
+test("scheduler contract: reservations enforce capabilities, capacity, project limits, resources, and locks together", () => {
+  const execution = { capacity: 3, capabilities: ["cpu", "gpu"], resource_limits: { gpu: 2, browser: 1 } };
+  const alpha = executionReservation({
+    id: "alpha", repository: "/repos/alpha", remote: "origin", max_concurrent_runs: 2,
+    required_capabilities: ["gpu"], resource_requirements: { gpu: 1 }, policy: { shipping: "push_branch" },
+  });
+  const beta = executionReservation({
+    id: "beta", repository: "/repos/beta", remote: "origin", max_concurrent_runs: 1,
+    required_capabilities: ["cpu"], resource_requirements: { browser: 1 }, policy: { shipping: "commit_only" },
+  });
+  assert.equal(reservationFits([], alpha, execution), true);
+  assert.equal(reservationFits([alpha], beta, execution), true);
+  assert.equal(reservationFits([alpha], { ...alpha, locks: ["repository:/repos/other"] }, execution), true);
+  assert.equal(reservationFits([alpha, alpha], { ...alpha, locks: ["repository:/repos/other"] }, execution), false);
+  assert.equal(reservationFits([beta], { ...beta, project_id: "gamma", locks: ["repository:/repos/gamma"] }, execution), false);
+  assert.equal(reservationFits([], { ...alpha, required_capabilities: ["tpu"] }, execution), false);
+  assert.equal(reservationFits([alpha], { ...beta, locks: alpha.locks }, execution), false);
+  assert.equal(reservationFits([alpha, beta], { ...beta, project_id: "gamma", capacity_units: 2, locks: ["repository:/repos/gamma"], resources: {} }, execution), false);
 });

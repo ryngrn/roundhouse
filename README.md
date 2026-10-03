@@ -96,9 +96,10 @@ are repository-relative and contain no personal machine settings.
 - [Notion Depot archive and one-time cutover](docs/chatgpt-rdc-bridge.md)
 - [ChatGPT MCP adapter setup and testing](docs/chatgpt-mcp.md)
 
-The local adapter has one execution slot per state directory and an independent
-triage lease. PostgreSQL workers use atomic claims plus item, job, and project leases
-across nodes. Both support priority/fair queue order, bounded triage backoff and
+The local adapter reserves configured execution slots inside one worker lease and
+uses an independent triage lease. PostgreSQL workers atomically reserve compatible
+capacity with item, job, project, repository, delivery, and counted-resource
+constraints across nodes. Both support priority/fair queue order, bounded triage backoff and
 rework, exact-identity duplicate guards, and conservative crash recovery. Remote
 execution runtimes, PR creation, and merging remain extension points. Deployment is available through
 the fixture provider for proof and a configurable command provider for real systems.

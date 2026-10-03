@@ -59,14 +59,18 @@ maintain the private file without placing credentials in Git or the plist.
 ## Claims, leases, and failures
 
 Jobs are claimed transactionally with `FOR UPDATE SKIP LOCKED`. Dependencies must
-already be Shipped, and a live job lease prevents another node from claiming the
-same work. Project leases serialize repository/remote resources across nodes. A
-lease records its owner node, acquisition, heartbeat, and expiry. The worker checks
-both job and project ownership immediately before shipping.
+already be Shipped, and the transaction admits a candidate only when its required
+capabilities, global slot, project allowance, counted resources, and exclusive
+repository/delivery keys are all available. The reservation is stored on the live
+job lease, preventing either duplicate selection or a competing incompatible claim.
+Project leases add defense in depth around repository/remote work. A lease records
+its owner node, acquisition, heartbeat, and expiry. The worker checks both job and
+project ownership immediately before shipping.
 
-Expired execution/verification work becomes Blocked for inspection. If delivery
-intent was persisted, recovery explicitly requires remote reconciliation and never
-replays the side effect. Optimistic revisions reject stale human updates. Outbox and
+Expired execution/verification work becomes Blocked for inspection. An expired
+reservation whose job is still Ready is also blocked because a restart cannot prove
+that no runtime or preparation side effect began. If delivery intent was persisted,
+recovery explicitly requires remote reconciliation and never replays the side effect. Optimistic revisions reject stale human updates. Outbox and
 MCP delivery state are committed with domain state, so restart preserves delivery
 intent and idempotency.
 

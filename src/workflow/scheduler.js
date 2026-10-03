@@ -68,3 +68,38 @@ export function projectExecutionEligible(project, execution, capabilities = exec
   if ((project.required_capabilities ?? []).some((capability) => !capabilities.includes(capability))) return false;
   return Object.entries(project.resource_requirements ?? {}).every(([resource, amount]) => amount <= (execution.resource_limits[resource] ?? 0));
 }
+
+/**
+ * The reservation is persisted on the job lease. Locks are deliberately stable
+ * strings so workers with different configuration object identities still agree
+ * about repository and delivery conflicts.
+ */
+export function executionReservation(project) {
+  const repository = project.repository ?? `project:${project.id}`;
+  const locks = [`repository:${repository}`];
+  if (project.policy?.shipping !== "commit_only") locks.push(`delivery:${repository}:${project.remote ?? "origin"}`);
+  if (project.policy?.shipping === "deploy") {
+    locks.push(`deployment:${project.deployment?.kind ?? "unknown"}:${project.deployment?.environment ?? "production"}`);
+  }
+  return {
+    project_id: project.id,
+    project_limit: project.max_concurrent_runs ?? 1,
+    capacity_units: 1,
+    required_capabilities: [...(project.required_capabilities ?? [])],
+    resources: { ...(project.resource_requirements ?? {}) },
+    locks,
+  };
+}
+
+export function reservationFits(active, candidate, execution, capabilities = execution.capabilities) {
+  if ((candidate.required_capabilities ?? []).some((capability) => !capabilities.includes(capability))) return false;
+  const capacityUsed = active.reduce((sum, reservation) => sum + (reservation.capacity_units ?? 1), 0);
+  if (capacityUsed + (candidate.capacity_units ?? 1) > execution.capacity) return false;
+  if (active.filter((reservation) => reservation.project_id === candidate.project_id).length >= (candidate.project_limit ?? 1)) return false;
+  const activeLocks = new Set(active.flatMap((reservation) => reservation.locks ?? []));
+  if ((candidate.locks ?? []).some((lock) => activeLocks.has(lock))) return false;
+  return Object.entries(candidate.resources ?? {}).every(([resource, amount]) => {
+    const used = active.reduce((sum, reservation) => sum + (reservation.resources?.[resource] ?? 0), 0);
+    return used + amount <= (execution.resource_limits[resource] ?? 0);
+  });
+}

@@ -9,7 +9,7 @@ import { GitDelivery } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
-import { eligibleProjectHead, projectExecutionEligible, recordAllocation, schedulerState, weightedAllocation } from "./scheduler.js";
+import { eligibleProjectHead, executionReservation, projectExecutionEligible, recordAllocation, reservationFits, schedulerState, weightedAllocation } from "./scheduler.js";
 
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
@@ -707,7 +707,17 @@ export class Engine {
       if (Object.values(snapshot.jobs).some((job) => ["Executing", "Verification", "Rework"].includes(job.state))) throw new Error("Interrupted execution requires recovery, not automatic replay.");
       await this.store.change((data) => schedulerState(data, this.config.execution.capacity));
       const stopped = new Set();
-      while (executed < this.config.max_jobs_per_run) {
+      let started = 0;
+      const running = new Set();
+      const reservations = new Map();
+      const settleOne = async () => {
+        if (running.size) await Promise.race(running);
+      };
+      while (started < this.config.max_jobs_per_run || running.size) {
+        if (started >= this.config.max_jobs_per_run || running.size >= this.config.execution.capacity) {
+          await settleOne();
+          continue;
+        }
         const state = await this.store.read();
         const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review")
           && projectExecutionEligible(p, this.config.execution)
@@ -718,23 +728,38 @@ export class Engine {
         // Weighted turns across projects; only each project's queue head may compete.
         const scheduler = state.system_metadata.execution_scheduler;
         candidates.sort((a, b) => weightedAllocation(scheduler, a.project) - weightedAllocation(scheduler, b.project) || a.project.id.localeCompare(b.project.id));
-        const selected = candidates[0];
-        if (!selected) break;
+        const selected = candidates.find(({ project }) => reservationFits([...reservations.values()], executionReservation(project), this.config.execution));
+        if (!selected) {
+          if (running.size) { await settleOne(); continue; }
+          break;
+        }
         const { project, job } = selected;
+        const reservation = executionReservation(project);
         await this.store.change((data) => {
           data.projects[project.id] = { ...data.projects[project.id], active: true };
           recordAllocation(data, project, this.config.execution.capacity, new Date(this.clock()).toISOString());
           data.jobs[job.id].owning_node_id = this.store.node?.id ?? null;
           data.jobs[job.id].owning_node = this.store.node?.name ?? null;
         });
-        await this.execute(job.id, project);
-        await this.store.change((data) => {
-          data.jobs[job.id].owning_node_id = null;
-          data.jobs[job.id].owning_node = null;
-        });
-        executed++;
+        started += 1;
         if (project.policy.continuation === "stop_after_job") stopped.add(project.id);
+        let task;
+        task = (async () => {
+          try {
+            if (await this.execute(job.id, project)) executed += 1;
+          } finally {
+            await this.store.change((data) => {
+              data.jobs[job.id].owning_node_id = null;
+              data.jobs[job.id].owning_node = null;
+            });
+            reservations.delete(job.id);
+            running.delete(task);
+          }
+        })();
+        reservations.set(job.id, reservation);
+        running.add(task);
       }
+      await Promise.all(running);
       return { executed, limit_reached: executed >= this.config.max_jobs_per_run, ...await this.store.read() };
     } finally { release(); }
   }
@@ -748,7 +773,17 @@ export class Engine {
 
     let snapshot;
     const stopped = new Set();
-    while (executed < this.config.max_jobs_per_run) {
+    let started = 0;
+    const running = new Set();
+    const settleOne = async () => {
+      if (!running.size) return;
+      await Promise.race(running);
+    };
+    while (started < this.config.max_jobs_per_run || running.size) {
+      if (started >= this.config.max_jobs_per_run || running.size >= this.config.execution.capacity) {
+        await settleOne();
+        continue;
+      }
       snapshot = await this.store.read();
       if (hasImportedTriageBarrier(snapshot)) break;
       const candidates = this.config.projects.filter((project) => (!projectId || project.id === projectId)
@@ -762,24 +797,40 @@ export class Engine {
         .filter(({ job }) => job);
       const scheduler = snapshot.system_metadata.execution_scheduler;
       candidates.sort((a, b) => weightedAllocation(scheduler, a.project) - weightedAllocation(scheduler, b.project) || a.project.id.localeCompare(b.project.id));
-      if (!candidates.length) break;
-      const claim = await this.store.claimJob(candidates.map(({ job }) => job.id));
-      if (!claim) break;
+      if (!candidates.length) {
+        if (running.size) { await settleOne(); continue; }
+        break;
+      }
+      const reservations = Object.fromEntries(candidates.map(({ project, job }) => [job.id, executionReservation(project)]));
+      const claim = await this.store.claimJob(candidates.map(({ job }) => job.id), {
+        leaseMs: this.store.leaseMs,
+        execution: this.config.execution,
+        reservations,
+      });
+      if (!claim) {
+        if (running.size) { await settleOne(); continue; }
+        break;
+      }
       const project = candidates.find(({ job }) => job.id === claim.job.id)?.project;
       if (!project) throw new Error("Claimed job was not an eligible project queue head.");
-      try {
-        await this.store.change((data) => {
-          data.projects[project.id] = { ...data.projects[project.id], active: true };
-          recordAllocation(data, project, this.config.execution.capacity, new Date(this.clock()).toISOString());
-        });
-        const didExecute = await this.execute(claim.job.id, project, claim.lease);
-        if (!didExecute) break;
-        executed += 1;
-        if (project.policy.continuation === "stop_after_job") stopped.add(project.id);
-      } finally {
-        await this.store.releaseLease(claim.lease).catch(() => {});
-      }
+      await this.store.change((data) => {
+        data.projects[project.id] = { ...data.projects[project.id], active: true };
+        recordAllocation(data, project, this.config.execution.capacity, new Date(this.clock()).toISOString());
+      });
+      started += 1;
+      if (project.policy.continuation === "stop_after_job") stopped.add(project.id);
+      let task;
+      task = (async () => {
+        try {
+          if (await this.execute(claim.job.id, project, claim.lease)) executed += 1;
+        } finally {
+          await this.store.releaseLease(claim.lease).catch(() => {});
+          running.delete(task);
+        }
+      })();
+      running.add(task);
     }
+    await Promise.all(running);
     return { executed, limit_reached: executed >= this.config.max_jobs_per_run, ...await this.store.read() };
   }
 }
