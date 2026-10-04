@@ -603,7 +603,10 @@ test("acceptance: project-first dashboard runs seven-question atomic sessions wi
   await page.waitForFunction(() => document.activeElement === document.querySelector("#decision-answer"));
   assert.equal(await page.locator("#decision-answer").evaluate((element) => document.activeElement === element), true);
   await page.locator("#decision-answer").fill("Pocket Orchestra");
-  await page.getByRole("button", { name: "Submit 1 answer" }).click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes("/decision-session") && response.status() === 200),
+    page.getByRole("button", { name: "Submit 1 answer" }).click(),
+  ]);
   assert.equal(reevaluations, 2);
 
   await page.setViewportSize({ width: 390, height: 844 });
