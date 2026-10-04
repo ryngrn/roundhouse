@@ -276,6 +276,15 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 200, result);
       }
+      const conditionSignal = url.pathname.match(/^\/api\/conditions\/([^/]+)\/signal$/);
+      if (request.method === "POST" && conditionSignal) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.signalCondition({ key: decodeURIComponent(conditionSignal[1]),
+          satisfied: input.satisfied ?? true, details: input.details ?? null, actor: "local-user" });
+        loop.wake();
+        return send(response, 200, result);
+      }
       if (request.method === "POST" && url.pathname === "/api/worker/tick") {
         verifyOrigin(request, origins);
         await jsonBody(request);

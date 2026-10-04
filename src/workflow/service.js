@@ -127,6 +127,11 @@ export class RoundhouseService {
       mapResult(this.store.read(), (data) => ({ item: itemView(data, item), retry_requested: true })));
   }
 
+  signalCondition({ key, satisfied = true, details = null, actor = "external-system" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to record a condition signal.");
+    return mapResult(this.engine.signalCondition(key, { satisfied, details, actor }), (signal) => ({ signal, durable: true }));
+  }
+
   getStorageStatus() {
     return this.store.status();
   }

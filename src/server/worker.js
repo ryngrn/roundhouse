@@ -1,5 +1,6 @@
 export class WorkerLoop {
-  constructor({ service, eventBroker = null, commandQueue = null, onCycle = async () => {}, onError = () => {} }) {
+  constructor({ service, eventBroker = null, commandQueue = null, onCycle = async () => {}, onError = () => {},
+    setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, now = () => Date.now() }) {
     this.service = service;
     this.eventBroker = eventBroker;
     this.commandQueue = commandQueue;
@@ -21,6 +22,11 @@ export class WorkerLoop {
     this.dispatchError = null;
     this.commandError = null;
     this.lastCommand = null;
+    this.scheduledWakeTimer = null;
+    this.nextScheduledWakeAt = null;
+    this.setTimeoutFn = setTimeoutFn;
+    this.clearTimeoutFn = clearTimeoutFn;
+    this.now = now;
   }
 
   handleError(plane, error) {
@@ -120,10 +126,27 @@ export class WorkerLoop {
         event_deliveries_attempted: events.attempted ?? 0,
         error: commands.remote_command_error ?? triage.error ?? dispatch.error };
       await this.onCycle(result);
+      await this.scheduleNextWake();
       return result;
     })();
     try { return await this.cycleRunning; }
     finally { this.cycleRunning = null; }
+  }
+
+  async scheduleNextWake() {
+    if (this.scheduledWakeTimer) this.clearTimeoutFn(this.scheduledWakeTimer);
+    this.scheduledWakeTimer = null;
+    this.nextScheduledWakeAt = null;
+    if (this.stopped || !this.service.engine?.nextScheduledWake) return;
+    const next = await this.service.engine.nextScheduledWake();
+    if (!next) return;
+    this.nextScheduledWakeAt = next;
+    const delay = Math.max(0, Math.min(Date.parse(next) - this.now(), 2_147_483_647));
+    this.scheduledWakeTimer = this.setTimeoutFn(() => {
+      this.scheduledWakeTimer = null;
+      this.wake();
+    }, delay);
+    this.scheduledWakeTimer.unref?.();
   }
 
   wake() {
@@ -157,6 +180,9 @@ export class WorkerLoop {
   stop() {
     this.stopped = true;
     this.wakeRequested = false;
+    if (this.scheduledWakeTimer) this.clearTimeoutFn(this.scheduledWakeTimer);
+    this.scheduledWakeTimer = null;
+    this.nextScheduledWakeAt = null;
     return Promise.allSettled([this.wakeDrain, this.cycleRunning].filter(Boolean));
   }
 
@@ -175,6 +201,7 @@ export class WorkerLoop {
       dispatch_error: this.dispatchError,
       command_error: this.commandError,
       last_command: this.lastCommand,
+      next_scheduled_wake_at: this.nextScheduledWakeAt,
     };
   }
 }

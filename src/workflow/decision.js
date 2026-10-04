@@ -2,12 +2,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { runProcess } from "./runtime.js";
+import { normalizeSchedule } from "./scheduling.js";
 
 const string = { type: "string" };
 const strings = { type: "array", items: string };
 const object = (properties, required = Object.keys(properties)) => ({ type: "object", additionalProperties: false, properties, required });
 const capabilityKey = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
 const focusedQuestion = object({ prompt: string, decision_key: string });
+const recurrence = object({ start_at: { type: ["string", "null"] }, interval_seconds: { type: "number" },
+  max_occurrences: { type: ["number", "null"] }, end_at: { type: ["string", "null"] } });
+const conditionWait = object({ key: string, description: string });
+const schedule = object({ not_before: { type: ["string", "null"] }, recurrence: { type: ["object", "null"],
+  additionalProperties: recurrence.additionalProperties, properties: recurrence.properties, required: recurrence.required },
+wait_for: { type: ["object", "null"], additionalProperties: conditionWait.additionalProperties,
+  properties: conditionWait.properties, required: conditionWait.required } });
 export const decisionSchema = object({
   project: { type: ["string", "null"] }, project_confidence: { type: "number" }, execution_confidence: { type: "number" },
   sufficient_context: { type: "boolean" }, safe_to_execute: { type: "boolean" }, approval_required: { type: "boolean" },
@@ -20,6 +28,8 @@ export const decisionSchema = object({
   reconcile_with: { type: ["string", "null"] }, blocked_on: strings,
   work_items: { type: "array", items: object({ title: string, outcome: string,
     repository_required: { type: "boolean" }, required_capabilities: strings,
+    schedule: { type: ["object", "null"], additionalProperties: schedule.additionalProperties,
+      properties: schedule.properties, required: schedule.required },
     acceptance_criteria: { type: "array", items: object({ description: string, verification_ids: strings }) } }) },
 });
 
@@ -37,6 +47,7 @@ export function validateDecision(value) {
       if (!work || typeof work !== "object" || Array.isArray(work)) continue;
       if (!Object.hasOwn(work, "repository_required")) work.repository_required = undefined;
       if (!Object.hasOwn(work, "required_capabilities")) work.required_capabilities = [];
+      if (!Object.hasOwn(work, "schedule")) work.schedule = null;
     }
   }
   if (value && typeof value === "object" && !Array.isArray(value) && !Array.isArray(value.questions)) {
@@ -77,6 +88,7 @@ export function validateDecision(value) {
     || work.required_capabilities.some((capability) => !capabilityKey.test(capability)))) {
     throw new Error("Slice required_capabilities must contain unique stable lowercase identifiers.");
   }
+  for (const work of value.work_items) work.schedule = normalizeSchedule(work.schedule);
   if (new Set(value.questions.map((question) => question.decision_key)).size !== value.questions.length) throw new Error("Decision question keys must be unique within a session.");
   if (!value.reason.trim()) throw new Error("Decision rationale is required.");
   if (value.decision_key != null && !value.decision_key.trim()) throw new Error("Decision key must be nonempty when supplied.");
@@ -166,6 +178,7 @@ export class DecisionProvider {
       }));
     const packet = { input: item.input, clarifications: item.clarifications, resolved_decisions, related_work: item.related_work ?? [], projects,
       capability_contract: "Model repository_required independently from required_capabilities for every slice. Capabilities may describe research, integration, scheduling, artifact, external-action, human-task, or installation-specific work; do not assume every slice is software or requires Git.",
+      scheduling_contract: "Use work.schedule only when the request explicitly declares deferred or recurring execution or an external condition. not_before and recurrence timestamps are absolute ISO timestamps. Recurrence uses a fixed positive interval_seconds and optional max_occurrences/end_at. wait_for uses a stable lowercase condition key and human-readable description. External-condition waits are not clarification questions or operational blocks.",
       import_context: item.provenance ? { provenance: item.provenance, legacy: item.legacy_depot ?? null,
         project_candidate_id: item.project_candidate_id ?? null } : null };
     if (this.config.kind === "command") {

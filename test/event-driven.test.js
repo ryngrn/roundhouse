@@ -56,6 +56,39 @@ test("duplicate wakes coalesce and a wake during an active cycle schedules one f
   worker.stop();
 });
 
+test("scheduled one-shot wake is reconstructed from durable eligibility after restart", async () => {
+  const now = Date.parse("2026-01-01T00:00:00Z");
+  const wakeAt = "2026-01-01T01:00:00.000Z";
+  const timers = [];
+  const cleared = [];
+  const setTimeoutFn = (callback, delay) => {
+    const timer = { callback, delay, unref() {} };
+    timers.push(timer);
+    return timer;
+  };
+  const clearTimeoutFn = (timer) => cleared.push(timer);
+  const store = { shared: true, claimRemoteCommand: async () => null };
+  const engine = {
+    store,
+    runTriage: async () => ({ triaged: 0 }),
+    runDispatch: async () => ({ executed: 0 }),
+    nextScheduledWake: async () => wakeAt,
+  };
+
+  const first = new WorkerLoop({ service: { store, engine }, setTimeoutFn, clearTimeoutFn, now: () => now });
+  await first.start();
+  assert.equal(first.status().next_scheduled_wake_at, wakeAt);
+  assert.equal(timers[0].delay, 60 * 60 * 1000);
+  await first.stop();
+  assert.deepEqual(cleared, [timers[0]]);
+
+  const restarted = new WorkerLoop({ service: { store, engine }, setTimeoutFn, clearTimeoutFn, now: () => now });
+  await restarted.start();
+  assert.equal(restarted.status().next_scheduled_wake_at, wakeAt);
+  assert.equal(timers[1].delay, 60 * 60 * 1000);
+  await restarted.stop();
+});
+
 test("wake stream ignores open/keepalive events and reconnects without creating work", async (t) => {
   let connections = 0;
   let cycles = 0;
@@ -187,4 +220,3 @@ test("projection publisher coalesces changes while a remote write is in flight",
   assert.deepEqual(published, [1, 2]);
   publisher.stop();
 });
-

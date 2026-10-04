@@ -11,6 +11,7 @@ import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 import { dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
+import { assessJobEligibility, ensureNextOccurrence, initializeJobSchedule, nextScheduledWake, recordConditionSignal } from "./scheduling.js";
 
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
@@ -71,6 +72,12 @@ export class Engine {
       });
       return pending;
     };
+  }
+  refreshScheduleEligibility(data) {
+    const conditions = data.system_metadata?.condition_signals ?? {};
+    for (const job of Object.values(data.jobs ?? {})) {
+      if (job.state === "Ready") assessJobEligibility(job, conditions, { now: this.clock(), mutate: true });
+    }
   }
   async decide(id, existingLease = null) {
     const decisionLease = this.store.shared && !existingLease
@@ -270,8 +277,15 @@ export class Engine {
         input_digest: digest({ input: item.input, clarifications: item.clarifications, work }),
         dependencies: [...item.decision.dependencies, ...(index ? [`${item.id}-${index}`] : [])],
         attempts: [], processes: [], priority_rank: priorityRank(item), position: Object.keys(data.jobs).length });
+      initializeJobSchedule(data.jobs[id], work.schedule, data.system_metadata?.condition_signals ?? {}, { now: this.clock() });
       return id;
     });
+  }
+  signalCondition(key, { satisfied = true, actor, details = null } = {}) {
+    return this.store.change((data) => recordConditionSignal(data, key, { satisfied, actor, details, at: this.clock() }));
+  }
+  async nextScheduledWake() {
+    return nextScheduledWake(await this.store.read(), { now: this.clock() });
   }
   approve(id, revision, actor) {
     if (!actor?.trim()) throw new Error("Approval requires an actor.");
@@ -699,7 +713,8 @@ export class Engine {
               ...(delivered.reference ? { last_output: delivered.reference } : {}),
               active: false, review_required: project.policy.review_after_shipping };
             const parent = data.items[j.parent_id];
-            if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) {
+            const { successor } = ensureNextOccurrence(data, j, { now: this.clock() });
+            if (!successor && parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) {
               parent.completed_at = delivered.timestamp;
             }
           });
@@ -762,7 +777,10 @@ export class Engine {
       const snapshot = await this.store.read();
       if (hasImportedTriageBarrier(snapshot)) return { executed: 0, triage_barrier: true, ...snapshot };
       if (Object.values(snapshot.jobs).some((job) => ["Executing", "Verification", "Rework"].includes(job.state))) throw new Error("Interrupted execution requires recovery, not automatic replay.");
-      await this.store.change((data) => schedulerState(data, this.config.execution.capacity));
+      await this.store.change((data) => {
+        schedulerState(data, this.config.execution.capacity);
+        this.refreshScheduleEligibility(data);
+      });
       const stopped = new Set();
       let started = 0;
       const running = new Set();
@@ -782,6 +800,7 @@ export class Engine {
             stopped,
             activeReservations: [...reservations.values()],
             canDispatch: (project) => this.shipping.canDispatch?.(project) ?? true,
+            now: this.clock(),
           }).filter((entry) => !reservations.has(entry.job.id));
           if (waiting.length) await this.store.change((data) => recordDispatchRound(data, waiting, null,
             this.config.execution.capacity, new Date(this.clock()).toISOString()));
@@ -794,6 +813,7 @@ export class Engine {
           stopped,
           activeReservations: [...reservations.values()],
           canDispatch: (project) => this.shipping.canDispatch?.(project) ?? true,
+          now: this.clock(),
         });
         // Weighted turns across projects; only each project's queue head may compete.
         const selected = considerations.filter((entry) => entry.eligible)
@@ -810,6 +830,7 @@ export class Engine {
           recordDispatchRound(data, considerations, job.id, this.config.execution.capacity, at);
           data.projects[project.id] = { ...data.projects[project.id], active: true };
           recordAllocation(data, project, this.config.execution.capacity, at);
+          assessJobEligibility(data.jobs[job.id], data.system_metadata?.condition_signals ?? {}, { now: this.clock(), mutate: true });
           data.jobs[job.id].owning_node_id = this.store.node?.id ?? null;
           data.jobs[job.id].owning_node = this.store.node?.name ?? null;
         });
@@ -841,7 +862,10 @@ export class Engine {
     if (projectId && !this.config.projects.some((project) => project.id === projectId)) throw new Error("Unknown project filter.");
     await this.store.heartbeatNode("online");
     await this.store.recoverExpiredClaims();
-    await this.store.change((data) => schedulerState(data, this.config.execution.capacity));
+    await this.store.change((data) => {
+      schedulerState(data, this.config.execution.capacity);
+      this.refreshScheduleEligibility(data);
+    });
 
     let snapshot;
     const stopped = new Set();
@@ -868,6 +892,7 @@ export class Engine {
           stopped,
           activeReservations,
           canDispatch: (project) => this.shipping.canDispatch?.(project) ?? true,
+          now: this.clock(),
         }).filter((entry) => !snapshot.jobs[entry.job.id]?.owning_node_id
           && !["Executing", "Verification", "Rework"].includes(snapshot.jobs[entry.job.id]?.state));
         if (waiting.length) await this.store.change((data) => recordDispatchRound(data, waiting, null,
@@ -887,6 +912,7 @@ export class Engine {
         stopped,
         activeReservations,
         canDispatch: (project) => this.shipping.canDispatch?.(project) ?? true,
+        now: this.clock(),
       });
       const candidates = considerations.filter((entry) => entry.eligible)
         .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id));
@@ -923,6 +949,7 @@ export class Engine {
         recordDispatchRound(data, considerations, claim.job.id, this.config.execution.capacity, at);
         data.projects[project.id] = { ...data.projects[project.id], active: true };
         recordAllocation(data, project, this.config.execution.capacity, at);
+        assessJobEligibility(data.jobs[claim.job.id], data.system_metadata?.condition_signals ?? {}, { now: this.clock(), mutate: true });
       });
       started += 1;
       if (project.policy.continuation === "stop_after_job") stopped.add(project.id);

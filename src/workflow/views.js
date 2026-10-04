@@ -1,4 +1,5 @@
 import { displayState } from "./presentation.js";
+import { assessJobEligibility } from "./scheduling.js";
 
 function aggregateState(item, jobs) {
   if (!jobs.length) return item.state;
@@ -14,6 +15,8 @@ export function itemView(data, item) {
   const openQuestion = openQuestions[0];
   const state = aggregateState(item, jobs);
   const currentJob = jobs.find((job) => job.state === state);
+  const waitingJob = jobs.find((job) => job.state === "Ready"
+    && !assessJobEligibility(job, data.system_metadata?.condition_signals ?? {}).eligible);
   const completedJobs = jobs.filter((job) => job.state === "Shipped");
   const blockedJob = jobs.find((job) => job.state === "Blocked");
   const checks = jobs.flatMap((job) => job.shipping?.verification?.checks ?? job.attempts.at(-1)?.verification?.checks ?? []).map((check) => ({
@@ -69,7 +72,8 @@ export function itemView(data, item) {
     brief: legacy?.["Normalized Brief"] || item.decision?.reason || null,
     context: item.input.context ?? null,
     acceptance_criteria: acceptance,
-    reason: currentJob?.history.at(-1)?.reason ?? item.history.at(-1)?.reason ?? null,
+    reason: waitingJob ? assessJobEligibility(waitingJob, data.system_metadata?.condition_signals ?? {}).reason
+      : currentJob?.history.at(-1)?.reason ?? item.history.at(-1)?.reason ?? null,
     question: openQuestion?.prompt ?? null,
     question_id: openQuestion?.id ?? null,
     question_revision: openQuestion?.revision ?? null,
@@ -78,13 +82,21 @@ export function itemView(data, item) {
       revision: question.revision, kind: question.kind, prompt: question.prompt,
     })),
     needs_you: openQuestions.length > 0,
-    display_state: displayState(state, { needsYou: openQuestions.length > 0 }),
+    display_state: displayState(state, { needsYou: openQuestions.length > 0, waiting: waitingJob?.eligibility.kind ?? false }),
+    waiting: waitingJob ? {
+      kind: waitingJob.eligibility.kind,
+      status: waitingJob.eligibility.status,
+      eligible_at: waitingJob.eligibility.eligible_at ?? null,
+      condition: waitingJob.eligibility.condition ?? null,
+      transitions: waitingJob.eligibility.transitions ?? [],
+    } : null,
     outcome,
     imported: Boolean(provenance?.source_system === "notion"),
     provenance,
     legacy,
     requires_reevaluation: item.requires_reevaluation === true,
     execution_eligible: item.execution_eligible !== false,
+    dispatch_eligible: !waitingJob && item.execution_eligible !== false,
     execution_ineligibility_reasons: item.execution_ineligibility_reasons ?? [],
     triage: item.triage ? {
       status: item.triage.status ?? null,
@@ -117,6 +129,9 @@ export function itemView(data, item) {
       shipping: job.shipping ?? null,
       allocation: allocationDecisions.findLast((decision) => decision.job_id === job.id) ?? null,
       allocation_history: allocationDecisions.filter((decision) => decision.job_id === job.id),
+      eligibility: job.eligibility ?? null,
+      recurrence: job.recurrence ?? null,
+      occurrence_key: job.occurrence_key ?? null,
     })),
   };
 }
@@ -131,7 +146,8 @@ export function statusView(data, filters = {}) {
   const nextJob = Object.values(data.jobs)
     .filter((job) => job.state === "Ready" && job.project_context?.status === "active"
       && !data.projects?.[job.project_id]?.blocked && !data.projects?.[job.project_id]?.stop && !data.projects?.[job.project_id]?.review_required
-      && (job.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped"))
+      && (job.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped")
+      && assessJobEligibility(job, data.system_metadata?.condition_signals ?? {}).eligible)
     .sort((a, b) => (a.priority_rank ?? 100) - (b.priority_rank ?? 100) || (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id))[0];
   const nextItem = nextJob ? data.items[nextJob.parent_id] : null;
   const next_departure = nextJob && nextItem ? {

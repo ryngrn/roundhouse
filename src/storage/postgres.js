@@ -15,6 +15,7 @@ const migrations = [
   { version: 3, name: "durable_item_revisions", file: path.join(here, "migrations", "003_durable_item_revisions.sql") },
   { version: 4, name: "attempt_node_identity", file: path.join(here, "migrations", "004_attempt_node_identity.sql") },
   { version: 5, name: "remote_commands", file: path.join(here, "migrations", "005_remote_commands.sql") },
+  { version: 6, name: "scheduled_work", file: path.join(here, "migrations", "006_scheduled_work.sql") },
 ];
 const snapshotLock = 714_209_533;
 
@@ -167,10 +168,11 @@ async function writeSnapshot(client, data) {
 
   for (const job of Object.values(data.jobs ?? {})) {
     await client.query(`INSERT INTO roundhouse.jobs
-      (id,item_id,project_id,state,revision,position,agent_role,policy_hash,delivery_intent,payload,created_at,updated_at,owning_node_id)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, [job.id, job.parent_id, job.project_id, job.state, job.revision,
+      (id,item_id,project_id,state,revision,position,agent_role,policy_hash,delivery_intent,payload,created_at,updated_at,owning_node_id,wait_kind,eligible_at,occurrence_key)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, [job.id, job.parent_id, job.project_id, job.state, job.revision,
       job.position ?? 0, job.agent_role ?? "general", job.policy_hash ?? null, job.delivery_intent ?? null, job, date(job.created_at), date(job.updated_at, date(job.created_at)),
-      job.owning_node_id ?? null]);
+      job.owning_node_id ?? null, job.eligibility?.kind ?? null, job.eligibility?.eligible_at ? date(job.eligibility.eligible_at) : null,
+      job.occurrence_key ?? null]);
     for (const dependency of job.dependencies ?? []) await client.query(
       "INSERT INTO roundhouse.job_dependencies(job_id,depends_on_job_id) VALUES ($1,$2)", [job.id, dependency]);
     await client.query(`INSERT INTO roundhouse.agent_role_refs(job_id,role_id,profile_hash,profile) VALUES ($1,$2,$3,$4)`,
@@ -376,6 +378,9 @@ export class PostgresStorageRepository extends StorageRepository {
       const candidates = await rows(client, `SELECT j.id,j.project_id,j.payload FROM roundhouse.jobs j
           LEFT JOIN roundhouse.resource_leases l ON l.resource_kind='job' AND l.resource_key=j.id AND l.expires_at>clock_timestamp()
           WHERE j.state='Ready' AND j.id=ANY($1::text[]) AND l.resource_key IS NULL
+            AND (COALESCE(j.payload->'eligibility'->>'status','eligible')='eligible'
+              OR (j.wait_kind='time' AND j.eligible_at<=clock_timestamp()))
+            AND (j.eligible_at IS NULL OR j.eligible_at<=clock_timestamp())
             AND NOT EXISTS (
               SELECT 1 FROM roundhouse.job_dependencies d
               LEFT JOIN roundhouse.jobs dependency ON dependency.id=d.depends_on_job_id

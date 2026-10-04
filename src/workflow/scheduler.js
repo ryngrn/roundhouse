@@ -1,4 +1,5 @@
 import { requiredExecutionCapabilities, selectExecutionProvider } from "./execution-adapters.js";
+import { assessJobEligibility } from "./scheduling.js";
 
 const emptyScheduler = (capacity) => ({
   version: 2,
@@ -53,7 +54,8 @@ export function projectQueueHead(data, projectId) {
 export function eligibleProjectHead(data, projectId) {
   const head = projectQueueHead(data, projectId);
   if (!head || head.state !== "Ready") return null;
-  return (head.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped") ? head : null;
+  return (head.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped")
+    && assessJobEligibility(head, data.system_metadata?.condition_signals).eligible ? head : null;
 }
 
 export function recordAllocation(data, project, capacity = 1, at = new Date().toISOString()) {
@@ -155,7 +157,7 @@ function deferralReason(checks, reservation) {
   if (!reservation.constraints.provider.fits) return { code: "provider_unavailable", message: `No execution provider supports the required capability combination: ${reservation.constraints.capability.required.length ? reservation.constraints.capability.required.join(", ") : "(none)"}.` };
   if (!reservation.constraints.repository.fits) return { code: "repository_unavailable", message: "This slice requires a repository, but the project has none configured." };
   const failed = Object.entries(checks).find(([, value]) => !value.passed);
-  if (failed) return { code: failed[0], message: failed[1].reason };
+  if (failed) return { code: failed[1].code ?? failed[0], message: failed[1].reason };
   if (!reservation.constraints.capacity.fits) return { code: "capacity_exhausted", message: `Execution capacity ${reservation.constraints.capacity.used}/${reservation.constraints.capacity.limit} is in use.` };
   if (!reservation.constraints.project.fits) return { code: "project_limit", message: `Project concurrency ${reservation.constraints.project.active}/${reservation.constraints.project.limit} is in use.` };
   const resource = reservation.constraints.resources.find((entry) => !entry.fits);
@@ -170,7 +172,7 @@ function deferralReason(checks, reservation) {
  * a worker restart without relying on process logs.
  */
 export function dispatchConsiderations(data, projects, execution, {
-  projectId, stopped = new Set(), activeReservations = [], canDispatch = () => true,
+  projectId, stopped = new Set(), activeReservations = [], canDispatch = () => true, now = Date.now(),
 } = {}) {
   const scheduler = schedulerState(data, execution.capacity);
   return projects
@@ -194,6 +196,7 @@ export function dispatchConsiderations(data, projects, execution, {
       const waitingDependencies = dependencies.filter((dependency) => dependency.state !== "Shipped");
       const itemAwaitsReview = Object.values(data.items ?? {}).some((item) => item.project_id === project.id && item.state === "Review");
       const shippingSupported = canDispatch(project);
+      const scheduleEligibility = assessJobEligibility(job, data.system_metadata?.condition_signals ?? {}, { now });
       const checks = {
         project_active: { passed: project.status === "active", reason: project.status === "active" ? "Project is active." : `Project status is ${project.status}.` },
         continuation: { passed: !stopped.has(project.id), reason: stopped.has(project.id)
@@ -213,6 +216,9 @@ export function dispatchConsiderations(data, projects, execution, {
           reason: running < project.max_concurrent_runs ? `Project has ${running}/${project.max_concurrent_runs} active runs; a slot is available.`
             : `Project concurrency ${running}/${project.max_concurrent_runs} is in use.` },
         slice_ready: { passed: job.state === "Ready", reason: job.state === "Ready" ? "Queue head is Ready." : `Queue head is ${job.state}, not Ready.` },
+        schedule: { passed: scheduleEligibility.eligible, reason: scheduleEligibility.reason, code: scheduleEligibility.code,
+          ...(scheduleEligibility.eligible_at ? { eligible_at: scheduleEligibility.eligible_at } : {}),
+          ...(scheduleEligibility.condition_key ? { condition_key: scheduleEligibility.condition_key } : {}) },
         dependencies: { passed: dependencies.every((dependency) => dependency.state === "Shipped"),
           reason: waitingDependencies.length ? `Queue head is waiting for: ${waitingDependencies.map((dependency) => `${dependency.id} (${dependency.state})`).join(", ")}.`
             : dependencies.length ? "All queue-head dependencies are shipped." : "Queue head has no dependencies." },

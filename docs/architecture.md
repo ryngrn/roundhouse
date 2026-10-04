@@ -11,6 +11,7 @@ Notion prototype is available only through the one-time archive importer.
 | Decision provider | Structured Codex response or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
 | Agent-role composer | Role manifest plus bounded Markdown skills and project context | General or Designer execution context and required evidence |
 | Durable workflow | PostgreSQL repository (shared) or explicit local repository, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
+| Scheduled eligibility | Persisted absolute timestamps, recurrence cursors, and condition signals | Explain waiting/due transitions and release each occurrence at most once |
 | Triage control plane | Independent bounded worker pass with durable attempts/backoff | Release imported work safely, classify, reconcile exact identities, slice, question, block, or make Ready |
 | Execution runtime | Capability-selected provider over local Codex, project command, or registered command adapters | Providers declare stable IDs/capabilities; `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
@@ -94,6 +95,14 @@ interrupted external action did not happen. Recovery is conservative and retains
 artifacts. PostgreSQL-backed nodes heartbeat their stable installation identities
 only while safety-critical work owns a lease. The installed LaunchAgent keeps the
 local server alive; an HTTP wake stream and local mutations trigger worker cycles.
+
+Time and external-condition waits are eligibility state on Ready jobs, independent
+from the item/job lifecycle state. Absolute timestamps avoid timezone/default-clock
+reinterpretation. Recurrence timestamps derive from a persisted anchor and ordinal,
+and successor creation is atomic with confirmed delivery. Condition observations
+are control-plane-owned, revisioned signals; they do not create questions, answers,
+reviews, or failure blocks. PostgreSQL claims recheck persisted wait status and due
+time transactionally before acquiring a job lease.
 
 Dispatch decisions are durable evidence too. Each scheduler round records every
 considered project queue head, its eligibility checks, weighted rank, allocation or

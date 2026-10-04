@@ -27,8 +27,25 @@ Review means a human decision is required. Successful execution does not itself
 create Review. `review_after_shipping` can separately pause the project's queue
 for human continuation approval while the delivered job remains Shipped.
 
-Each Depot item has a decision lifecycle and may produce up to eight sequential
-work jobs. Each job has its own execution lifecycle. The status command presents
+Scheduled work remains `Ready` but carries a separate durable eligibility gate.
+A time gate stores its absolute, timezone-qualified `eligible_at` timestamp; the
+service installs only a one-shot wake for the earliest future timestamp and
+reconstructs that wake from storage after restart. An external-condition gate names
+a stable condition key and becomes eligible only after a durable signal is recorded through
+`POST /api/conditions/:key/signal` or `depot signal-condition`. These waits are not
+human questions and do not appear in Needs You; they are also not operational
+failures and do not enter Blocked.
+
+Recurring work uses an absolute anchor, a fixed interval in seconds, and a persisted
+occurrence index, with optional occurrence/time bounds. The next timestamp is always
+calculated from the anchor plus the index rather than the prior completion time.
+Roundhouse creates the next occurrence in the same durable change that records the
+previous occurrence as Shipped. Stable series/occurrence keys and a PostgreSQL
+unique index prevent duplicate occurrence creation or dispatch after restart.
+
+Each Depot item has a decision lifecycle and its initial decision may produce up to
+eight sequential work jobs; a recurring job appends its bounded or ongoing
+occurrences after successful delivery. Each job has its own execution lifecycle. The status command presents
 the aggregate item state; all jobs must ship before the item displays Shipped.
 The original request, clarifications, durable questions and answers, prior decisions,
 project context, and job attempts remain on disk. Each question has a stable ID and
@@ -247,6 +264,18 @@ current attempt finishes. `depot resume --state-dir STATE --project PROJECT_ID
 --actor operator` clears a stop or post-shipping human gate. A blocked project also
 requires `--note "What was inspected and resolved"`; blocked jobs themselves are
 never rerun by resume. Submit replacement work with a new key after inspection.
+
+An integration can satisfy or revoke a declared condition without impersonating a
+human answer:
+
+```sh
+node src/cli.js depot signal-condition --state-dir STATE --config CONFIG \
+  --key source.imported --satisfied true --actor importer
+```
+
+Each signal increments a durable revision and records the actor, observation time,
+and optional details. Eligibility history explains when and why a waiting job moved
+between waiting and eligible.
 
 ## Failures and restart
 
