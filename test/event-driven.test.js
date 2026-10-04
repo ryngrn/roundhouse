@@ -85,6 +85,21 @@ test("wake stream ignores open/keepalive events and reconnects without creating 
   assert.equal(cycles, 1);
 });
 
+test("programmatic servers do not inherit the production relay environment", async (t) => {
+  const h = harness();
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const previous = process.env.ROUNDHOUSE_RELAY_DATABASE_URL;
+  process.env.ROUNDHOUSE_RELAY_DATABASE_URL = "postgresql://invalid.example/relay";
+  try {
+    const running = await startRoundhouseServer({ service, port: 0, autoStartWorker: false });
+    t.after(() => running.close());
+    assert.equal(running.worker.commandQueue, null);
+  } finally {
+    if (previous === undefined) delete process.env.ROUNDHOUSE_RELAY_DATABASE_URL;
+    else process.env.ROUNDHOUSE_RELAY_DATABASE_URL = previous;
+  }
+});
+
 test("health is local-only and polling guardrails remain absent", async (t) => {
   const h = harness();
   const service = new RoundhouseService({ store: h.store, engine: h.engine });
