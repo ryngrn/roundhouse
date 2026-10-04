@@ -30,6 +30,67 @@ test("e2e: autonomous Depot request creates actual change, verifies exact commit
   assert.equal(persisted.jobs[job.id].shipping.commit, job.shipping.commit);
   assert.equal((await h.engine.run()).executed, 0);
 });
+test("e2e: unstarted work refreshes non-authority project context drift", async () => {
+  const h = harness();
+  h.submit("context drift");
+  await h.engine.runTriage();
+  const before = h.store.read();
+  const job = Object.values(before.jobs)[0];
+  const originalHash = job.policy_hash;
+
+  fs.appendFileSync(path.join(h.repository, "README.md"), "Updated project context\n");
+  git(h.repository, ["add", "README.md"]);
+  git(h.repository, ["commit", "-m", "Update context"]);
+  git(h.repository, ["push", "origin", "main"]);
+
+  const result = await h.engine.runDispatch();
+  const current = result.jobs[job.id];
+  assert.equal(current.state, "Shipped");
+  assert.notEqual(current.policy_hash, originalHash);
+  assert.match(current.context_refresh?.reason ?? "", /Non-authority project context changed/);
+  assert.equal(current.attempts.length, 1);
+});
+
+test("e2e: stale blocked untouched work can refresh context and resume", async () => {
+  const h = harness();
+  h.submit("recover stale context");
+  await h.engine.runTriage();
+  const job = Object.values(h.store.read().jobs)[0];
+
+  fs.appendFileSync(path.join(h.repository, "README.md"), "Verified upstream context change\n");
+  git(h.repository, ["add", "README.md"]);
+  git(h.repository, ["commit", "-m", "Verified upstream context"]);
+  git(h.repository, ["push", "origin", "main"]);
+
+  h.store.change((data) => {
+    h.store.move(data, data.jobs[job.id], "Blocked", "Project policy or context changed after decision; resubmit for a new decision.");
+    data.projects.example = { ...data.projects.example, blocked: true, active: false };
+  });
+
+  const refreshed = await h.engine.refreshJobContext(job.id, { actor: "operator" });
+  assert.equal(refreshed.state, "Ready");
+  assert.equal(refreshed.context_refresh.actor, "operator");
+  assert.equal(h.store.read().projects.example.blocked, false);
+
+  const result = await h.engine.runDispatch();
+  assert.equal(result.jobs[job.id].state, "Shipped");
+});
+
+test("e2e: real execution-authority drift still blocks before execution", async () => {
+  const h = harness();
+  h.submit("authority drift");
+  await h.engine.runTriage();
+  const job = Object.values(h.store.read().jobs)[0];
+  h.config.projects[0].policy.shipping = "commit_only";
+
+  const result = await h.engine.runDispatch();
+  const current = result.jobs[job.id];
+  assert.equal(current.state, "Blocked");
+  assert.equal(current.attempts.length, 0);
+  assert.match(current.history.at(-1).reason, /policy or context changed/i);
+  await assert.rejects(h.engine.refreshJobContext(job.id, { actor: "operator" }), /Execution authority changed/);
+});
+
 test("e2e: low confidence asks for clarification without creating work or shipping", async () => {
   const h = harness(); h.submit("ambiguous idea");
   const result = await h.engine.run();

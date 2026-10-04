@@ -51,6 +51,33 @@ function executionProjectContext(project, role) {
   return { ...context, agent_profile: composeAgentRole(role, project) };
 }
 
+function executionAuthorityContext(context = {}) {
+  return {
+    id: context.id ?? null,
+    status: context.status ?? null,
+    repository: context.repository ?? null,
+    base_ref: context.base_ref ?? null,
+    remote: context.remote ?? null,
+    runtime: context.runtime ?? null,
+    executor: context.executor ?? null,
+    max_concurrent_runs: context.max_concurrent_runs ?? null,
+    timeout_ms: context.timeout_ms ?? null,
+    self_hosting: context.self_hosting ?? null,
+    policy: context.policy ?? null,
+    verification: context.verification ?? null,
+    context_limits: context.context_limits ?? null,
+    agent: {
+      default_role: context.agent?.default_role ?? null,
+      allowed_roles: context.agent?.allowed_roles ?? null,
+    },
+    herdr: context.herdr ?? null,
+  };
+}
+
+function sameExecutionAuthority(left, right) {
+  return digest(executionAuthorityContext(left)) === digest(executionAuthorityContext(right));
+}
+
 function relatedWork(data, item) {
   const projectKeys = new Set([item.project_id, item.input?.project_id, item.input?.project_hint,
     item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id]?.name : null].filter(Boolean).map((value) => String(value).toLowerCase()));
@@ -635,7 +662,27 @@ export class Engine {
       }
       const state = await this.store.read();
       const job = state.jobs[id];
-      if (digest(executionProjectContext(project, job.agent_role ?? "general")) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
+      const currentProjectContext = executionProjectContext(project, job.agent_role ?? "general");
+      const currentPolicyHash = digest(currentProjectContext);
+      if (currentPolicyHash !== job.policy_hash) {
+        if ((job.attempts?.length ?? 0) > 0 || !sameExecutionAuthority(job.project_context, currentProjectContext)) {
+          throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
+        }
+        await this.store.change((data) => {
+          const current = data.jobs[id];
+          if (!current || current.state !== "Ready" || (current.attempts?.length ?? 0) > 0) {
+            throw new Error("Job changed while refreshing project context.");
+          }
+          current.project_context = currentProjectContext;
+          current.policy_hash = currentPolicyHash;
+          current.context_refresh = {
+            at: new Date().toISOString(),
+            reason: "Non-authority project context changed before execution; refreshed against current project state.",
+          };
+        });
+        job.project_context = currentProjectContext;
+        job.policy_hash = currentPolicyHash;
+      }
       if (!machineLocal && !this.shipping.supports(project)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = machineLocal
         ? { workspace_mode: "machine_local", working_directory: project.herdr.working_directory, machine_selector: project.herdr.machine, agent_target: project.herdr.agent }
@@ -738,6 +785,41 @@ export class Engine {
       if (projectLease) await this.store.releaseLease(projectLease).catch(() => {});
     }
   }
+  async refreshJobContext(id, { actor }) {
+    if (typeof actor !== "string" || !actor.trim()) throw new Error("Job context refresh requires an actor.");
+    const snapshot = await this.store.read();
+    const job = snapshot.jobs[id];
+    if (!job || job.state !== "Blocked") throw new Error("Only a Blocked job can refresh project context.");
+    if ((job.attempts?.length ?? 0) > 0) throw new Error("Started work cannot refresh project context; reconcile or replace it.");
+    if (!/Project policy or context changed after decision/.test(job.history?.at(-1)?.reason ?? "")) {
+      throw new Error("Job is not blocked by stale project context.");
+    }
+    const project = this.config.projects.find((candidate) => candidate.id === job.project_id);
+    if (!project) throw new Error("Job context refresh requires a configured project.");
+    const currentProjectContext = executionProjectContext(project, job.agent_role ?? "general");
+    if (!sameExecutionAuthority(job.project_context, currentProjectContext)) {
+      throw new Error("Execution authority changed; a new decision is required.");
+    }
+    const currentPolicyHash = digest(currentProjectContext);
+    const at = new Date().toISOString();
+    return await this.store.change((data) => {
+      const current = data.jobs[id];
+      if (!current || current.state !== "Blocked" || (current.attempts?.length ?? 0) > 0) {
+        throw new Error("Job changed while refreshing project context.");
+      }
+      current.project_context = currentProjectContext;
+      current.policy_hash = currentPolicyHash;
+      current.context_refresh = {
+        at,
+        actor: actor.trim(),
+        reason: "Operator refreshed non-authority project context after verified upstream work.",
+      };
+      this.store.move(data, current, "Ready", "Non-authority project context refreshed by " + actor.trim() + "; execution authority is unchanged.");
+      data.projects[current.project_id] = { ...data.projects[current.project_id], blocked: false, active: false };
+      return current;
+    });
+  }
+
   async reconcileJob(id, { actor, note, commit, branch }) {
     for (const [name, value] of Object.entries({ actor, note, commit, branch })) {
       if (typeof value !== "string" || !value.trim()) throw new Error(`Job reconciliation requires ${name}.`);
