@@ -6,7 +6,7 @@ import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
 import { LocalRuntime, CommandVerifier } from "./runtime.js";
 import { CapabilityRuntime } from "./execution-adapters.js";
-import { DeliveryRouter } from "./delivery.js";
+import { DeliveryRouter, git } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
@@ -747,6 +747,88 @@ export class Engine {
       this.store.move(data, job, "Blocked", reason);
       data.projects[job.project_id] = { ...data.projects[job.project_id], blocked: true, active: false };
     });
+  }
+  async reconcileJob(id) {
+    const snapshot = await this.store.read();
+    const job = snapshot.jobs[id];
+    if (!job || job.state !== "Blocked") throw new Error("Only a Blocked job can be reconciled.");
+    const project = this.config.projects.find((candidate) => candidate.id === job.project_id);
+    if (!project) throw new Error("The job project is not configured.");
+    if (project.policy.shipping !== "push_branch" || job.project_context?.policy?.shipping !== "push_branch" ||
+      job.delivery_intent?.policy !== "push_branch") {
+      throw new Error("Job reconciliation requires the configured and original shipping policy to remain push_branch.");
+    }
+    const attempt = job.attempts.at(-1);
+    const commit = job.delivery_intent?.commit;
+    if (!commit || attempt?.snapshot?.commit !== commit || attempt?.verification?.commit !== commit || !job.prepared?.workspace) {
+      throw new Error("Blocked job has no exact retained verified candidate to reconcile.");
+    }
+    const expectedBranch = `codex/roundhouse-${id}`;
+    if (job.prepared.branch !== expectedBranch || job.delivery_intent.branch !== expectedBranch) {
+      throw new Error("Job reconciliation may target only the original Roundhouse job branch.");
+    }
+    let releaseRepo;
+    let projectLease;
+    try {
+      if (this.store.shared) {
+        projectLease = await this.store.acquireLease("project", project.id, { job_id: id, operation: "reconcile" });
+        if (!projectLease) throw new Error("Project is already owned by another worker.");
+      }
+      releaseRepo = this.shipping.lock(project, job);
+      const current = (await this.store.read()).jobs[id];
+      if (current.state !== "Blocked" || current.delivery_intent?.commit !== commit) throw new Error("Job changed before reconciliation.");
+      // Inspect the remote before running checks. A divergent ref is terminal for this
+      // operation and must never be rewritten, merged, or force-updated.
+      const remoteRef = `refs/heads/${expectedBranch}`;
+      const remote = git(project.repository, ["ls-remote", project.remote, remoteRef], true);
+      if (remote.status !== 0) throw new Error(`Could not inspect the remote job branch: ${remote.stderr}`);
+      const remoteCommit = remote.stdout.trim().split(/\s+/)[0] || null;
+      if (remoteCommit && remoteCommit !== commit) throw new Error("Remote job branch diverged from the retained candidate; reconciliation refused.");
+      if (!this.shipping.unchanged(current.prepared, commit, project)) throw new Error("Retained candidate no longer matches the exact local commit.");
+      const reverification = await this.verifier.verify({ project, job: current, workspace: current.prepared.workspace,
+        commit, snapshot: current.attempts.at(-1).snapshot, execution: current.attempts.at(-1).execution,
+        directory: path.join(this.store.directory, "evidence", id, "reconciliation"), onStart: this.processRecorder("jobs", id) });
+      if (!this.shipping.unchanged(current.prepared, commit, project)) {
+        reverification.passed = false;
+        reverification.checks.push({ id: "unchanged-reverified-version", passed: false,
+          stderr: "Reverification modified the retained candidate or left uncommitted changes." });
+      }
+      reverification.kind = "reverification";
+      await this.store.change((data) => {
+        const retained = data.jobs[id];
+        retained.reverification = reverification;
+        retained.reconciliation = { ...retained.reconciliation, reverification, status: reverification.passed ? "reverified" : "reverification_failed" };
+      });
+      if (!reverification.passed) throw new Error("Required candidate reverification failed.");
+      if (this.store.shared) await this.store.assertLease(projectLease);
+      const delivered = await this.shipping.reconcile({ project, job: current, prepared: current.prepared,
+        verification: reverification, onStart: this.processRecorder("jobs", id) });
+      await this.store.change((data) => {
+        const retained = data.jobs[id];
+        retained.shipping = delivered;
+        retained.reconciliation = { ...retained.reconciliation, required: false, status: "confirmed",
+          confirmed_at: delivered.timestamp, reverification };
+        retained.delivery_intent.reconciliation = { required_on_interruption: false, status: "confirmed", confirmed_at: delivered.timestamp };
+        const retainedAttempt = retained.attempts.at(-1);
+        retainedAttempt.reverification = reverification;
+        retainedAttempt.status = "completed";
+        retainedAttempt.run.status = "completed";
+        retainedAttempt.run.reconciliation = retained.reconciliation;
+        retainedAttempt.finished_at = delivered.timestamp;
+        retained.processes = [];
+        retained.owning_node_id = null;
+        retained.owning_node = null;
+        this.store.move(data, retained, "Shipped", "Reverified retained work reconciled to the exact remote job branch.");
+        data.projects[project.id] = { ...data.projects[project.id], last_commit: delivered.commit, blocked: false, active: false,
+          review_required: project.policy.review_after_shipping };
+        const parent = data.items[retained.parent_id];
+        if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = delivered.timestamp;
+      });
+      return (await this.store.read()).jobs[id];
+    } finally {
+      if (releaseRepo) releaseRepo();
+      if (projectLease) await this.store.releaseLease(projectLease).catch(() => {});
+    }
   }
   async run({ projectId } = {}) {
     const triage = await this.runTriage({ projectId, limit: Infinity });

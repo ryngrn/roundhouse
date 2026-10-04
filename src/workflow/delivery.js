@@ -87,6 +87,58 @@ export class GitDelivery {
     }
     return result;
   }
+  async reconcile({ project, job, prepared, verification, onStart }) {
+    const expectedBranch = `codex/roundhouse-${job.id}`;
+    if (project.policy.shipping !== "push_branch" || job.project_context?.policy?.shipping !== "push_branch" || job.delivery_intent?.policy !== "push_branch") {
+      throw new Error("Job reconciliation is limited to the original push_branch policy.");
+    }
+    if (!prepared?.remote || prepared.branch !== expectedBranch || job.delivery_intent.branch !== expectedBranch) {
+      throw new Error("Job reconciliation may target only the original Roundhouse job branch.");
+    }
+    if (!verification?.passed || verification.commit !== job.delivery_intent.commit || !verification.checks?.length ||
+      !verification.checks.every((check) => check.passed)) {
+      throw new Error("Job reconciliation requires successful reverification of the exact retained commit.");
+    }
+    if (!this.unchanged(prepared, verification.commit)) throw new Error("Reverified candidate changed before reconciliation.");
+    if (git(project.repository, ["remote", "get-url", "--push", project.remote]) !== prepared.remote) {
+      throw new Error("Remote changed before reconciliation.");
+    }
+    const defaultRef = await runProcess(["git", "-C", prepared.workspace, "ls-remote", "--symref", project.remote, "HEAD"], {
+      timeout: project.timeout_ms, onStart,
+    });
+    if (!defaultRef.passed) throw new Error(`Could not inspect the remote default branch: ${defaultRef.stderr}`);
+    const defaultBranch = defaultRef.stdout.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD$/m)?.[1] ?? null;
+    const baseBranch = String(project.base_ref).replace(/^refs\/heads\//, "").replace(/^refs\/remotes\/[^/]+\//, "");
+    if (expectedBranch === defaultBranch || expectedBranch === baseBranch || ["main", "master"].includes(expectedBranch)) {
+      throw new Error("Job reconciliation cannot target a protected or default branch.");
+    }
+    const remoteRef = `refs/heads/${expectedBranch}`;
+    let observed = await runProcess(["git", "-C", prepared.workspace, "ls-remote", project.remote, remoteRef], {
+      timeout: project.timeout_ms, onStart,
+    });
+    if (!observed.passed) throw new Error(`Could not inspect the remote job branch: ${observed.stderr}`);
+    let remoteCommit = observed.stdout.trim().split(/\s+/)[0] || null;
+    if (remoteCommit && remoteCommit !== verification.commit) {
+      throw new Error("Remote job branch diverged from the reverified candidate; reconciliation refused.");
+    }
+    let pushed = false;
+    if (!remoteCommit) {
+      const push = await runProcess(["git", "-c", "core.hooksPath=/dev/null", "-C", prepared.workspace, "push", project.remote,
+        `${verification.commit}:${remoteRef}`], { cwd: prepared.workspace, timeout: project.timeout_ms, onStart });
+      if (!push.passed) throw new Error(`Recovery push failed: ${push.stderr}`);
+      pushed = true;
+    }
+    observed = await runProcess(["git", "-C", prepared.workspace, "ls-remote", project.remote, remoteRef], {
+      timeout: project.timeout_ms, onStart,
+    });
+    remoteCommit = observed.stdout.trim().split(/\s+/)[0] || null;
+    if (!observed.passed || remoteCommit !== verification.commit) {
+      throw new Error("Could not confirm exact remote delivery after reconciliation.");
+    }
+    return { repository: project.repository, branch: expectedBranch, commit: verification.commit,
+      policy: "push_branch", remote: prepared.remote, pr_url: null, deployment: null, verification,
+      pushed, reconciled: true, timestamp: new Date().toISOString() };
+  }
 }
 
 const outputLimit = 8 * 1024 * 1024;
@@ -188,4 +240,9 @@ export class DeliveryRouter {
   snapshot(options) { return this.provider(options.project, options.job, options.prepared).snapshot(options); }
   unchanged(prepared, version, project) { return this.provider(project, null, prepared).unchanged(prepared, version); }
   ship(options) { return this.provider(options.project, options.job, options.prepared).ship(options); }
+  reconcile(options) {
+    const provider = this.provider(options.project, options.job, options.prepared);
+    if (typeof provider.reconcile !== "function") throw new Error("This delivery provider does not support job reconciliation.");
+    return provider.reconcile(options);
+  }
 }

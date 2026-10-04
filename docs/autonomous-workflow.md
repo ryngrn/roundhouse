@@ -265,6 +265,15 @@ commit, branch and remote before resuming. A persisted delivery intent
 always requires reconciliation. Database loss stops autonomous work; there is no
 stale local fallback or offline multi-master mode.
 
+For a blocked `push_branch` job whose candidate worktree is still present, an
+operator may run `roundhouse depot reconcile-job --state-dir STATE --config CONFIG
+--id JOB_ID`. Roundhouse first refuses an existing divergent remote job branch,
+then reruns the configured checks against the exact retained commit. It can create
+only the original `codex/roundhouse-JOB_ID` branch with a normal non-force push
+when that branch is absent, and marks the job Shipped only after `ls-remote`
+confirms the exact commit. It cannot redirect recovery to a default/protected
+branch or change the job's original `push_branch` authority.
+
 This is at-most-one automatic execution with explicit crash reconciliation, not
 an exactly-once guarantee across external Git servers. External side effects are
 recorded as intent before shipping and confirmed before Shipped is persisted.

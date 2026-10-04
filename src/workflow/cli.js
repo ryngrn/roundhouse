@@ -20,9 +20,9 @@ export async function depotCommand(argv) {
     "reevaluate-import": ["--state-dir", "--config", "--id", "--revision", "--actor"],
     "retry-triage": ["--state-dir", "--config", "--id", "--revision", "--actor"],
     stop: ["--state-dir", "--project"], resume: ["--state-dir", "--project", "--actor", "--note"],
-    recover: ["--state-dir"],
+    recover: ["--state-dir"], "reconcile-job": ["--state-dir", "--config", "--id"],
   };
-  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|triage|run|status|outbox|approve|clarify|reevaluate-import|retry-triage|stop|resume|recover> --state-dir <path> [...]");
+  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|triage|run|status|outbox|approve|clarify|reevaluate-import|retry-triage|stop|resume|recover|reconcile-job> --state-dir <path> [...]");
   const options = {};
   for (let i = 0; i < rest.length; i += 2) {
     if (!allowed[command].includes(rest[i]) || !rest[i + 1] || rest[i + 1].startsWith("--") || options[rest[i]]) throw new Error(`Invalid option ${rest[i]}`);
@@ -67,6 +67,7 @@ export async function depotCommand(argv) {
   if (command === "clarify") return await engine.clarify(required("--id"), required("--text"), required("--actor"), options["--project"]);
   if (command === "reevaluate-import") return engine.reevaluateImported(required("--id"), Number(required("--revision")), required("--actor"));
   if (command === "retry-triage") return engine.retryTriage(required("--id"), Number(required("--revision")), required("--actor"));
+  if (command === "reconcile-job") return engine.reconcileJob(required("--id"));
   if (command === "triage") {
     const limit = options["--limit"] === undefined ? Infinity : Number(options["--limit"]);
     if (!(limit === Infinity || (Number.isInteger(limit) && limit > 0))) throw new Error("--limit must be a positive integer.");

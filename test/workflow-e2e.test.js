@@ -9,7 +9,7 @@ import { Engine } from "../src/workflow/engine.js";
 import { Store } from "../src/workflow/store.js";
 import { git } from "../src/workflow/delivery.js";
 import { GitDelivery } from "../src/workflow/delivery.js";
-import { statusView } from "../src/workflow/cli.js";
+import { depotCommand, statusView } from "../src/workflow/cli.js";
 import { once } from "node:events";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
 
@@ -423,6 +423,80 @@ test("integration: crash-like persistence failure after a successful push never 
   assert.equal(git(h.remote, ["rev-parse", job.delivery_intent.branch]), job.delivery_intent.commit);
   assert.equal(job.reconciliation.status, "required");
   assert.equal((await engine.run()).executed, 0);
+});
+
+function retainBlockedCandidate(h, job) {
+  git(h.repository, ["push", "origin", "--delete", job.delivery_intent.branch]);
+  h.store.change((data) => {
+    const retained = data.jobs[job.id];
+    retained.shipping = undefined;
+    retained.delivery_intent.reconciliation = { required_on_interruption: true, status: "pending_delivery" };
+    retained.reconciliation = { required: true, status: "required", intent: structuredClone(retained.delivery_intent),
+      reason: "Simulated uncertain delivery outcome." };
+    retained.attempts.at(-1).status = "blocked";
+    retained.attempts.at(-1).run.status = "blocked";
+    h.store.move(data, retained, "Blocked", "Simulated uncertain delivery outcome.");
+    data.projects.example.blocked = true;
+  });
+}
+
+test("integration: reconcile-job reverifies and normally pushes only an absent expected job branch", async () => {
+  const h = harness(); h.submit("recover an absent branch");
+  const shipped = Object.values((await h.engine.run()).jobs)[0];
+  const commit = shipped.delivery_intent.commit;
+  retainBlockedCandidate(h, shipped);
+
+  const reconciled = await depotCommand(["reconcile-job", "--state-dir", h.store.directory,
+    "--config", h.configFile, "--id", shipped.id]);
+
+  assert.equal(reconciled.state, "Shipped");
+  assert.equal(reconciled.reverification.kind, "reverification");
+  assert.equal(reconciled.reverification.passed, true);
+  assert.equal(reconciled.reverification.commit, commit);
+  assert.equal(reconciled.shipping.pushed, true);
+  assert.equal(reconciled.shipping.branch, `codex/roundhouse-${shipped.id}`);
+  assert.equal(git(h.remote, ["rev-parse", reconciled.shipping.branch]), commit);
+  assert.equal(h.store.read().projects.example.blocked, false);
+});
+
+test("integration: reconcile-job refuses a divergent remote job branch without changing it", async () => {
+  const h = harness(); h.submit("refuse a divergent branch");
+  const shipped = Object.values((await h.engine.run()).jobs)[0];
+  retainBlockedCandidate(h, shipped);
+  fs.writeFileSync(path.join(h.repository, "divergent.txt"), "remote state\n");
+  git(h.repository, ["add", "divergent.txt"]);
+  git(h.repository, ["commit", "-m", "Divergent remote state"]);
+  const divergent = git(h.repository, ["rev-parse", "HEAD"]);
+  git(h.repository, ["push", "origin", `${divergent}:refs/heads/${shipped.delivery_intent.branch}`]);
+
+  await assert.rejects(h.engine.reconcileJob(shipped.id), /diverged/);
+
+  const retained = h.store.read().jobs[shipped.id];
+  assert.equal(retained.state, "Blocked");
+  assert.equal(retained.shipping, undefined);
+  assert.equal(retained.reverification, undefined);
+  assert.equal(git(h.remote, ["rev-parse", shipped.delivery_intent.branch]), divergent);
+});
+
+test("integration: reconcile-job cannot change policy or redirect delivery to the default branch", async () => {
+  const policyHarness = harness(); policyHarness.submit("preserve recovery policy");
+  const policyJob = Object.values((await policyHarness.engine.run()).jobs)[0];
+  retainBlockedCandidate(policyHarness, policyJob);
+  policyHarness.config.projects[0].policy.shipping = "commit_only";
+  await assert.rejects(policyHarness.engine.reconcileJob(policyJob.id), /remain push_branch/);
+  assert.equal(policyHarness.store.read().jobs[policyJob.id].state, "Blocked");
+
+  const branchHarness = harness(); branchHarness.submit("preserve recovery branch");
+  const branchJob = Object.values((await branchHarness.engine.run()).jobs)[0];
+  retainBlockedCandidate(branchHarness, branchJob);
+  const mainCommit = git(branchHarness.remote, ["rev-parse", "main"]);
+  branchHarness.store.change((data) => {
+    data.jobs[branchJob.id].prepared.branch = "main";
+    data.jobs[branchJob.id].delivery_intent.branch = "main";
+  });
+  await assert.rejects(branchHarness.engine.reconcileJob(branchJob.id), /original Roundhouse job branch/);
+  assert.equal(git(branchHarness.remote, ["rev-parse", "main"]), mainCommit);
+  assert.equal(branchHarness.store.read().jobs[branchJob.id].state, "Blocked");
 });
 
 test("integration: post-shipping human gate pauses queue without relabeling shipped work Review", async () => {
