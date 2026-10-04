@@ -11,11 +11,20 @@ const filterSchema = z.object(filterShape).strict();
 
 const jobSchema = z.object({
   id: z.string(), title: z.string(), state: z.string(), reason: z.string().nullable(), attempts: z.number(), agent_role: z.string(), shipping: z.unknown().nullable(),
+  job_id: z.string(), item_id: z.string(), project: z.string(), project_id: z.string(), active: z.boolean(), display_state: z.string(), runtime: z.string(),
+  machine: z.string().nullable(), agent: z.string().nullable(), workspace_mode: z.string().nullable(), working_directory: z.string().nullable(),
+  remote_run_id: z.union([z.string(), z.number()]).nullable(), remote_execution: z.unknown().nullable(), owning_node: z.string().nullable(),
   latest_run: z.unknown().nullable(), latest_failure: z.string().nullable(), reconciliation: z.unknown().nullable(),
   allocation: z.unknown().nullable(), allocation_history: z.array(z.unknown()),
   eligibility: z.unknown().nullable(), recurrence: z.unknown().nullable(), occurrence_key: z.string().nullable(),
   action_policy: z.unknown().nullable(), human_task: z.unknown().nullable(),
-});
+}).passthrough();
+const activeJobSchema = z.object({
+  id: z.string(), job_id: z.string(), item_id: z.string(), project: z.string(), project_id: z.string(), title: z.string(), state: z.string(),
+  active: z.literal(true), display_state: z.string(), runtime: z.string(), machine: z.string().nullable(), agent: z.string().nullable(),
+  workspace_mode: z.string().nullable(), working_directory: z.string().nullable(), remote_run_id: z.union([z.string(), z.number()]).nullable(),
+  remote_execution: z.unknown().nullable(), owning_node: z.string().nullable(),
+}).passthrough();
 const completionReportSchema = z.object({
   summary: z.string(), design_decisions: z.array(z.string()),
   evidence: z.array(z.object({ id: z.string(), passed: z.boolean(), summary: z.string(), artifacts: z.array(z.string()) })),
@@ -129,7 +138,7 @@ const toolSpecs = [
     title: "Get Roundhouse work status",
     description: "Get compact durable status for Roundhouse Depot items and their work. Use this for progress or outcome questions; it does not change or advance work.",
     input: filterSchema,
-    output: z.object({ items: z.array(itemSchema), next_departure: nextDepartureSchema.nullable(), allocations: allocationsSchema,
+    output: z.object({ items: z.array(itemSchema), active_jobs: z.array(activeJobSchema), next_departure: nextDepartureSchema.nullable(), allocations: allocationsSchema,
       projects: z.record(z.string(), z.unknown()),
       project_candidates: z.record(z.string(), z.unknown()), system_metadata: z.record(z.string(), z.unknown()) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

@@ -1,6 +1,51 @@
 import { displayState } from "./presentation.js";
 import { assessJobEligibility } from "./scheduling.js";
 
+const activeJobStates = new Set(["Executing", "Verification", "Rework"]);
+
+function remoteRunIdentity(remoteExecution) {
+  if (!remoteExecution) return null;
+  return remoteExecution.execution_id ?? remoteExecution.run_id ?? remoteExecution.remote_run_id ?? null;
+}
+
+function jobView(job) {
+  const attempt = job.attempts?.at(-1) ?? null;
+  const remoteExecution = attempt?.execution?.remote_execution ?? job.remote_execution ?? null;
+  const configuredHerdr = job.project_context?.herdr ?? null;
+  const runtime = remoteExecution?.runtime ?? job.project_context?.runtime ?? "local";
+  return {
+    id: job.id,
+    job_id: job.id,
+    item_id: job.parent_id,
+    project: job.project_id,
+    project_id: job.project_id,
+    title: job.work?.title ?? "Untitled work",
+    state: job.state,
+    active: activeJobStates.has(job.state),
+    display_state: displayState(job.state),
+    reason: job.history?.at(-1)?.reason ?? null,
+    attempts: job.attempts?.length ?? 0,
+    latest_run: attempt?.run ?? null,
+    latest_failure: attempt?.failure ?? null,
+    reconciliation: job.reconciliation ?? job.delivery_intent?.reconciliation ?? attempt?.run?.reconciliation ?? null,
+    agent_role: job.agent_role ?? "general",
+    runtime,
+    machine: remoteExecution?.machine_selector ?? configuredHerdr?.machine ?? null,
+    agent: remoteExecution?.agent_target ?? configuredHerdr?.agent ?? null,
+    workspace_mode: remoteExecution?.workspace_mode ?? configuredHerdr?.workspace_mode ?? (runtime === "herdr" ? "shared_worktree" : null),
+    working_directory: remoteExecution?.working_directory ?? configuredHerdr?.working_directory ?? null,
+    remote_run_id: remoteRunIdentity(remoteExecution),
+    remote_execution: remoteExecution,
+    owning_node: job.owning_node ?? null,
+    shipping: job.shipping ?? null,
+    eligibility: job.eligibility ?? null,
+    recurrence: job.recurrence ?? null,
+    occurrence_key: job.occurrence_key ?? null,
+    action_policy: job.action_policy ?? null,
+    human_task: job.human_task ?? null,
+  };
+}
+
 function aggregateState(item, jobs) {
   if (!jobs.length) return item.state;
   if (jobs.every((job) => job.state === "Shipped")) return "Shipped";
@@ -119,23 +164,9 @@ export function itemView(data, item) {
       outputs: deliveries.flatMap((delivery) => delivery.outputs.map((output) => ({ ...output,
         reference: `${delivery.reference}/${encodeURIComponent(output.path)}` }))) },
     jobs: jobs.map((job) => ({
-      id: job.id,
-      title: job.work.title,
-      state: job.state,
-      reason: job.history.at(-1)?.reason ?? null,
-      attempts: job.attempts.length,
-      latest_run: job.attempts.at(-1)?.run ?? null,
-      latest_failure: job.attempts.at(-1)?.failure ?? null,
-      reconciliation: job.reconciliation ?? job.delivery_intent?.reconciliation ?? null,
-      agent_role: job.agent_role ?? "general",
-      shipping: job.shipping ?? null,
+      ...jobView(job),
       allocation: allocationDecisions.findLast((decision) => decision.job_id === job.id) ?? null,
       allocation_history: allocationDecisions.filter((decision) => decision.job_id === job.id),
-      eligibility: job.eligibility ?? null,
-      recurrence: job.recurrence ?? null,
-      occurrence_key: job.occurrence_key ?? null,
-      action_policy: job.action_policy ?? null,
-      human_task: job.human_task ?? null,
     })),
   };
 }
@@ -165,8 +196,15 @@ export function statusView(data, filters = {}) {
   const decisions = (scheduler?.decisions ?? [])
     .filter((decision) => !filters.project_id || decision.project_id === filters.project_id)
     .filter((decision) => !filters.item_id || data.jobs[decision.job_id]?.parent_id === filters.item_id);
+  const active_jobs = Object.values(data.jobs)
+    .filter((job) => activeJobStates.has(job.state))
+    .filter((job) => !filters.project_id || job.project_id === filters.project_id)
+    .filter((job) => !filters.item_id || job.parent_id === filters.item_id)
+    .map(jobView)
+    .sort((a, b) => String(a.project_id).localeCompare(String(b.project_id)) || a.job_id.localeCompare(b.job_id));
   return {
     items,
+    active_jobs,
     next_departure,
     allocations: {
       capacity: scheduler?.capacity ?? null,
