@@ -115,7 +115,7 @@ export async function startRoundhouseServer({
   wakeSubscribeUrl = process.env.ROUNDHOUSE_WAKE_SUBSCRIBE_URL,
   wakeSource,
   remoteRelay,
-  relayConnectionString = process.env.ROUNDHOUSE_RELAY_DATABASE_URL,
+  relayConnectionString,
 } = {}) {
   const defaults = defaultLocalPaths();
   const state = stateDirectory ?? defaults.stateDirectory;
@@ -124,7 +124,9 @@ export async function startRoundhouseServer({
   const ownedStore = service ? null : await openStorage({ directory: state });
   const roundhouse = service ?? new RoundhouseService({ store: ownedStore, configFile: config });
   await roundhouse.initialize?.();
-  const relay = remoteRelay === undefined ? openPostgresRelay({ connectionString: relayConnectionString }) : remoteRelay;
+  const relay = remoteRelay === undefined
+    ? (relayConnectionString ? openPostgresRelay({ connectionString: relayConnectionString }) : null)
+    : remoteRelay;
   const ownsRelay = remoteRelay === undefined && Boolean(relay);
   const events = new McpEventBroker({ service: roundhouse });
   const eventDrain = new McpEventDrainScheduler({ broker: events, onError: (error) => process.stderr.write(`MCP event delivery: ${error.message}\n`) });
@@ -353,6 +355,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       stateDirectory: process.env.ROUNDHOUSE_STATE_DIR ?? defaults.stateDirectory,
       configFile: process.env.ROUNDHOUSE_CONFIG ?? defaults.configFile,
       host, port, allowedHosts,
+      relayConnectionString: process.env.ROUNDHOUSE_RELAY_DATABASE_URL,
     });
     process.stderr.write(`Roundhouse listening at ${running.url}; canonical URL http://roundhouse\n`);
   } catch (error) {
