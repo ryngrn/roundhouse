@@ -13,6 +13,7 @@ const jobSchema = z.object({
   id: z.string(), title: z.string(), state: z.string(), reason: z.string().nullable(), attempts: z.number(), agent_role: z.string(), shipping: z.unknown().nullable(),
   latest_run: z.unknown().nullable(), latest_failure: z.string().nullable(), reconciliation: z.unknown().nullable(),
   allocation: z.unknown().nullable(), allocation_history: z.array(z.unknown()),
+  eligibility: z.unknown().nullable(), recurrence: z.unknown().nullable(), occurrence_key: z.string().nullable(),
 });
 const completionReportSchema = z.object({
   summary: z.string(), design_decisions: z.array(z.string()),
