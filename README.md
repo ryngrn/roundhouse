@@ -92,6 +92,11 @@ is ready to use after committing local changes. It verifies dependencies, tests,
 syntax, and whitespace, then pushes a job branch and stops after one job. Its paths
 are repository-relative and contain no personal machine settings.
 
+Herdr projects can use shared-worktree execution or explicit `machine_local` mode
+for a repository that exists only on the fleet machine. See the
+[shipping and verification contract](docs/autonomous-workflow.md#shipping-and-verification)
+and the iMac example in [the autonomy configuration](config/autonomy.example.yaml).
+
 - [Behavior, configuration, approvals, recovery, and test contracts](docs/autonomous-workflow.md)
 - [Architecture and adapter extension guide](docs/architecture.md)
 - [Event-driven control-plane wake and read boundaries](docs/event-driven-control-plane.md)
@@ -103,8 +108,9 @@ The local adapter reserves configured execution slots inside one worker lease an
 uses an independent triage lease. PostgreSQL workers atomically reserve compatible
 capacity with item, job, project, repository, delivery, and counted-resource
 constraints across nodes. Both support priority/fair queue order, bounded triage backoff and
-rework, exact-identity duplicate guards, and conservative crash recovery. Remote
-execution runtimes, PR creation, and merging remain extension points. Deployment is available through
+rework, exact-identity duplicate guards, and conservative crash recovery. Local is
+the default execution runtime; projects may opt into Herdr using an existing
+configured remote agent. PR creation and merging remain extension points. Deployment is available through
 the fixture provider for proof and a configurable command provider for real systems.
 
 ## Earlier interfaces

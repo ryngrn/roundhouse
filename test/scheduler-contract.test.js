@@ -120,6 +120,22 @@ test("scheduler contract: repository requirements are independent from capabilit
   }, filename), /requires a repository/);
 });
 
+test("scheduler contract: machine-local Herdr validates and satisfies a remote repository requirement", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-machine-local-config-"));
+  const filename = path.join(directory, "config.yaml");
+  const configured = validateWorkflowConfig(manifest(undefined, {
+    runtime: "herdr",
+    herdr: { machine: "iMac", agent: "roundhouse-imac", workspace_mode: "machine_local", working_directory: "/home/ryngrn/kmac" },
+    policy: { allow_autonomous: true, shipping: "push_branch" },
+  }), filename).projects[0];
+  assert.equal(configured.repository, undefined);
+  assert.equal(executionEligibility(configured, { capacity: 1, capabilities: [], resource_limits: {}, providers: [{ id: "local-project", capabilities: [] }] }).eligible, true);
+  assert.deepEqual(executionReservation(configured).repository, { required: true, configured: true, value: "/home/ryngrn/kmac" });
+  assert.deepEqual(executionReservation(configured).locks, ["remote-repository:iMac:/home/ryngrn/kmac"]);
+  assert.throws(() => validateWorkflowConfig(manifest(undefined, { runtime: "herdr", herdr: { machine: "iMac", agent: "roundhouse-imac", workspace_mode: "machine_local", working_directory: "relative" } }), filename), /must be absolute/);
+  assert.throws(() => validateWorkflowConfig(manifest(directory, { herdr: { machine: "iMac", agent: "roundhouse-imac" } }), filename), /cannot configure herdr/);
+});
+
 test("scheduler contract: slice capabilities produce durable, specific ineligibility evidence", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-slice-capability-"));
   const store = new Store(directory);

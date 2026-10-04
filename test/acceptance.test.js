@@ -6,12 +6,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { startRoundhouseServer } from "../src/server/app-server.js";
+import { overviewFor as appOverview, startRoundhouseServer } from "../src/server/app-server.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { Store } from "../src/workflow/store.js";
 import { Engine } from "../src/workflow/engine.js";
 import { git } from "../src/workflow/delivery.js";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
+import { harness } from "./support/harness.js";
 
 const provider = fileURLToPath(new URL("./support/acceptance-provider.mjs", import.meta.url));
 const greenFamilyProvider = fileURLToPath(new URL("./support/green-family-cemetery-provider.mjs", import.meta.url));
@@ -108,6 +109,48 @@ async function overview(base) {
   return response.json();
 }
 
+async function waitFor(predicate, message) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const value = await predicate();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(message);
+}
+
+function gatedMachineLocalHerdr(root) {
+  const filename = path.join(root, "acceptance-herdr.mjs");
+  const started = path.join(root, "remote-started");
+  const release = path.join(root, "release-remote");
+  const report = path.join(root, "remote-report");
+  fs.writeFileSync(filename, `#!/usr/bin/env node
+import fs from "node:fs";
+const args = process.argv.slice(2);
+if (args[0] === "machine" && args[1] === "status") {
+  console.log(JSON.stringify({ id: "imac-fixture", status: "online" }));
+} else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "prompt") {
+  const prompt = args[5];
+  const token = prompt.match(/ROUNDHOUSE_RESULT_([0-9a-f-]+)=/)[1];
+  const branch = prompt.match(/branch (codex\\/roundhouse-[a-z0-9-]+)/)[1];
+  fs.writeFileSync(${JSON.stringify(started)}, "started");
+  while (!fs.existsSync(${JSON.stringify(release)})) await new Promise((resolve) => setTimeout(resolve, 10));
+  fs.writeFileSync(${JSON.stringify(report)}, "ROUNDHOUSE_RESULT_" + token + "=" + JSON.stringify({
+    passed: true,
+    summary: "The iMac fixture verified, committed, and pushed the work.",
+    commit: "a".repeat(40),
+    branch,
+    pushed: true,
+    checks: [{ id: "feature", passed: true, summary: "The remote feature check passed." }]
+  }));
+  console.log(JSON.stringify({ execution_id: "imac-run-42", status: "completed" }));
+} else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "read") {
+  process.stdout.write(fs.readFileSync(${JSON.stringify(report)}, "utf8"));
+} else process.exit(64);
+`);
+  fs.chmodSync(filename, 0o700);
+  return { filename, started, release };
+}
+
 test("acceptance: desktop and menu consume authoritative active-job details without presenting a Herdr queue", () => {
   const html = fs.readFileSync(new URL("../src/web/index.html", import.meta.url), "utf8");
   const web = fs.readFileSync(new URL("../src/web/app.js", import.meta.url), "utf8");
@@ -120,6 +163,74 @@ test("acceptance: desktop and menu consume authoritative active-job details with
   assert.match(menu, /Machine-local execution on/);
   assert.match(menu, /Remote run:/);
   assert.doesNotMatch(`${html}\n${web}\n${menu}`, /Herdr queue/i);
+});
+
+test("acceptance: dispatched machine-local Herdr work is app-visible while a local job completes, then becomes terminal", async () => {
+  const h = harness({ policy: { max_rework_attempts: 0 } });
+  const fixture = gatedMachineLocalHerdr(h.root);
+  const local = { ...h.config.projects[0], id: "z-local", name: "Local regression" };
+  const remote = {
+    ...h.config.projects[0],
+    id: "a-imac",
+    name: "iMac fixture",
+    repository: undefined,
+    context_sources: [],
+    runtime: "herdr",
+    herdr: {
+      bin: fixture.filename,
+      machine: "iMac",
+      agent: "roundhouse-imac",
+      workspace_mode: "machine_local",
+      working_directory: "/home/ryngrn/kmac",
+    },
+  };
+  h.config.projects = [remote, local];
+  h.config.execution.capacity = 2;
+  h.store.submit({ text: "remote machine-local acceptance", project_id: remote.id, source: "fixture", actor: "acceptance" }, "remote-machine-local");
+  h.store.submit({ text: "parallel local regression", project_id: local.id, source: "fixture", actor: "acceptance" }, "parallel-local");
+
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const loop = { status: () => ({ running: true }) };
+  const run = h.engine.run();
+
+  await waitFor(() => fs.existsSync(fixture.started), "The machine-local fixture was not dispatched.");
+  await waitFor(() => Object.values(h.store.read().jobs).some((job) => job.project_id === local.id && job.state === "Shipped"),
+    "The parallel local regression job did not ship while Herdr was active.");
+  const active = await appOverview(service, loop);
+  assert.deepEqual(active.counts, { needs_you: 0, active: 1, queued: 0, completed: 1, blocked: 0 });
+  assert.equal(active.active_jobs.length, 1);
+  assert.deepEqual({
+    project: active.active_jobs[0].project,
+    state: active.active_jobs[0].state,
+    display_state: active.active_jobs[0].display_state,
+    runtime: active.active_jobs[0].runtime,
+    machine: active.active_jobs[0].machine,
+    agent: active.active_jobs[0].agent,
+    workspace_mode: active.active_jobs[0].workspace_mode,
+    working_directory: active.active_jobs[0].working_directory,
+  }, {
+    project: "a-imac",
+    state: "Executing",
+    display_state: "Chugging along…",
+    runtime: "herdr",
+    machine: "iMac",
+    agent: "roundhouse-imac",
+    workspace_mode: "machine_local",
+    working_directory: "/home/ryngrn/kmac",
+  });
+
+  fs.writeFileSync(fixture.release, "release");
+  const result = await run;
+  assert.equal(Object.values(result.jobs).find((job) => job.project_id === remote.id).state, "Shipped");
+  assert.equal(Object.values(result.jobs).find((job) => job.project_id === local.id).state, "Shipped");
+  const terminal = await appOverview(service, loop);
+  assert.deepEqual(terminal.counts, { needs_you: 0, active: 0, queued: 0, completed: 2, blocked: 0 });
+  assert.equal(terminal.active_jobs.length, 0);
+  const remoteTerminal = terminal.items.find((item) => item.project === remote.id).jobs[0];
+  assert.equal(remoteTerminal.state, "Shipped");
+  assert.equal(remoteTerminal.remote_run_id, "imac-run-42");
+  assert.equal(remoteTerminal.shipping.source, "remote_agent_report");
+  assert.equal(remoteTerminal.shipping.verification.independently_verified, false);
 });
 
 test("acceptance: Green Family Cemetery workflow is repository-free, durable, scheduled, and approval-gated", async () => {

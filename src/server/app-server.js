@@ -76,7 +76,7 @@ function localStorageIdentity(store) {
   };
 }
 
-async function overviewFor(roundhouse, loop) {
+export async function overviewFor(roundhouse, loop) {
   const storage = await roundhouse.getStorageStatus();
   if (!storage.connected) return { items: [], active_jobs: [], needs_you: [], counts: {},
     connection: { local_service: "connected", storage, worker: loop.status() } };

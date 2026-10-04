@@ -262,6 +262,18 @@ work there, commits a candidate, and tests that exact commit. Changes made durin
 verification invalidate it. Failed candidates are retained locally but not shipped.
 The execution runtime is instructed not to push; delivery belongs to Roundhouse.
 
+Projects default to `runtime: local`. An opt-in `runtime: herdr` project names an
+existing machine and agent; Roundhouse probes that saved machine and never falls
+back to local execution. Shared-worktree mode preserves local verification and
+delivery. In `machine_local` mode, `herdr.working_directory` is an absolute path on
+the fleet machine and a local `repository` may be omitted. The remote agent runs
+the configured checks, commits `codex/roundhouse-<job-id>`, and performs only the
+configured `commit_only` or `push_branch` delivery. Its nonce-correlated report
+must contain the full commit, exact branch, push result, summary, and one passing
+record for every applicable verification ID. Roundhouse exposes the active machine,
+agent, directory, and remote identity, then stores terminal evidence with
+`independently_verified: false` because it cannot inspect the remote filesystem.
+
 Implemented delivery policies:
 
 - `push_branch` (default): push the verified commit to its job branch and confirm

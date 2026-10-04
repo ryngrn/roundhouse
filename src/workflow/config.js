@@ -37,6 +37,10 @@ function normalizeProjects(raw, root, execution) {
     check(!ids.has(project.id), `Duplicate project id: ${project.id}`);
     ids.add(project.id);
     check(["active", "paused", "archived"].includes(project.status), "Invalid project status.");
+    const runtime = project.runtime ?? "local";
+    check(["local", "herdr"].includes(runtime), "Runtime must be local or herdr.");
+    const herdr = runtime === "herdr" ? { workspace_mode: "shared_worktree", ...(project.herdr ?? {}) } : null;
+    const machineLocal = herdr?.workspace_mode === "machine_local";
     const weight = project.weight ?? 1;
     const max_concurrent_runs = project.max_concurrent_runs ?? 1;
     check(Number.isFinite(weight) && weight > 0, "Project weight must be positive.");
@@ -76,7 +80,7 @@ function normalizeProjects(raw, root, execution) {
     check(Number.isInteger(policy.max_rework_attempts) && policy.max_rework_attempts >= 0 && policy.max_rework_attempts <= 10, "Rework limit must be 0–10.");
     const repository_required = project.repository_required ?? true;
     check(typeof repository_required === "boolean", `Project ${project.id} repository_required must be boolean.`);
-    check(!repository_required || nonempty(project.repository), `Project ${project.id} requires a repository.`);
+    check(!repository_required || machineLocal || nonempty(project.repository), `Project ${project.id} requires a repository.`);
     check(repository_required || ["durable_output", "artifact"].includes(policy.shipping),
       `Repository-free project ${project.id} requires durable_output shipping.`);
     const repository = nonempty(project.repository) ? fs.realpathSync(path.resolve(root, project.repository)) : undefined;
@@ -94,11 +98,23 @@ function normalizeProjects(raw, root, execution) {
     const executor = project.executor ?? { kind: "codex", bin: "codex" };
     check(["codex", "command"].includes(executor.kind), "Unknown executor.");
     if (executor.kind === "command") check(commandValid(executor.command), "Executor requires an argv array.");
-    check((project.runtime ?? "local") === "local", "Only the local runtime is installed.");
+    if (runtime === "herdr") {
+      check(plainObject(project.herdr), `Project ${project.id} requires herdr configuration.`);
+      check(nonempty(herdr.machine), `Project ${project.id} requires a nonempty herdr.machine selector.`);
+      check(nonempty(herdr.agent), `Project ${project.id} requires a nonempty herdr.agent target.`);
+      check(herdr.bin === undefined || nonempty(herdr.bin), `Project ${project.id} herdr.bin must be nonempty.`);
+      check(["shared_worktree", "machine_local"].includes(herdr.workspace_mode), `Project ${project.id} herdr.workspace_mode must be shared_worktree or machine_local.`);
+      if (machineLocal) {
+        check(nonempty(herdr.working_directory), `Project ${project.id} machine_local Herdr requires a nonempty herdr.working_directory.`);
+        check(path.posix.isAbsolute(herdr.working_directory) || path.win32.isAbsolute(herdr.working_directory), `Project ${project.id} herdr.working_directory must be absolute.`);
+        check(["commit_only", "push_branch"].includes(policy.shipping), `Project ${project.id} machine_local Herdr supports only commit_only or push_branch shipping.`);
+      }
+    } else check(project.herdr === undefined, `Project ${project.id} cannot configure herdr while runtime is local.`);
     const timeout_ms = project.timeout_ms ?? 120 * 60_000;
     check(Number.isInteger(timeout_ms) && timeout_ms > 0, "timeout_ms must be positive.");
     const self_hosting = project.self_hosting ?? null;
     if (self_hosting !== null) {
+      check(!machineLocal, "Machine-local Herdr projects cannot use local self_hosting worktree controls.");
       check(repository, "Self-hosted projects require a configured repository.");
       check(self_hosting && typeof self_hosting === "object" && !Array.isArray(self_hosting), "self_hosting must be an object.");
       check(self_hosting.isolated_worktree === true, "Self-hosted projects must require an isolated worktree.");
@@ -151,7 +167,7 @@ function normalizeProjects(raw, root, execution) {
     }
     return {
       ...project, ...(repository ? { repository } : {}), repository_required, verification, weight, max_concurrent_runs, required_capabilities, resource_requirements, metric_definitions, policy, executor,
-      runtime: "local", timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
+      runtime, ...(herdr ? { herdr } : {}), timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
       ...(deployment ? { deployment } : {}),
     };

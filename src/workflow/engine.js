@@ -4,7 +4,7 @@ import { digest } from "../storage/repository.js";
 import { record } from "./state.js";
 import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
-import { LocalRuntime, CommandVerifier } from "./runtime.js";
+import { createRuntime, CommandVerifier } from "./runtime.js";
 import { CapabilityRuntime } from "./execution-adapters.js";
 import { DeliveryRouter } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
@@ -13,6 +13,34 @@ import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, sele
 import { dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 import { assessJobEligibility, ensureNextOccurrence, initializeJobSchedule, nextScheduledWake, recordConditionSignal } from "./scheduling.js";
 import { actionPolicy, approvalScope, assertProviderAuthorized, classifyAction } from "./actions.js";
+
+const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
+
+function machineLocalEvidence(project, job, execution) {
+  const report = execution.remote_report;
+  if (!report || typeof report !== "object" || Array.isArray(report)) throw new Error("Machine-local Herdr execution did not return structured remote evidence.");
+  if (report.passed !== true || typeof report.summary !== "string" || !report.summary.trim()) throw new Error("Machine-local Herdr agent did not attest successful completion.");
+  if (typeof report.commit !== "string" || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(report.commit)) throw new Error("Machine-local Herdr evidence requires a full lowercase Git commit SHA.");
+  const expectedBranch = `codex/roundhouse-${job.id}`;
+  if (report.branch !== expectedBranch) throw new Error(`Machine-local Herdr evidence must report branch ${expectedBranch}.`);
+  if (typeof report.pushed !== "boolean") throw new Error("Machine-local Herdr evidence requires an explicit pushed boolean.");
+  if (project.policy.shipping === "push_branch" && !report.pushed) throw new Error("Machine-local Herdr evidence did not confirm the required push.");
+  if (project.policy.shipping === "commit_only" && report.pushed) throw new Error("Machine-local Herdr exceeded commit_only shipping authority.");
+  if (!Array.isArray(report.checks)) throw new Error("Machine-local Herdr evidence requires verification checks.");
+  const expected = project.verification.filter((rule) => !rule.roles || rule.roles.includes(job.agent_role ?? "general")).map((rule) => rule.id);
+  if (report.checks.length !== expected.length || new Set(report.checks.map((check) => check?.id)).size !== report.checks.length ||
+    expected.some((id) => !report.checks.some((check) => check?.id === id))) throw new Error("Machine-local Herdr evidence must report every applicable configured verification ID exactly once.");
+  const checks = report.checks.map((check) => {
+    if (check.passed !== true || typeof check.summary !== "string" || !check.summary.trim()) throw new Error(`Machine-local verification ${check.id} did not report passing evidence.`);
+    return { id: check.id, source: "remote_agent", passed: true, summary: check.summary.trim(), artifacts: Array.isArray(check.artifacts) ? check.artifacts : [] };
+  });
+  const at = new Date().toISOString();
+  const verification = { commit: report.commit, at, passed: true, independently_verified: false, checks };
+  const shipping = { repository: null, working_directory: project.herdr.working_directory, branch: report.branch, commit: report.commit,
+    policy: project.policy.shipping, remote: report.pushed ? project.remote : null, pr_url: null, deployment: null, verification,
+    timestamp: at, pushed: report.pushed, source: "remote_agent_report", summary: report.summary.trim(), remote_execution: execution.remote_execution };
+  return { verification, shipping };
+}
 
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
@@ -61,7 +89,7 @@ export class Engine {
     config.triage = triage;
     config.execution = { capacity: 1, capabilities: [], resource_limits: {}, ...(config.execution ?? {}) };
     const providers = config.execution.providers ?? [{ id: "local-project", kind: "project", capabilities: [...config.execution.capabilities] }];
-    runtime ??= new CapabilityRuntime(providers, new LocalRuntime());
+    runtime ??= new CapabilityRuntime(providers, createRuntime());
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
   processRecorder(collection, id) {
@@ -677,6 +705,7 @@ export class Engine {
     } finally { release(); }
   }
   async execute(id, project, jobLease = null) {
+    const machineLocal = isMachineLocal(project);
     let releaseRepo;
     let projectLease;
     let heartbeatTimer;
@@ -692,14 +721,18 @@ export class Engine {
         }, Math.max(1_000, Math.floor(this.store.leaseMs / 3)));
         heartbeatTimer.unref?.();
       }
-      releaseRepo = this.shipping.lock(project, (await this.store.read()).jobs[id]);
-      await this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? `postgresql:project/${project.id}`; });
+      if (!machineLocal) {
+        releaseRepo = this.shipping.lock(project, (await this.store.read()).jobs[id]);
+        await this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? `postgresql:project/${project.id}`; });
+      }
       const state = await this.store.read();
       const job = state.jobs[id];
       if (digest(executionProjectContext(project, job.agent_role ?? "general")) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
       assertProviderAuthorized(job);
-      if (!this.shipping.supports(project, job)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
-      const prepared = this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
+      if (!machineLocal && !this.shipping.supports(project, job)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
+      const prepared = machineLocal
+        ? { kind: "machine_local", branch: `codex/roundhouse-${job.id}`, working_directory: project.herdr.working_directory }
+        : this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
       await this.store.change((data) => { data.jobs[id].prepared = prepared; });
       for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {
         const current = (await this.store.read()).jobs[id];
@@ -721,7 +754,15 @@ export class Engine {
           assertProviderAuthorized(providerJob);
           const execution = await this.runtime.execute({ project, job: providerJob, workspace: prepared.workspace,
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
-            previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id) });
+            previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id),
+            onRemoteStart: (remote_execution) => this.store.change((data) => {
+              const j = data.jobs[id];
+              j.attempts.at(-1).execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
+              if (machineLocal) j.delivery_intent = { mode: "machine_local", working_directory: project.herdr.working_directory,
+                machine_selector: project.herdr.machine, agent_target: project.herdr.agent, branch: `codex/roundhouse-${id}`,
+                policy: project.policy.shipping, report_token: remote_execution.report_token,
+                recorded_at: new Date().toISOString(), reconciliation: { required_on_interruption: true, status: "remote_execution" } };
+            }) });
           await this.store.change((data) => {
             const recorded = data.jobs[id].attempts.at(-1);
             recorded.execution = execution;
@@ -729,7 +770,31 @@ export class Engine {
             recorded.status = execution.passed ? "executed" : "failed";
             recorded.run.status = recorded.status;
           });
-          if (!execution.passed) throw new Error(`Executor failed (exit ${execution.exit_code}).`);
+          if (!execution.passed) throw new Error(execution.error ?? `Executor failed (exit ${execution.exit_code}).`);
+          if (machineLocal) {
+            const { verification, shipping } = machineLocalEvidence(project, providerJob, execution);
+            await this.store.change((data) => {
+              const j = data.jobs[id];
+              const recorded = j.attempts.at(-1);
+              recorded.status = "verifying";
+              recorded.run.status = "verifying";
+              this.store.move(data, j, "Verification", "Recording remote machine-local verification evidence.");
+              recorded.verification = verification;
+              recorded.status = "completed";
+              recorded.run.status = "completed";
+              recorded.finished_at = shipping.timestamp;
+              j.shipping = shipping;
+              j.delivery_intent.reconciliation = { required_on_interruption: false, status: "confirmed", confirmed_at: shipping.timestamp };
+              j.processes = [];
+              this.store.move(data, j, "Shipped", "Remote agent reported verified machine-local delivery; Roundhouse did not inspect the remote filesystem.");
+              data.projects[project.id] = { ...data.projects[project.id], last_commit: shipping.commit,
+                active: false, review_required: project.policy.review_after_shipping };
+              const parent = data.items[j.parent_id];
+              const { successor } = ensureNextOccurrence(data, j, { now: this.clock() });
+              if (!successor && parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = shipping.timestamp;
+            });
+            return true;
+          }
           const snapshot = this.shipping.snapshot({ project, job: providerJob, prepared, execution, run });
           await this.store.change((data) => {
             data.jobs[id].attempts.at(-1).snapshot = snapshot;
@@ -785,6 +850,11 @@ export class Engine {
           });
           return true;
         } catch (error) {
+          if (machineLocal) {
+            await this.store.change((data) => { data.jobs[id].attempts.at(-1).failure = error.message; });
+            await this.block(id, `Machine-local Herdr outcome requires explicit reconciliation and will not be replayed automatically: ${error.message}`);
+            return true;
+          }
           if (deliveryAttempted) { await this.block(id, `Delivery outcome requires reconciliation: ${error.message}`); return true; }
           failure = error.message;
         }
@@ -864,7 +934,7 @@ export class Engine {
             projectId,
             stopped,
             activeReservations: [...reservations.values()],
-            canDispatch: (project) => this.shipping.canDispatch?.(project) ?? true,
+            canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
             now: this.clock(),
           }).filter((entry) => !reservations.has(entry.job.id));
           if (waiting.length) await this.store.change((data) => recordDispatchRound(data, waiting, null,
@@ -877,7 +947,7 @@ export class Engine {
           projectId,
           stopped,
           activeReservations: [...reservations.values()],
-          canDispatch: (project) => this.shipping.canDispatch?.(project) ?? true,
+          canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
           now: this.clock(),
         });
         // Weighted turns across projects; only each project's queue head may compete.
@@ -956,7 +1026,7 @@ export class Engine {
           projectId,
           stopped,
           activeReservations,
-          canDispatch: (project) => this.shipping.canDispatch?.(project) ?? true,
+          canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
           now: this.clock(),
         }).filter((entry) => !snapshot.jobs[entry.job.id]?.owning_node_id
           && !["Executing", "Verification", "Rework"].includes(snapshot.jobs[entry.job.id]?.state));
@@ -976,7 +1046,7 @@ export class Engine {
         projectId,
         stopped,
         activeReservations,
-        canDispatch: (project) => this.shipping.canDispatch?.(project) ?? true,
+        canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
         now: this.clock(),
       });
       const candidates = considerations.filter((entry) => entry.eligible)

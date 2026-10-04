@@ -55,3 +55,24 @@ projects:
         command: [npm, test]
       - id: checks
         command: [npm, run, check]
+
+  # A machine-local Herdr project works in an existing repository on the fleet
+  # machine. Roundhouse records the correlated remote check/commit/push report;
+  # it does not claim to inspect that remote filesystem independently.
+  # - id: kmac-imac
+  #   name: Kmac on iMac
+  #   purpose: Deliver approved Kmac work on the iMac repository.
+  #   success_state: Remote checks pass and the exact job branch is pushed.
+  #   status: active
+  #   runtime: herdr
+  #   herdr:
+  #     machine: iMac
+  #     agent: roundhouse-imac
+  #     workspace_mode: machine_local
+  #     working_directory: /home/ryngrn/kmac
+  #   policy:
+  #     allow_autonomous: true
+  #     shipping: push_branch
+  #   verification:
+  #     - id: tests
+  #       command: [npm, test]

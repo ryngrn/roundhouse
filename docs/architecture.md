@@ -146,13 +146,15 @@ completion. Roundhouse owns verification and shipping. This supports wrapping
 another installed agent today without changing the engine. Commands must remain
 foreground and return when their work is done.
 
-For Herdr/remote/cloud execution, implement the runtime interface and inject it
-into Engine. Add runtime selection/validation to configuration. Return correlated
-operational results and provide durable reconciliation for remote session IDs;
-local PID recovery is insufficient for remote work. The current Git delivery
-provider expects a local workspace, so a remote implementation must expose that
-workspace locally or supply a corresponding remote delivery provider. These
-adapters are extension boundaries, not claimed working integrations.
+`runtime: local` remains the default. Opt-in `runtime: herdr` requires an existing
+configured machine and agent. Shared-worktree mode keeps local verification and
+delivery ownership. `machine_local` instead requires an absolute remote working
+directory and supports `commit_only` or `push_branch`: the remote agent runs the
+configured checks, commits the exact job branch, performs the authorized delivery,
+and emits a nonce-correlated report. Roundhouse persists the machine, agent,
+directory, report token, remote run identity, evidence, and delivery intent. That
+evidence is explicitly marked as not independently verified because the remote
+filesystem is not locally visible. Herdr failures never fall back to local work.
 
 ## Extending delivery
 
