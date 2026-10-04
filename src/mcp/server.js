@@ -65,6 +65,8 @@ function result(structuredContent, text) {
   return { structuredContent, content: [{ type: "text", text }] };
 }
 
+export const CHATGPT_INTEGRATION_INSTRUCTIONS = "Capture intent verbatim. For every implementation request, use add_to_depot and return the durable Roundhouse item; never invoke or present a direct implementation runtime. Roundhouse alone owns project inference, material questions, planning, priority, readiness, executor selection, job claims, verification, and shipping. Use answer_question only with the current durable question revision. On event-capable ChatGPT surfaces, after add_to_depot succeeds, immediately subscribe this conversation to roundhouse.work.updated with the returned item ID; do not call a status tool first. Poll with get_work_status and get_needs_human when Events are unavailable.";
+
 const addToDepotInput = z.object({
   content: nonblank(100_000).describe("The original user intent to preserve verbatim, in ordinary language."),
   project_hint: nonblank(500).optional().describe("A non-authoritative project name or ID hint."),
@@ -87,14 +89,14 @@ const toolSpecs = [
   {
     name: "add_to_depot",
     title: "Add to Roundhouse Depot",
-    description: "Durably capture the user's original intent and relevant conversation context in Roundhouse. Use project_hint only when the user supplied a likely project; Roundhouse performs project inference and planning. On event-capable ChatGPT surfaces, immediately follow a successful submission by subscribing this conversation to roundhouse.work.updated with the returned item ID; do not request status first. Other clients can poll with get_work_status and get_needs_human.",
+    description: "The only supported intake for ChatGPT implementation requests. Durably capture the user's original intent and relevant conversation context as an authoritative Roundhouse Depot item; this tool does not execute work or select an executor. Use project_hint only when the user supplied a likely project; Roundhouse performs project inference, triage, planning, claiming, and dispatch. On event-capable ChatGPT surfaces, immediately follow a successful submission by subscribing this conversation to roundhouse.work.updated with the returned item ID; do not request status first. Other clients can poll with get_work_status and get_needs_human.",
     input: addToDepotInput,
     output: z.object({ item: itemSchema, durable: z.boolean(), follow: followSchema }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     run: async (service, input) => {
       const value = await service.addToDepot(input, { source: "chatgpt:mcp", actor: "chatgpt-user" });
       const structured = { ...value, follow: { event: "roundhouse.work.updated", arguments: { item_id: value.item.id, include_progress: false } } };
-      return result(structured, `Saved item ${value.item.id} in Roundhouse: ${value.item.state}. Event-capable ChatGPT conversations should now use the returned follow target; no status lookup is needed.`);
+      return result(structured, `Saved authoritative Depot item ${value.item.id} in Roundhouse: ${value.item.state}. Roundhouse triage and dispatch now own any implementation. Event-capable ChatGPT conversations should use the returned follow target; no status lookup is needed.`);
     },
   },
   {
@@ -164,7 +166,7 @@ export function roundhouseToolChangesState(name) {
 export function createRoundhouseMcpServer(service, { onMutation = async () => {} } = {}) {
   const server = new McpServer(
     { name: "roundhouse-depot", version: "0.1.0" },
-    { instructions: "Capture intent verbatim. Project hints are non-authoritative. Roundhouse owns inference, questions, planning, priority, readiness, and execution policy. Use answer_question only with the current durable question revision.", maxToolInputElements: 1_000 },
+    { instructions: CHATGPT_INTEGRATION_INSTRUCTIONS, maxToolInputElements: 1_000 },
   );
 
   for (const spec of toolSpecs) {

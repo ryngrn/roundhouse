@@ -1,8 +1,10 @@
 # ChatGPT → Roundhouse Depot
 
 This slice adds a thin ChatGPT adapter over the same authoritative Roundhouse
-Depot, decision, question, and readiness state used by the CLI and browser. ChatGPT does not
-infer projects, decompose work, assign priority, approve policy, or execute jobs.
+Depot, decision, question, and readiness state used by the CLI and browser. For an
+implementation request, ChatGPT's supported action is to create the authoritative
+Depot item. It does not infer projects, decompose work, assign priority, approve
+policy, choose or invoke an executor, or execute jobs.
 
 The server exposes four tools over MCP Streamable HTTP at `/mcp`:
 
@@ -16,6 +18,10 @@ The server exposes four tools over MCP Streamable HTTP at `/mcp`:
 
 There is intentionally no `list_projects` tool. Roundhouse can infer a project from
 configured project context, while a user-supplied project value remains a hint.
+There is also intentionally no implementation or executor tool. Codex, command,
+and other configured providers are private runtime adapters selected only after
+Roundhouse triage has produced Ready work and dispatch has authoritatively claimed
+the eligible job.
 
 The endpoint is dual-era: it preserves the existing MCP 1.x handshake for current
 clients and implements stateless MCP 2.0 protocol version `2026-07-28` for current

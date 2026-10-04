@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { RoundhouseService } from "../workflow/service.js";
-import { callRoundhouseTool, createRoundhouseMcpServer, roundhouseToolCatalog, roundhouseToolChangesState } from "./server.js";
+import { CHATGPT_INTEGRATION_INSTRUCTIONS, callRoundhouseTool, createRoundhouseMcpServer, roundhouseToolCatalog, roundhouseToolChangesState } from "./server.js";
 import { MCP_PROTOCOL_VERSION, McpEventBroker, McpEventDrainScheduler, principalFromRequest } from "./events.js";
 import { openStorage } from "../storage/open.js";
 
@@ -13,7 +13,7 @@ function requestHostname(value) {
 }
 
 const serverInfo = { name: "roundhouse-depot", version: "0.1.0" };
-const instructions = "Capture intent verbatim. Roundhouse owns project inference, material questions, planning, priority, readiness, execution policy, verification, and shipping. Use answer_question only with the current durable question revision. On event-capable ChatGPT surfaces, after add_to_depot succeeds, immediately subscribe this conversation to roundhouse.work.updated with the returned item ID; do not call a status tool first. Poll with get_work_status and get_needs_human when Events are unavailable.";
+const instructions = CHATGPT_INTEGRATION_INSTRUCTIONS;
 
 async function jsonRequest(request) {
   let body = "";

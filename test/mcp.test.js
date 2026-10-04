@@ -7,7 +7,7 @@ import { harness } from "./support/harness.js";
 import { Store } from "../src/workflow/store.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { startMcpHttpServer } from "../src/mcp/http-server.js";
-import { roundhouseToolCatalog } from "../src/mcp/server.js";
+import { CHATGPT_INTEGRATION_INSTRUCTIONS, callRoundhouseTool, roundhouseToolCatalog } from "../src/mcp/server.js";
 
 async function connected(h) {
   const service = new RoundhouseService({ store: h.store, engine: h.engine });
@@ -110,4 +110,55 @@ test("service: intake validation and idempotency conflicts stay in the normalize
   service.addToDepot({ content: "first", idempotency_key: "same" });
   assert.throws(() => service.addToDepot({ content: "changed", idempotency_key: "same" }), /different content/);
   assert.throws(() => service.getWorkStatus({ unknown: "filter" }), /Unknown filter/);
+});
+
+test("ChatGPT implementation intake persists before Roundhouse triage and claimed dispatch select an internal executor", async () => {
+  const h = harness();
+  let runtimeCalls = 0;
+  const internalRuntime = h.engine.runtime;
+  h.engine.runtime = {
+    execute: async (request) => {
+      runtimeCalls += 1;
+      return internalRuntime.execute(request);
+    },
+  };
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+
+  const submitted = await callRoundhouseTool(service, "add_to_depot", {
+    content: "Implement the supported ChatGPT change",
+    idempotency_key: "chatgpt-implementation-ownership",
+  });
+  const itemId = submitted.structuredContent.item.id;
+  let state = h.store.read();
+  assert.equal(submitted.structuredContent.durable, true);
+  assert.equal(state.items[itemId].state, "Depot");
+  assert.equal(state.items[itemId].input.source, "chatgpt:mcp");
+  assert.deepEqual(state.items[itemId].job_ids, []);
+  assert.equal(runtimeCalls, 0);
+
+  await h.engine.runTriage();
+  state = h.store.read();
+  assert.equal(state.items[itemId].state, "Ready");
+  assert.equal(state.items[itemId].job_ids.length, 1);
+  assert.equal(state.jobs[state.items[itemId].job_ids[0]].state, "Ready");
+  assert.equal(runtimeCalls, 0);
+
+  const dispatched = await h.engine.runDispatch();
+  state = h.store.read();
+  assert.equal(dispatched.executed, 1);
+  assert.equal(runtimeCalls, 1);
+  assert.equal(state.jobs[state.items[itemId].job_ids[0]].state, "Shipped");
+  assert.equal(state.jobs[state.items[itemId].job_ids[0]].attempts[0].run.provider_id, "local-project");
+});
+
+test("ChatGPT capability catalog exposes Depot ownership without a direct implementation runtime", () => {
+  assert.deepEqual(roundhouseToolCatalog.map((tool) => tool.name).sort(), [
+    "add_to_depot", "answer_question", "get_needs_human", "get_work_status",
+  ]);
+  const intake = roundhouseToolCatalog.find((tool) => tool.name === "add_to_depot");
+  assert.match(intake.description, /only supported intake for ChatGPT implementation requests/i);
+  assert.match(intake.description, /does not execute work or select an executor/i);
+  assert.match(CHATGPT_INTEGRATION_INSTRUCTIONS, /never invoke or present a direct implementation runtime/i);
+  assert.match(CHATGPT_INTEGRATION_INSTRUCTIONS, /executor selection, job claims/i);
+  assert.equal(roundhouseToolCatalog.some((tool) => /(?:execute|codex|herdr|implement)/i.test(tool.name)), false);
 });
