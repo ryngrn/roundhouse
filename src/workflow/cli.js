@@ -16,6 +16,8 @@ export async function depotCommand(argv) {
     triage: ["--state-dir", "--config", "--project", "--limit"],
     status: ["--state-dir"], outbox: ["--state-dir"],
     approve: ["--state-dir", "--config", "--id", "--revision", "--actor"],
+    "assign-human-task": ["--state-dir", "--config", "--id", "--revision", "--assignee", "--actor"],
+    "complete-human-task": ["--state-dir", "--config", "--id", "--revision", "--summary", "--evidence", "--actor"],
     clarify: ["--state-dir", "--config", "--id", "--text", "--actor", "--project"],
     "reevaluate-import": ["--state-dir", "--config", "--id", "--revision", "--actor"],
     "retry-triage": ["--state-dir", "--config", "--id", "--revision", "--actor"],
@@ -23,7 +25,7 @@ export async function depotCommand(argv) {
     stop: ["--state-dir", "--project"], resume: ["--state-dir", "--project", "--actor", "--note"],
     recover: ["--state-dir"],
   };
-  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|triage|run|status|outbox|approve|clarify|reevaluate-import|retry-triage|signal-condition|stop|resume|recover> --state-dir <path> [...]");
+  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|triage|run|status|outbox|approve|assign-human-task|complete-human-task|clarify|reevaluate-import|retry-triage|signal-condition|stop|resume|recover> --state-dir <path> [...]");
   const options = {};
   for (let i = 0; i < rest.length; i += 2) {
     if (!allowed[command].includes(rest[i]) || !rest[i + 1] || rest[i + 1].startsWith("--") || options[rest[i]]) throw new Error(`Invalid option ${rest[i]}`);
@@ -65,6 +67,10 @@ export async function depotCommand(argv) {
   }
   const engine = new Engine({ store, config: loadWorkflowConfig(path.resolve(required("--config"))) });
   if (command === "approve") return await engine.approve(required("--id"), Number(required("--revision")), required("--actor"));
+  if (command === "assign-human-task") return await engine.assignHumanTask(required("--id"), Number(required("--revision")), required("--assignee"), required("--actor"));
+  if (command === "complete-human-task") return await engine.completeHumanTask(required("--id"), Number(required("--revision")), {
+    actor: required("--actor"), summary: required("--summary"), evidence: JSON.parse(required("--evidence")),
+  });
   if (command === "clarify") return await engine.clarify(required("--id"), required("--text"), required("--actor"), options["--project"]);
   if (command === "reevaluate-import") return engine.reevaluateImported(required("--id"), Number(required("--revision")), required("--actor"));
   if (command === "retry-triage") return engine.retryTriage(required("--id"), Number(required("--revision")), required("--actor"));

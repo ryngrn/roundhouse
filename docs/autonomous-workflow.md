@@ -259,6 +259,26 @@ Approval cannot bypass insufficient confidence, missing checks, or conflicting
 configuration. Material project context/policy changes after a decision block
 execution and require a new decision. Clarification preserves original input.
 
+Every work slice has a trusted `action_class`: `read_only`, `consequential`, or
+`human_task`. Declaring the `external-action` capability sets a minimum class of
+`consequential`; declaring `human-task` sets `human_task`. A model or Depot request
+may elevate that classification but cannot downgrade it or waive approval.
+Read-only research may proceed under normal project autonomy. Consequential calls
+remain in Review until a human approval is bound to the current item revision,
+exact work digest, and project policy digest. The Engine validates that scope again
+immediately before invoking an execution provider, so stale approval cannot cross
+a revised action or policy boundary.
+
+Human tasks never run through an autonomous execution provider. Once their scope
+is approved, they remain in Review with a durable `unassigned` status. Assignment
+records the assignee, assigning actor, timestamp, and a new job revision. Completion
+must reference that current revision and include a human actor, summary, and at
+least one durable evidence reference. Only that explicit completion transition
+marks the job Shipped; it records `human-task` delivery evidence and no executor
+attempt. CLI integrations can use `depot assign-human-task` and
+`depot complete-human-task`; the JSON API exposes matching revision-guarded job
+endpoints.
+
 `depot stop --state-dir STATE --project PROJECT_ID` stops future jobs after the
 current attempt finishes. `depot resume --state-dir STATE --project PROJECT_ID
 --actor operator` clears a stop or post-shipping human gate. A blocked project also

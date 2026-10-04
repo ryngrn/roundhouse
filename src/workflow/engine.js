@@ -12,6 +12,7 @@ import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 import { dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 import { assessJobEligibility, ensureNextOccurrence, initializeJobSchedule, nextScheduledWake, recordConditionSignal } from "./scheduling.js";
+import { actionPolicy, approvalScope, assertProviderAuthorized, classifyAction } from "./actions.js";
 
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
@@ -272,8 +273,16 @@ export class Engine {
     item.job_ids = item.decision.work_items.map((work, index) => {
       const id = `${item.id}-${index + 1}`;
       if (data.jobs[id]) throw new Error("Work already exists for this decision.");
-      data.jobs[id] = record(id, { state: "Ready", parent_id: item.id, project_id: item.project_id,
+      const classification = classifyAction(work);
+      const approval = item.approval ? { actor: item.approval.actor, item_revision: item.approval.revision,
+        approved_at: item.approval.at, scope_digest: approvalScope(work, item.policy_hash) } : null;
+      const policy = actionPolicy(work, item.policy_hash, approval);
+      data.jobs[id] = record(id, { state: classification === "human_task" ? "Review" : "Ready", parent_id: item.id, project_id: item.project_id,
         work, agent_role: item.agent_role ?? "general", project_context: item.project_context, policy_hash: item.policy_hash,
+        action_policy: policy,
+        ...(classification === "human_task" ? { human_task: { status: "unassigned", assignment: null, evidence: [], completion: null,
+          history: [{ from: null, to: "unassigned", actor: item.approval?.actor ?? null, at: new Date().toISOString(),
+            reason: "Approved human work awaits durable assignment." }] } } : {}),
         input_digest: digest({ input: item.input, clarifications: item.clarifications, work }),
         dependencies: [...item.decision.dependencies, ...(index ? [`${item.id}-${index}`] : [])],
         attempts: [], processes: [], priority_rank: priorityRank(item), position: Object.keys(data.jobs).length });
@@ -298,7 +307,7 @@ export class Engine {
       // Human approval resolves authority, not missing verification or confidence.
       const decision = { ...item.decision, safe_to_execute: true, approval_required: false, decision: "execute" };
       const authorized = { ...contextualProject, policy: { ...contextualProject.policy, allow_autonomous: true, approval_required: false } };
-      const route = routeDecision(decision, [authorized], item.selected_project ?? item.input.project_id);
+      const route = routeDecision(decision, [authorized], item.selected_project ?? item.input.project_id, { approved: true });
       if (route.state !== "Ready") throw new Error(`Approval cannot bypass readiness: ${route.reason}`);
       const eligibilityReasons = decision.work_items.flatMap((work) => executionEligibility(authorized, this.config.execution,
         this.config.execution.capabilities, { work }).reasons);
@@ -316,6 +325,59 @@ export class Engine {
       this.createJobs(data, item);
       data.projects[item.project_id] ??= {};
       return item;
+    });
+  }
+  assignHumanTask(id, revision, assignee, actor) {
+    if (!assignee?.trim() || !actor?.trim()) throw new Error("Human-task assignment requires an assignee and actor.");
+    return this.store.change((data) => {
+      const job = data.jobs[id];
+      if (!job?.human_task || job.state !== "Review" || job.revision !== revision) {
+        throw new Error("Assignment must reference the current human-task revision.");
+      }
+      const policy = actionPolicy(job.work, job.policy_hash, job.action_policy?.approval ?? null);
+      if (!policy.authorized || policy.scope_digest !== job.action_policy?.scope_digest) {
+        throw new Error("Human task is not covered by current revision-bound approval.");
+      }
+      if (job.human_task.status === "completed") throw new Error("Completed human tasks cannot be reassigned.");
+      const now = new Date().toISOString();
+      const from = job.human_task.status;
+      job.human_task.status = "assigned";
+      job.human_task.assignment = { assignee: assignee.trim(), actor: actor.trim(), assigned_at: now };
+      job.human_task.history.push({ from, to: "assigned", actor: actor.trim(), assignee: assignee.trim(), at: now });
+      job.revision += 1;
+      job.updated_at = now;
+      return job;
+    });
+  }
+  completeHumanTask(id, revision, { actor, summary, evidence } = {}) {
+    if (!actor?.trim() || !summary?.trim()) throw new Error("Human-task completion requires an actor and summary.");
+    if (!Array.isArray(evidence) || !evidence.length || evidence.some((entry) => !entry || typeof entry !== "object" || Array.isArray(entry)
+      || !entry.kind?.trim() || !entry.reference?.trim())) {
+      throw new Error("Human-task completion requires durable evidence entries with kind and reference.");
+    }
+    return this.store.change((data) => {
+      const job = data.jobs[id];
+      if (!job?.human_task || job.state !== "Review" || job.revision !== revision) {
+        throw new Error("Completion must reference the current human-task revision.");
+      }
+      if (job.human_task.status !== "assigned" || !job.human_task.assignment) throw new Error("Human task must be assigned before completion.");
+      const policy = actionPolicy(job.work, job.policy_hash, job.action_policy?.approval ?? null);
+      if (!policy.authorized || policy.scope_digest !== job.action_policy.scope_digest) {
+        throw new Error("Human task approval is stale for its current scope.");
+      }
+      const now = new Date().toISOString();
+      job.human_task.evidence = structuredClone(evidence);
+      job.human_task.completion = { actor: actor.trim(), summary: summary.trim(), completed_at: now };
+      job.human_task.history.push({ from: "assigned", to: "completed", actor: actor.trim(), at: now, summary: summary.trim() });
+      job.human_task.status = "completed";
+      job.shipping = { provider: "human-task", policy: "human_completion", pushed: false, result: { summary: summary.trim() },
+        evidence: structuredClone(evidence), verification: { passed: true, checks: evidence.map((entry, index) => ({
+          id: `human-evidence-${index + 1}`, passed: true, source: "human", summary: `${entry.kind}: ${entry.reference}`,
+        })) }, timestamp: now };
+      this.store.move(data, job, "Shipped", `Human task completed by ${actor.trim()} with durable evidence.`);
+      const parent = data.items[job.parent_id];
+      if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = now;
+      return job;
     });
   }
   clarify(id, text, actor, projectId) {
@@ -635,6 +697,7 @@ export class Engine {
       const state = await this.store.read();
       const job = state.jobs[id];
       if (digest(executionProjectContext(project, job.agent_role ?? "general")) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
+      assertProviderAuthorized(job);
       if (!this.shipping.supports(project, job)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
       await this.store.change((data) => { data.jobs[id].prepared = prepared; });
@@ -654,7 +717,9 @@ export class Engine {
         let failure;
         let deliveryAttempted = false;
         try {
-          const execution = await this.runtime.execute({ project, job: current, workspace: prepared.workspace,
+          const providerJob = (await this.store.read()).jobs[id];
+          assertProviderAuthorized(providerJob);
+          const execution = await this.runtime.execute({ project, job: providerJob, workspace: prepared.workspace,
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
             previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id) });
           await this.store.change((data) => {
@@ -665,14 +730,14 @@ export class Engine {
             recorded.run.status = recorded.status;
           });
           if (!execution.passed) throw new Error(`Executor failed (exit ${execution.exit_code}).`);
-          const snapshot = this.shipping.snapshot({ project, job: current, prepared, execution, run });
+          const snapshot = this.shipping.snapshot({ project, job: providerJob, prepared, execution, run });
           await this.store.change((data) => {
             data.jobs[id].attempts.at(-1).snapshot = snapshot;
             data.jobs[id].attempts.at(-1).status = "verifying";
             data.jobs[id].attempts.at(-1).run.status = "verifying";
             this.store.move(data, data.jobs[id], "Verification", "Verifying committed candidate.");
           });
-          const verification = await this.verifier.verify({ project, job: current, workspace: prepared.workspace, commit: snapshot.commit, snapshot, execution,
+          const verification = await this.verifier.verify({ project, job: providerJob, workspace: prepared.workspace, commit: snapshot.commit, snapshot, execution,
             directory: path.join(this.store.directory, "evidence", id, String(attempt + 1)), onStart: this.processRecorder("jobs", id) });
           if (!this.shipping.unchanged(prepared, snapshot.version ?? snapshot.commit)) {
             verification.passed = false;
@@ -698,7 +763,7 @@ export class Engine {
           }
           let delivered;
           deliveryAttempted = true;
-          try { delivered = await this.shipping.ship({ project, job: current, prepared, snapshot, execution, run, verification, onStart: this.processRecorder("jobs", id) }); }
+          try { delivered = await this.shipping.ship({ project, job: providerJob, prepared, snapshot, execution, run, verification, onStart: this.processRecorder("jobs", id) }); }
           catch (error) { await this.block(id, `Delivery failed or uncertain: ${error.message}`); return true; }
           await this.store.change((data) => {
             const j = data.jobs[id];

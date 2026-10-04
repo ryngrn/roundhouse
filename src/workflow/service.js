@@ -97,6 +97,18 @@ export class RoundhouseService {
       mapResult(this.store.read(), (data) => ({ item: itemView(data, item), approved: true })));
   }
 
+  assignHumanTask({ id, expected_revision, assignee, actor = "local-user" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to assign human work.");
+    return mapResult(this.engine.assignHumanTask(id, expected_revision, assignee, actor), (job) =>
+      mapResult(this.store.read(), (data) => ({ item: itemView(data, data.items[job.parent_id]), human_task: job.human_task, assigned: true })));
+  }
+
+  completeHumanTask({ id, expected_revision, summary, evidence, actor = "local-user" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to complete human work.");
+    return mapResult(this.engine.completeHumanTask(id, expected_revision, { actor, summary, evidence }), (job) =>
+      mapResult(this.store.read(), (data) => ({ item: itemView(data, data.items[job.parent_id]), human_task: job.human_task, completed: true })));
+  }
+
   async answerQuestion({ id, answer, expected_revision, actor = "chatgpt-user" }) {
     if (!this.engine) throw new Error("Roundhouse configuration is required to re-evaluate an answer.");
     const item = await this.engine.answerQuestion(id, answer, actor, expected_revision);

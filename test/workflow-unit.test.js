@@ -7,6 +7,7 @@ import { transitions, record, transition } from "../src/workflow/state.js";
 import { validateDecision, routeDecision } from "../src/workflow/decision.js";
 import { Store, acquireLock } from "../src/workflow/store.js";
 import { runProcess } from "../src/workflow/runtime.js";
+import { actionPolicy, assertProviderAuthorized, classifyAction } from "../src/workflow/actions.js";
 
 const project = { id: "example", status: "active", executor: { kind: "command" }, runtime: "local",
   verification: [{ id: "tests" }], policy: { project_confidence: 0.8, execution_confidence: 0.9, allow_autonomous: true, shipping: "push_branch" } };
@@ -50,6 +51,19 @@ test("unit: slice contracts preserve explicit repository and capability requirem
   assert.throws(() => validateDecision({ ...structuredClone(decision), work_items: [{
     ...decision.work_items[0], repository_required: false, required_capabilities: ["Human Task"],
   }] }), /stable lowercase/);
+});
+test("unit: trusted action classification can be elevated but not downgraded", () => {
+  assert.equal(classifyAction({ action_class: "consequential", required_capabilities: ["research"] }), "consequential");
+  assert.equal(classifyAction({ action_class: "read_only", required_capabilities: ["external-action"] }), "consequential");
+  assert.equal(classifyAction({ action_class: "read_only", required_capabilities: ["external-action", "human-task"] }), "human_task");
+  const work = { title: "Send", required_capabilities: ["external-action"] };
+  const unapproved = actionPolicy(work, "policy");
+  assert.equal(unapproved.authorized, false);
+  assert.throws(() => assertProviderAuthorized({ work, policy_hash: "policy", action_policy: unapproved }), /requires current revision-bound approval/);
+  const approved = actionPolicy(work, "policy", { item_revision: 4, actor: "operator", approved_at: new Date().toISOString(), scope_digest: unapproved.scope_digest });
+  assert.equal(approved.authorized, true);
+  assert.doesNotThrow(() => assertProviderAuthorized({ work, policy_hash: "policy", action_policy: approved }));
+  assert.throws(() => assertProviderAuthorized({ work: { ...work, title: "Changed" }, policy_hash: "policy", action_policy: approved }), /requires current revision-bound approval/);
 });
 test("unit: idempotent submission, conflicting keys and owner-safe lock release", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-store-"));

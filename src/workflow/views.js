@@ -12,6 +12,7 @@ function aggregateState(item, jobs) {
 export function itemView(data, item) {
   const jobs = item.job_ids.map((id) => data.jobs[id]).filter(Boolean);
   const openQuestions = (item.questions ?? []).filter((question) => question.status === "open");
+  const pendingHumanTasks = jobs.filter((job) => job.human_task && job.human_task.status !== "completed");
   const openQuestion = openQuestions[0];
   const state = aggregateState(item, jobs);
   const currentJob = jobs.find((job) => job.state === state);
@@ -81,8 +82,9 @@ export function itemView(data, item) {
       id: question.id, decision_id: question.decision_id ?? null, decision_key: question.decision_key ?? null,
       revision: question.revision, kind: question.kind, prompt: question.prompt,
     })),
-    needs_you: openQuestions.length > 0,
-    display_state: displayState(state, { needsYou: openQuestions.length > 0, waiting: waitingJob?.eligibility.kind ?? false }),
+    needs_you: openQuestions.length > 0 || pendingHumanTasks.length > 0,
+    display_state: displayState(state, { needsYou: openQuestions.length > 0 || pendingHumanTasks.length > 0, waiting: waitingJob?.eligibility.kind ?? false }),
+    human_tasks: jobs.filter((job) => job.human_task).map((job) => ({ job_id: job.id, revision: job.revision, ...job.human_task })),
     waiting: waitingJob ? {
       kind: waitingJob.eligibility.kind,
       status: waitingJob.eligibility.status,
@@ -132,6 +134,8 @@ export function itemView(data, item) {
       eligibility: job.eligibility ?? null,
       recurrence: job.recurrence ?? null,
       occurrence_key: job.occurrence_key ?? null,
+      action_policy: job.action_policy ?? null,
+      human_task: job.human_task ?? null,
     })),
   };
 }

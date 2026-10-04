@@ -113,6 +113,15 @@ and control room project these records after restart instead of interpreting log
 
 ## Extending execution
 
+Action authority is a separate boundary from provider selection. Each normalized
+slice is classified as `read_only`, `consequential`, or `human_task`; capability
+semantics impose a trusted minimum classification. Consequential provider calls
+require approval bound to the item revision, exact work digest, and project policy
+digest, which is rechecked immediately before provider invocation. Human tasks are
+never dispatched to an execution adapter. They use revision-guarded assignment and
+evidenced completion records, and only explicit human completion can produce their
+`human-task` shipping record.
+
 Execution providers are registered under `execution.providers` and selected only by
 the union of project and slice capability requirements. A provider must support the
 entire set; Roundhouse never guesses an order for composing partial providers. The

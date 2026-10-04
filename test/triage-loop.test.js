@@ -109,15 +109,15 @@ test("readiness retains work while reporting unavailable slice capabilities", as
   const h = harness();
   const item = h.submit("research, schedule, and publish the result");
   const engine = engineWith(h, async ({ projects }) => executable(projects[0], {
-    work_items: [{ title: "Publish research", outcome: "A sourced artifact is coordinated and published.",
-      repository_required: true, required_capabilities: ["research", "scheduling", "artifact", "external-action"], acceptance_criteria: [] }],
+    work_items: [{ title: "Prepare research", outcome: "A sourced artifact is prepared for later coordination.",
+      repository_required: true, required_capabilities: ["research", "scheduling", "artifact"], acceptance_criteria: [] }],
   }));
   await engine.runTriage();
   const ready = itemView(h.store.read(), h.store.read().items[item.id]);
   assert.equal(ready.state, "Ready");
   assert.equal(ready.execution_eligible, false);
   assert.equal(ready.execution_ineligibility_reasons[0].code, "capability_mismatch");
-  assert.match(ready.execution_ineligibility_reasons[0].message, /research, scheduling, artifact, external-action/);
+  assert.match(ready.execution_ineligibility_reasons[0].message, /research, scheduling, artifact/);
   const dispatched = await engine.runDispatch();
   assert.equal(dispatched.executed, 0);
   assert.equal(itemView(dispatched, dispatched.items[item.id]).jobs[0].allocation.reason.code, "capability_mismatch");
