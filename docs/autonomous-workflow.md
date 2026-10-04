@@ -140,9 +140,21 @@ Projects default to `runtime: local`. An opt-in `runtime: herdr` project must se
 nonempty `herdr.machine` and `herdr.agent` values. Roundhouse probes the saved
 machine and drives that existing agent through Herdr; it does not provision an
 agent and never falls back to local execution on reachability, authentication, or
-version failure. The remote agent must see the same absolute prepared worktree
-path and content so its edits are available for Roundhouse's local snapshot and
-verification. Herdr does not ship the result.
+version failure. `herdr.workspace_mode` defaults to `shared_worktree`, preserving
+the existing contract: the agent sees Roundhouse's prepared path, and Roundhouse
+snapshots, verifies, commits, and ships locally.
+
+Set `herdr.workspace_mode: machine_local` when the repository exists only on the
+fleet machine. This requires an absolute `herdr.working_directory`; for example,
+machine `iMac`, agent `roundhouse-imac`, and `/home/ryngrn/kmac`. A local
+`repository` may be omitted, in which case local context and skill source files
+cannot be configured. The prompt names only the remote directory and delegates
+the configured checks, commit, and `commit_only` or `push_branch` delivery to the
+remote agent. It must finish with a nonce-correlated report containing the exact
+job branch, full commit SHA, push status, summary, and one passing evidence record
+for every applicable verification ID. Roundhouse stores this as remote attestation
+with `independently_verified: false`; it does not pretend the remote filesystem is
+locally visible. Missing or invalid evidence blocks immediately and is not retried.
 
 Implemented delivery policies:
 
@@ -217,6 +229,12 @@ An interrupted Herdr prompt is also Blocked and is never replayed automatically;
 its persisted machine selector, agent target, and returned remote correlation data
 are the starting point for explicit operator reconciliation. Recorded process IDs
 belong to the local Herdr CLI client, not to the remote execution.
+
+For machine-local recovery, the persisted identity also includes workspace mode,
+remote working directory, report token, and delivery intent. `depot reconcile-job`
+can record an operator's explicit remote commit/branch attestation, but Roundhouse
+marks that evidence as not independently verified because it cannot inspect the
+remote repository.
 
 With the local adapter, state writes are atomic fsynced snapshots and recovery
 refuses live/remote filesystem owners. With PostgreSQL, nodes use expiring heartbeat

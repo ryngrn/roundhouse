@@ -10,6 +10,34 @@ import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 
+const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
+
+function machineLocalEvidence(project, job, execution) {
+  const report = execution.remote_report;
+  if (!report || typeof report !== "object" || Array.isArray(report)) throw new Error("Machine-local Herdr execution did not return structured remote evidence.");
+  if (report.passed !== true || typeof report.summary !== "string" || !report.summary.trim()) throw new Error("Machine-local Herdr agent did not attest successful completion.");
+  if (typeof report.commit !== "string" || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(report.commit)) throw new Error("Machine-local Herdr evidence requires a full lowercase Git commit SHA.");
+  const expectedBranch = `codex/roundhouse-${job.id}`;
+  if (report.branch !== expectedBranch) throw new Error(`Machine-local Herdr evidence must report branch ${expectedBranch}.`);
+  if (typeof report.pushed !== "boolean") throw new Error("Machine-local Herdr evidence requires an explicit pushed boolean.");
+  if (project.policy.shipping === "push_branch" && !report.pushed) throw new Error("Machine-local Herdr evidence did not confirm the required push.");
+  if (project.policy.shipping === "commit_only" && report.pushed) throw new Error("Machine-local Herdr exceeded commit_only shipping authority.");
+  if (!Array.isArray(report.checks)) throw new Error("Machine-local Herdr evidence requires verification checks.");
+  const expected = project.verification.filter((rule) => !rule.roles || rule.roles.includes(job.agent_role ?? "general")).map((rule) => rule.id);
+  if (report.checks.length !== expected.length || new Set(report.checks.map((check) => check?.id)).size !== report.checks.length ||
+    expected.some((id) => !report.checks.some((check) => check?.id === id))) throw new Error("Machine-local Herdr evidence must report every applicable configured verification ID exactly once.");
+  const checks = report.checks.map((check) => {
+    if (check.passed !== true || typeof check.summary !== "string" || !check.summary.trim()) throw new Error(`Machine-local verification ${check.id} did not report passing evidence.`);
+    return { id: check.id, source: "remote_agent", passed: true, summary: check.summary.trim(), artifacts: Array.isArray(check.artifacts) ? check.artifacts : [] };
+  });
+  const at = new Date().toISOString();
+  const verification = { commit: report.commit, at, passed: true, independently_verified: false, checks };
+  const shipping = { repository: null, working_directory: project.herdr.working_directory, branch: report.branch, commit: report.commit,
+    policy: project.policy.shipping, remote: report.pushed ? project.remote : null, pr_url: null, deployment: null, verification,
+    timestamp: at, pushed: report.pushed, source: "remote_agent_report", summary: report.summary.trim(), remote_execution: execution.remote_execution };
+  return { verification, shipping };
+}
+
 function fallbackDecisionKey(decision) {
   if (decision.decision_key) return decision.decision_key;
   const text = [decision.decision, decision.project, decision.executor, decision.runtime, decision.shipping_policy, decision.question]
@@ -600,13 +628,18 @@ export class Engine {
         }, Math.max(1_000, Math.floor(this.store.leaseMs / 3)));
         heartbeatTimer.unref?.();
       }
-      releaseRepo = this.shipping.lock(project);
-      await this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? `postgresql:project/${project.id}`; });
+      const machineLocal = isMachineLocal(project);
+      if (!machineLocal) {
+        releaseRepo = this.shipping.lock(project);
+        await this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? `postgresql:project/${project.id}`; });
+      }
       const state = await this.store.read();
       const job = state.jobs[id];
       if (digest(executionProjectContext(project, job.agent_role ?? "general")) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
-      if (!this.shipping.supports(project)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
-      const prepared = this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
+      if (!machineLocal && !this.shipping.supports(project)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
+      const prepared = machineLocal
+        ? { workspace_mode: "machine_local", working_directory: project.herdr.working_directory, machine_selector: project.herdr.machine, agent_target: project.herdr.agent }
+        : this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
       await this.store.change((data) => { data.jobs[id].prepared = prepared; });
       for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {
         const current = (await this.store.read()).jobs[id];
@@ -624,9 +657,27 @@ export class Engine {
             previous_failure: current.attempts.at(-1) ?? null, onStart: this.processRecorder("jobs", id),
             onRemoteStart: (remote_execution) => this.store.change((data) => {
               data.jobs[id].attempts.at(-1).execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
+              if (machineLocal) data.jobs[id].delivery_intent = { mode: "machine_local", working_directory: project.herdr.working_directory,
+                machine_selector: project.herdr.machine, agent_target: project.herdr.agent, branch: `codex/roundhouse-${id}`, policy: project.policy.shipping };
             }) });
           await this.store.change((data) => { data.jobs[id].attempts.at(-1).execution = execution; });
           if (!execution.passed) throw new Error(execution.error ?? `Executor failed (exit ${execution.exit_code}).`);
+          if (machineLocal) {
+            const { verification, shipping } = machineLocalEvidence(project, current, execution);
+            await this.store.change((data) => {
+              const j = data.jobs[id];
+              this.store.move(data, j, "Verification", "Recording remote machine-local verification evidence.");
+              j.attempts.at(-1).verification = verification;
+              j.shipping = shipping;
+              j.processes = [];
+              this.store.move(data, j, "Shipped", "Remote agent reported verified machine-local delivery; Roundhouse did not inspect the remote filesystem.");
+              data.projects[project.id] = { ...data.projects[project.id], last_commit: shipping.commit,
+                active: false, review_required: project.policy.review_after_shipping };
+              const parent = data.items[j.parent_id];
+              if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = shipping.timestamp;
+            });
+            return true;
+          }
           const snapshot = this.shipping.snapshot({ project, job: current, prepared });
           await this.store.change((data) => {
             data.jobs[id].attempts.at(-1).snapshot = snapshot;
@@ -666,6 +717,8 @@ export class Engine {
           });
           return true;
         } catch (error) {
+          if (machineLocal) { await this.store.change((data) => { data.jobs[id].attempts.at(-1).failure = error.message; });
+            await this.block(id, `Machine-local Herdr outcome requires explicit reconciliation and will not be replayed automatically: ${error.message}`); return true; }
           if (deliveryAttempted) { await this.block(id, `Delivery outcome requires reconciliation: ${error.message}`); return true; }
           failure = error.message;
         }
@@ -693,9 +746,34 @@ export class Engine {
     const job = snapshot.jobs[id];
     if (!job || job.state !== "Blocked") throw new Error("Only a Blocked job can be reconciled.");
     const project = this.config.projects.find((candidate) => candidate.id === job.project_id);
-    if (!project?.repository) throw new Error("Job reconciliation requires a configured project repository.");
+    if (!project) throw new Error("Job reconciliation requires a configured project.");
     const expectedBranch = job.prepared?.branch ?? `codex/roundhouse-${job.id}`;
     if (branch !== expectedBranch) throw new Error(`Reconciliation branch must be ${expectedBranch}.`);
+    if (isMachineLocal(project)) {
+      if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(commit)) throw new Error("Machine-local reconciliation requires a full lowercase Git commit SHA.");
+      const at = new Date().toISOString();
+      return await this.store.change((data) => {
+        const current = data.jobs[id];
+        if (!current || current.state !== "Blocked") throw new Error("Job changed while reconciliation was being recorded.");
+        const verification = { commit, at, passed: true, independently_verified: false,
+          checks: [{ id: "operator-remote-reconciliation", source: "operator", passed: true, summary: note.trim() }] };
+        current.reconciliation = { status: "completed", actor: actor.trim(), note: note.trim(), commit, branch, verified_at: at,
+          workspace_mode: "machine_local", working_directory: project.herdr.working_directory, independently_verified: false };
+        const attempt = current.attempts?.at(-1);
+        if (attempt) attempt.reconciliation = current.reconciliation;
+        current.shipping = { repository: null, working_directory: project.herdr.working_directory, branch, commit,
+          policy: project.policy.shipping, remote: project.policy.shipping === "push_branch" ? project.remote : null, pr_url: null,
+          deployment: null, verification, timestamp: at, pushed: project.policy.shipping === "push_branch", source: "operator_remote_attestation" };
+        current.processes = [];
+        this.store.move(data, current, "Shipped", `Operator reconciled machine-local delivery by explicit remote attestation: ${note.trim()}`);
+        data.projects[current.project_id] = { ...data.projects[current.project_id], last_commit: commit, blocked: false, active: false,
+          resume_approval: { actor: actor.trim(), note: note.trim(), at } };
+        const parent = data.items[current.parent_id];
+        if (parent?.job_ids?.every((key) => data.jobs[key]?.state === "Shipped")) parent.completed_at = at;
+        return current;
+      });
+    }
+    if (!project.repository) throw new Error("Job reconciliation requires a configured project repository.");
     const resolvedCommit = git(project.repository, ["rev-parse", "--verify", `${commit}^{commit}`]);
     if (resolvedCommit !== commit) throw new Error("Reconciliation requires the full exact commit SHA.");
     const branchCommit = git(project.repository, ["rev-parse", "--verify", `${branch}^{commit}`]);
@@ -757,7 +835,7 @@ export class Engine {
       while (executed < this.config.max_jobs_per_run) {
         const state = await this.store.read();
         const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review")
-          && (this.shipping.canDispatch?.(p) ?? true)
+          && (isMachineLocal(p) || (this.shipping.canDispatch?.(p) ?? true))
           && Object.values(state.jobs).filter((job) => job.project_id === p.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < p.max_concurrent_runs);
         // Weighted turns across projects; each project's own order is preserved.
         candidates.sort((a, b) => ((state.projects[a.id]?.turns ?? 0) / a.weight) - ((state.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
@@ -801,7 +879,7 @@ export class Engine {
         && project.status === "active" && !stopped.has(project.id) && !snapshot.projects[project.id]?.blocked
         && !snapshot.projects[project.id]?.stop && !snapshot.projects[project.id]?.review_required
         && !Object.values(snapshot.items).some((item) => item.project_id === project.id && item.state === "Review")
-        && (this.shipping.canDispatch?.(project) ?? true)
+        && (isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true))
         && Object.values(snapshot.jobs).filter((job) => job.project_id === project.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < project.max_concurrent_runs);
       candidates.sort((a, b) => ((snapshot.projects[a.id]?.turns ?? 0) / a.weight) - ((snapshot.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
       if (!candidates.length) break;

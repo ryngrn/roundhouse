@@ -89,6 +89,11 @@ is ready to use after committing local changes. It verifies dependencies, tests,
 syntax, and whitespace, then pushes a job branch and stops after one job. Its paths
 are repository-relative and contain no personal machine settings.
 
+Herdr projects can use the backward-compatible shared-worktree mode or explicit
+`machine_local` mode for a repository that exists only on the fleet machine. See
+the [shipping and verification contract](docs/autonomous-workflow.md#shipping-and-verification)
+and the concrete iMac example in [the autonomy configuration](config/autonomy.example.yaml).
+
 - [Behavior, configuration, approvals, recovery, and test contracts](docs/autonomous-workflow.md)
 - [Architecture and adapter extension guide](docs/architecture.md)
 - [Event-driven control-plane wake and read boundaries](docs/event-driven-control-plane.md)

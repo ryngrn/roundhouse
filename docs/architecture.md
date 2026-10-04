@@ -103,21 +103,28 @@ another installed agent today without changing the engine. Commands must remain
 foreground and return when their work is done.
 
 `runtime: local` remains the default. `runtime: herdr` is an opt-in execution
-adapter requiring both `herdr.machine` and `herdr.agent`; the initial adapter
-deliberately drives an existing operator-configured agent instead of guessing how
-to provision one. It probes `herdr machine status <machine> --json`, then invokes
+adapter requiring both `herdr.machine` and `herdr.agent`; it deliberately drives
+an existing operator-configured agent instead of guessing how to provision one.
+`herdr.workspace_mode` defaults to `shared_worktree`. The alternate
+`machine_local` mode requires an absolute `herdr.working_directory` on the remote
+machine. It probes `herdr machine status <machine> --json`, then invokes
 `herdr --machine <machine> agent prompt <agent> <prompt> --wait --timeout <ms>`.
 Every argument is passed directly without a shell. Machine, agent, and returned
 remote IDs/status are persisted as `remote_execution` attempt metadata before and
 after the prompt. A failure is explicit and never falls back to local execution.
 
-Herdr owns only live remote execution. Roundhouse still prepares the worktree and
-owns workflow, local verification, reconciliation, commits, and shipping. The
-configured remote machine and agent must therefore be able to access the same
-absolute prepared worktree path and content visible to Roundhouse. This adapter
-does not provide remote delivery. A local Herdr CLI PID identifies only the local
-client process; interruption remains Blocked until an operator reconciles the
-persisted remote identity.
+In `shared_worktree`, Herdr owns only live remote execution. Roundhouse still
+prepares the worktree and owns local verification, reconciliation, commits, and
+shipping, so the agent must access the same absolute path and content. In
+`machine_local`, Roundhouse does not prepare, inspect, or verify a local worktree.
+The remote agent works only in the configured directory, runs the configured
+checks, commits the exact job branch, performs the configured `commit_only` or
+`push_branch` delivery, and emits a nonce-correlated structured report. Roundhouse
+records that report with `independently_verified: false`; missing, malformed, or
+failed evidence blocks the job without replay. Machine/agent/directory/run identity
+and delivery intent are durable before dispatch, and completion identity is stored
+afterward. A local Herdr CLI PID identifies only the client process; interruption
+remains Blocked until explicit operator reconciliation of the remote result.
 
 ## Extending delivery
 

@@ -49,8 +49,12 @@ function normalizeProjects(raw, root) {
     check(shippingModes.includes(policy.shipping), "Unknown shipping policy.");
     check(["stop_after_job", "continue_project_queue"].includes(policy.continuation), "Unknown continuation policy.");
     check(Number.isInteger(policy.max_rework_attempts) && policy.max_rework_attempts >= 0 && policy.max_rework_attempts <= 10, "Rework limit must be 0–10.");
-    check(nonempty(project.repository), `Project ${project.id} requires repository for this software runtime.`);
-    const repository = fs.realpathSync(path.resolve(root, project.repository));
+    const runtime = project.runtime ?? "local";
+    check(["local", "herdr"].includes(runtime), "Runtime must be local or herdr.");
+    const herdr = runtime === "herdr" ? { workspace_mode: "shared_worktree", ...(project.herdr ?? {}) } : null;
+    const machineLocal = herdr?.workspace_mode === "machine_local";
+    if (!machineLocal) check(nonempty(project.repository), `Project ${project.id} requires repository for this software runtime.`);
+    const repository = nonempty(project.repository) ? fs.realpathSync(path.resolve(root, project.repository)) : null;
     check(Array.isArray(project.verification) && project.verification.length > 0, "At least one verification command is required.");
     const verificationKeys = new Set();
     for (const rule of project.verification) {
@@ -63,13 +67,17 @@ function normalizeProjects(raw, root) {
     const executor = project.executor ?? { kind: "codex", bin: "codex" };
     check(["codex", "command"].includes(executor.kind), "Unknown executor.");
     if (executor.kind === "command") check(commandValid(executor.command), "Executor requires an argv array.");
-    const runtime = project.runtime ?? "local";
-    check(["local", "herdr"].includes(runtime), "Runtime must be local or herdr.");
     if (runtime === "herdr") {
       check(project.herdr && typeof project.herdr === "object" && !Array.isArray(project.herdr), `Project ${project.id} requires herdr configuration.`);
-      check(nonempty(project.herdr.machine), `Project ${project.id} requires a nonempty herdr.machine selector.`);
-      check(nonempty(project.herdr.agent), `Project ${project.id} requires a nonempty herdr.agent target.`);
-      check(project.herdr.bin === undefined || nonempty(project.herdr.bin), `Project ${project.id} herdr.bin must be nonempty.`);
+      check(nonempty(herdr.machine), `Project ${project.id} requires a nonempty herdr.machine selector.`);
+      check(nonempty(herdr.agent), `Project ${project.id} requires a nonempty herdr.agent target.`);
+      check(herdr.bin === undefined || nonempty(herdr.bin), `Project ${project.id} herdr.bin must be nonempty.`);
+      check(["shared_worktree", "machine_local"].includes(herdr.workspace_mode), `Project ${project.id} herdr.workspace_mode must be shared_worktree or machine_local.`);
+      if (machineLocal) {
+        check(nonempty(herdr.working_directory), `Project ${project.id} machine_local Herdr requires a nonempty herdr.working_directory.`);
+        check(path.posix.isAbsolute(herdr.working_directory) || path.win32.isAbsolute(herdr.working_directory), `Project ${project.id} herdr.working_directory must be absolute.`);
+        check(["commit_only", "push_branch"].includes(policy.shipping), `Project ${project.id} machine_local Herdr supports only commit_only or push_branch shipping.`);
+      }
     } else {
       check(project.herdr === undefined, `Project ${project.id} cannot configure herdr while runtime is local.`);
     }
@@ -77,6 +85,7 @@ function normalizeProjects(raw, root) {
     check(Number.isInteger(timeout_ms) && timeout_ms > 0, "timeout_ms must be positive.");
     const self_hosting = project.self_hosting ?? null;
     if (self_hosting !== null) {
+      check(!machineLocal, "Machine-local Herdr projects cannot use local self_hosting worktree controls.");
       check(self_hosting && typeof self_hosting === "object" && !Array.isArray(self_hosting), "self_hosting must be an object.");
       check(self_hosting.isolated_worktree === true, "Self-hosted projects must require an isolated worktree.");
       check(self_hosting.restart_after_delivery === false, "Self-hosted projects cannot restart the live service during delivery.");
@@ -104,6 +113,11 @@ function normalizeProjects(raw, root) {
         check(Array.isArray(sources) && sources.every(nonempty), `agent.${field}.${role} must contain file paths.`);
       }
     }
+    if (!repository) {
+      check((project.context_sources ?? []).length === 0, `Project ${project.id} cannot use local context_sources without a local repository.`);
+      check(Object.values(agent.context_sources).every((sources) => sources.length === 0), `Project ${project.id} cannot use local agent context_sources without a local repository.`);
+      check(Object.values(agent.skill_sources).every((sources) => sources.length === 0), `Project ${project.id} cannot use local agent skill_sources without a local repository.`);
+    }
     const context_limits = {
       max_files: 16,
       max_file_bytes: 65_536,
@@ -126,7 +140,7 @@ function normalizeProjects(raw, root) {
     }
     return {
       ...project, repository, weight, max_concurrent_runs, metric_definitions, policy, executor,
-      runtime, timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
+      runtime, ...(herdr ? { herdr } : {}), timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
       ...(deployment ? { deployment } : {}),
     };

@@ -45,3 +45,25 @@ projects:
   #   herdr:
   #     machine: build-host
   #     agent: existing-agent-target
+  #     workspace_mode: shared_worktree
+
+  # Machine-local Herdr lets the remote agent work in its own repository. A local
+  # repository is optional, but local context_sources/agent source files then are
+  # unavailable. Only commit_only and push_branch are supported in this mode.
+  # - id: kmac-imac
+  #   name: Kmac on iMac
+  #   purpose: Deliver approved Kmac work on the iMac repository.
+  #   success_state: Remote checks pass and the exact job branch is committed and pushed.
+  #   status: active
+  #   runtime: herdr
+  #   herdr:
+  #     machine: iMac
+  #     agent: roundhouse-imac
+  #     workspace_mode: machine_local
+  #     working_directory: /home/ryngrn/kmac
+  #   policy:
+  #     allow_autonomous: true
+  #     shipping: push_branch
+  #   verification:
+  #     - id: tests
+  #       command: [npm, test]
