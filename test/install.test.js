@@ -32,6 +32,13 @@ test("menu bar companion remains a thin native HTTP client with service controls
   assert.match(source, /App service unavailable/);
   assert.match(source, /Front door unavailable/);
   assert.match(source, /Counts unavailable/);
+  assert.match(source, /case activeJobs = "active_jobs"/);
+  assert.ok(source.includes("Chugging along… — \\(jobs.count)"));
+  assert.match(source, /Machine-local execution on/);
+  assert.ok(source.includes("Agent: \\(agent)"));
+  assert.ok(source.includes("Directory: \\(directory)"));
+  assert.ok(source.includes("Remote run: \\(run)"));
+  assert.doesNotMatch(source, /Herdr queue/i);
   assert.match(source, /status-light/);
   assert.match(source, /status-dark/);
   assert.match(source, /effectiveAppearance/);

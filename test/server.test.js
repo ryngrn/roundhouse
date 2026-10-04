@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
 import vm from "node:vm";
 import { harness } from "./support/harness.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { startRoundhouseServer } from "../src/server/app-server.js";
 import { startFrontDoor } from "../src/server/front-door.js";
+import { record } from "../src/workflow/state.js";
+import { statusView } from "../src/workflow/views.js";
 
 function request(base, pathname, { method = "GET", body, host = "roundhouse" } = {}) {
   const url = new URL(pathname, base);
@@ -82,6 +85,10 @@ function needsControls(document) {
   const card = document.querySelector("#needs-list").children[0];
   const form = card?.children.find((child) => child.tagName === "form");
   return { form, input: form?.children[0], button: form?.children[1] };
+}
+
+function elementText(element) {
+  return [element?.textContent || "", ...(element?.children || []).map(elementText)].join(" ");
 }
 
 test("local server: protected UI, health, API, worker, evidence, config, and notifications form one slice", async (t) => {
@@ -221,6 +228,44 @@ test("served browser client gives Depot textarea conversational keyboard behavio
 
   await form.listeners.get("submit")({ preventDefault() {} });
   assert.equal(message.textContent, "Intake requires nonempty content.");
+});
+
+test("served browser client renders local and machine-local active jobs from the authoritative projection", async () => {
+  const h = harness();
+  const local = h.store.submit({ text: "Run local work", source: "test", actor: "test", project_id: "example" }, "active-local");
+  const remote = h.store.submit({ text: "Update Kmac", source: "test", actor: "test", project_id: "kmac" }, "active-kmac");
+  h.store.change((data) => {
+    Object.assign(data.items[local.id], { state: "Ready", project_id: "example", job_ids: [`${local.id}-1`] });
+    data.jobs[`${local.id}-1`] = record(`${local.id}-1`, { state: "Executing", parent_id: local.id, project_id: "example",
+      work: { title: "Run local work" }, dependencies: [], attempts: [], owning_node: "Studio" });
+    Object.assign(data.items[remote.id], { state: "Ready", project_id: "kmac", job_ids: [`${remote.id}-1`] });
+    data.jobs[`${remote.id}-1`] = record(`${remote.id}-1`, { state: "Verification", parent_id: remote.id, project_id: "kmac",
+      work: { title: "Update Kmac" }, dependencies: [], project_context: { runtime: "herdr" }, attempts: [{ execution: { remote_execution: {
+        runtime: "herdr", machine_selector: "iMac", agent_target: "roundhouse-imac", workspace_mode: "machine_local",
+        working_directory: "/home/ryngrn/kmac", execution_id: "remote-run-42",
+      } } }] });
+  });
+  const script = fs.readFileSync(new URL("../src/web/app.js", import.meta.url), "utf8");
+  const projected = statusView(h.store.read());
+  const responses = {
+    "/api/overview": { ...projected, counts: { needs_you: 0, active: 2, queued: 0, completed: 0, blocked: 0 },
+      connection: { worker: { running: false }, storage: { kind: "local", node: null } } },
+    "/api/config": { configuration: { projects: [{ id: "example", name: "Example" }, { id: "kmac", name: "Kmac" }] } },
+  };
+  const document = browserDocument();
+  const browserFetch = async (pathname) => {
+    const body = responses[pathname];
+    return { ok: Boolean(body), status: body ? 200 : 404, text: async () => JSON.stringify(body || { error: "Not found" }) };
+  };
+  vm.runInNewContext(script, { document, fetch: browserFetch, crypto: {}, setTimeout: () => 1 }, { filename: "served-app.js" });
+  await settleUntil(() => document.querySelector("#active-jobs").children.length === 2);
+
+  assert.equal(document.querySelector("#active-jobs-section").hidden, false);
+  const rendered = elementText(document.querySelector("#active-jobs"));
+  assert.match(rendered, /Chugging along…\s+example · Run local work\s+Local execution on Studio/);
+  assert.match(rendered, /Chugging along…\s+kmac · Update Kmac\s+Machine-local execution on iMac/);
+  assert.match(rendered, /Agent · roundhouse-imac\s+Directory · \/home\/ryngrn\/kmac\s+Remote run · remote-run-42/);
+  assert.doesNotMatch(rendered, /Herdr queue/i);
 });
 
 test("served browser client uses one explicit atomic decision-session submission", async (t) => {

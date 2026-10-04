@@ -108,6 +108,20 @@ async function overview(base) {
   return response.json();
 }
 
+test("acceptance: desktop and menu consume authoritative active-job details without presenting a Herdr queue", () => {
+  const html = fs.readFileSync(new URL("../src/web/index.html", import.meta.url), "utf8");
+  const web = fs.readFileSync(new URL("../src/web/app.js", import.meta.url), "utf8");
+  const menu = fs.readFileSync(new URL("../macos/RoundhouseMenu/main.swift", import.meta.url), "utf8");
+  assert.match(html, /id="active-jobs-heading">Chugging along…/);
+  assert.match(web, /overview\.active_jobs/);
+  assert.match(web, /Machine-local execution on/);
+  assert.match(web, /Remote run ·/);
+  assert.match(menu, /case activeJobs = "active_jobs"/);
+  assert.match(menu, /Machine-local execution on/);
+  assert.match(menu, /Remote run:/);
+  assert.doesNotMatch(`${html}\n${web}\n${menu}`, /Herdr queue/i);
+});
+
 test("acceptance: Green Family Cemetery workflow is repository-free, durable, scheduled, and approval-gated", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-green-family-"));
   const stateDirectory = path.join(root, "state");

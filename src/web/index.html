@@ -28,6 +28,14 @@
       </div>
     </section>
 
+    <section id="active-jobs-section" class="active-jobs-panel" aria-labelledby="active-jobs-heading" hidden>
+      <header class="active-jobs-header">
+        <div><span class="eyebrow">Now running</span><h2 id="active-jobs-heading">Chugging along…</h2></div>
+        <p>Live job details from Roundhouse’s authoritative status.</p>
+      </header>
+      <div id="active-jobs" class="active-jobs" aria-live="polite"></div>
+    </section>
+
     <section class="portfolio-controls" aria-label="Project controls">
       <label class="search-control"><span aria-hidden="true">⌕</span><input id="project-search" type="search" placeholder="Search projects, tasks, or labels…" aria-label="Search projects, tasks, or labels"></label>
       <label class="select-control"><span>Sort:</span><select id="project-sort" aria-label="Sort projects"><option value="priority">Priority</option><option value="name">Name</option></select></label>

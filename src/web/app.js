@@ -136,6 +136,37 @@ function renderConnection(overview) {
   for (const [key, id] of Object.entries(countIds)) $("#count-" + id).textContent = overview.counts[key];
 }
 
+function activeExecutionSummary(job) {
+  if (job.runtime !== "herdr") return job.owning_node ? `Local execution on ${job.owning_node}` : "Local execution";
+  if (job.workspace_mode === "machine_local") return `Machine-local execution on ${job.machine || "configured machine"}`;
+  return `Remote execution on ${job.machine || "configured machine"}`;
+}
+
+function renderActiveJobs(overview) {
+  const section = $("#active-jobs-section");
+  const root = $("#active-jobs");
+  const jobs = overview.active_jobs || [];
+  section.hidden = jobs.length === 0;
+  root.replaceChildren();
+  for (const job of jobs) {
+    const card = node("button", undefined, "active-job");
+    card.type = "button";
+    card.setAttribute("aria-label", `Open ${job.title}, ${job.display_state}`);
+    const heading = node("span", undefined, "active-job-heading");
+    heading.append(node("span", job.display_state, "state state-active-job"), node("strong", `${job.project} · ${job.title}`));
+    const details = node("span", undefined, "active-job-details");
+    details.append(node("span", activeExecutionSummary(job), "active-job-location"));
+    for (const value of [
+      job.agent ? `Agent · ${job.agent}` : null,
+      job.working_directory ? `Directory · ${job.working_directory}` : null,
+      job.remote_run_id !== null && job.remote_run_id !== undefined ? `Remote run · ${job.remote_run_id}` : null,
+    ].filter(Boolean)) details.append(node("span", value, "active-job-fact"));
+    card.append(heading, details, node("span", "→", "active-job-arrow"));
+    card.addEventListener("click", () => openWork(job.item_id));
+    root.append(card);
+  }
+}
+
 function rowMeta(label, value, className = "") {
   const span = node("span", undefined, `row-meta ${className}`.trim());
   span.append(node("b", label), node("span", value || "—"));
@@ -468,7 +499,7 @@ let pendingLoads = 0;
 async function readAndRender() {
   try {
     const [overview, config] = await Promise.all([api("/api/overview"), api("/api/config")]); currentOverview = overview; configuration = config.configuration;
-    renderConnection(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
+    renderConnection(overview); renderActiveJobs(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
   } catch (error) { $("#connection").textContent = `● App unavailable · ${error.message}`; $("#connection").className = "connection failed"; }
 }
 function load() {

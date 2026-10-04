@@ -18,16 +18,67 @@ struct Notice: Decodable {
     let title: String
     let message: String
 }
+enum StatusIdentifier: Decodable, CustomStringConvertible {
+    case string(String)
+    case integer(Int)
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if let string = try? value.decode(String.self) { self = .string(string); return }
+        self = .integer(try value.decode(Int.self))
+    }
+
+    var description: String {
+        switch self {
+        case .string(let value): return value
+        case .integer(let value): return String(value)
+        }
+    }
+}
+struct ActiveJob: Decodable {
+    let project: String
+    let title: String
+    let displayState: String
+    let runtime: String
+    let machine: String?
+    let agent: String?
+    let workspaceMode: String?
+    let workingDirectory: String?
+    let remoteRunID: StatusIdentifier?
+    let owningNode: String?
+    enum CodingKeys: String, CodingKey {
+        case project, title, runtime, machine, agent
+        case displayState = "display_state"
+        case workspaceMode = "workspace_mode"
+        case workingDirectory = "working_directory"
+        case remoteRunID = "remote_run_id"
+        case owningNode = "owning_node"
+    }
+}
 struct LocalSnapshot: Decodable {
     let counts: Counts
+    let activeJobs: [ActiveJob]
     let notifications: [Notice]
     let cursor: String?
+    enum CodingKeys: String, CodingKey {
+        case counts, notifications, cursor
+        case activeJobs = "active_jobs"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        counts = try values.decode(Counts.self, forKey: .counts)
+        activeJobs = try values.decodeIfPresent([ActiveJob].self, forKey: .activeJobs) ?? []
+        notifications = try values.decode([Notice].self, forKey: .notifications)
+        cursor = try values.decodeIfPresent(String.self, forKey: .cursor)
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let health = NSMenuItem(title: "Roundhouse is starting…", action: nil, keyEquivalent: "")
     private let counts = NSMenuItem(title: "Needs a signal 0 · Chugging along 0", action: nil, keyEquivalent: "")
+    private let activeJobsItem = NSMenuItem(title: "Chugging along… — 0 jobs", action: nil, keyEquivalent: "")
     private var timer: Timer?
     private let base = URL(string: "http://roundhouse")!
     private let directBase = URL(string: "http://127.0.0.1:8787")!
@@ -48,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         counts.isEnabled = false
         menu.addItem(health)
         menu.addItem(counts)
+        menu.addItem(activeJobsItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open Roundhouse", action: #selector(openRoundhouse), keyEquivalent: "o"))
         menu.addItem(NSMenuItem(title: "Start Service", action: #selector(startService), keyEquivalent: ""))
@@ -102,12 +154,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 DispatchQueue.main.async {
                     self.health.title = frontHealthy ? "● App and front door healthy" : "● Front door unavailable · app healthy"
                     self.counts.title = "Needs a signal \(snapshot.counts.needsYou) · Chugging along \(snapshot.counts.active) · Held up \(snapshot.counts.blocked)"
+                    self.updateActiveJobs(snapshot.activeJobs)
                     self.applyStatusIcon()
                     self.item.button?.title = !frontHealthy ? "!" : snapshot.counts.needsYou > 0 || snapshot.counts.blocked > 0 ? "•" : ""
                 }
             }.resume()
             self.deliverNotifications(snapshot)
         }.resume()
+    }
+
+    private func updateActiveJobs(_ jobs: [ActiveJob]) {
+        activeJobsItem.title = "Chugging along… — \(jobs.count) \(jobs.count == 1 ? "job" : "jobs")"
+        let submenu = NSMenu()
+        if jobs.isEmpty {
+            let empty = NSMenuItem(title: "No jobs are chugging right now", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            submenu.addItem(empty)
+        }
+        for job in jobs {
+            let jobItem = NSMenuItem(title: "\(job.project) — \(job.displayState)", action: nil, keyEquivalent: "")
+            let details = NSMenu()
+            addDetail(job.title, to: details)
+            if job.runtime == "herdr" && job.workspaceMode == "machine_local" {
+                addDetail("Machine-local execution on \(job.machine ?? "configured machine")", to: details)
+            } else if job.runtime == "herdr" {
+                addDetail("Remote execution on \(job.machine ?? "configured machine")", to: details)
+            } else {
+                addDetail(job.owningNode.map { "Local execution on \($0)" } ?? "Local execution", to: details)
+            }
+            if let agent = job.agent { addDetail("Agent: \(agent)", to: details) }
+            if let directory = job.workingDirectory { addDetail("Directory: \(directory)", to: details) }
+            if let run = job.remoteRunID { addDetail("Remote run: \(run)", to: details) }
+            jobItem.submenu = details
+            submenu.addItem(jobItem)
+        }
+        activeJobsItem.submenu = submenu
+    }
+
+    private func addDetail(_ title: String, to menu: NSMenu) {
+        let detail = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        detail.isEnabled = false
+        menu.addItem(detail)
     }
 
     private func deliverNotifications(_ page: LocalSnapshot) {
