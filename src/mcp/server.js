@@ -14,6 +14,7 @@ const jobSchema = z.object({
   latest_run: z.unknown().nullable(), latest_failure: z.string().nullable(), reconciliation: z.unknown().nullable(),
   allocation: z.unknown().nullable(), allocation_history: z.array(z.unknown()),
   eligibility: z.unknown().nullable(), recurrence: z.unknown().nullable(), occurrence_key: z.string().nullable(),
+  action_policy: z.unknown().nullable(), human_task: z.unknown().nullable(),
 });
 const completionReportSchema = z.object({
   summary: z.string(), design_decisions: z.array(z.string()),
