@@ -108,6 +108,85 @@ may write artifact files in their workspace. At least one structured result or f
 is required. Roundhouse records a run UUID, provider ID, input digest, attempt state,
 failures, evidence, immutable output reference, and reconciliation state.
 
+### Repository-optional provider workflow
+
+The deterministic Green Family Cemetery acceptance fixture is the concrete
+repository-optional reference. Its project omits `repository`, sets
+`repository_required: false`, has no executable verification commands, and uses
+`shipping: durable_output`. The installation registers four command providers with
+distinct capability contracts: `research` plus `connected-source`, `artifact`,
+`scheduling`, and `external-action`. A slice is sent only to one provider that
+supports its entire required capability set; Roundhouse does not merge partial
+providers or infer a command from request text.
+
+The fixture decision decomposes one intake into sequential research, cited-artifact,
+future-follow-up, and scoped records-request proposal slices. Fixture source URIs
+and fixed retrieval timestamps are provider results, not claims of live research.
+Both those structured results and the Markdown file are captured by
+`durable_output`; their bodies, hashes, provider/run identity, input digest, and
+immutable output version survive store reconstruction. The local inspection
+manifest is a convenience copy, not the authoritative record.
+
+Scheduling is eligibility, not a background process. The follow-up uses an absolute
+timezone-qualified `not_before` value and remains `Ready` but unclaimable until the
+worker clock reaches it. A service restart reconstructs the same wait and next wake
+from durable state. Recurrence derives later timestamps from its stored anchor and
+ordinal; external-condition waits advance only through a revisioned control-plane
+signal. Providers must not sleep, poll, or launch detached work for these waits.
+
+`external-action` imposes a consequential classification even if Depot text or a
+decision labels it read-only. Before any jobs are created, the fixture remains in
+Review and no execution provider is invoked. Approval is bound to the current item
+revision, exact slice digest, and project-policy digest, and that scope is checked
+again immediately before provider execution. The fixture action provider only
+returns a `proposed_not_sent` record and writes to its disposable fixture log: it
+does not contact a records custodian, use a hosted source, deploy, push, or mutate a
+real repository. A production provider may perform its configured external action
+after approval, so its own idempotency and reconciliation contract remains required.
+
+A corresponding project has this shape (provider commands are operator-owned argv
+arrays and should use absolute executable/script paths):
+
+```yaml
+execution:
+  capabilities: [research, connected-source, artifact, scheduling, external-action]
+  providers:
+    - id: cemetery-research
+      kind: command
+      capabilities: [research, connected-source]
+      command: [/absolute/path/to/provider, research]
+    - id: cemetery-artifact
+      kind: command
+      capabilities: [artifact]
+      command: [/absolute/path/to/provider, artifact]
+    - id: cemetery-scheduling
+      kind: command
+      capabilities: [scheduling]
+      command: [/absolute/path/to/provider, scheduling]
+    - id: cemetery-action
+      kind: command
+      capabilities: [external-action]
+      command: [/absolute/path/to/provider, propose]
+projects:
+  - id: green-family-cemetery
+    name: Green Family Cemetery
+    purpose: Produce sourced cemetery research and bounded follow-up.
+    success_state: Sourced outputs and approved next actions are durable.
+    status: active
+    repository_required: false
+    verification: []
+    policy:
+      allow_autonomous: true
+      approval_required: false
+      shipping: durable_output
+      continuation: continue_project_queue
+```
+
+`allow_autonomous` permits read-only slices; it does not waive the trusted
+consequential-action gate. Keep credentials in the provider environment, keep
+commands in private operator configuration, and avoid printing secrets because
+provider output is retained as operational evidence.
+
 ## Agent roles and skills
 
 Agent roles are context and skill bundles, separate from the executor and local
@@ -341,6 +420,9 @@ The deterministic acceptance harness proves:
   shipping, and completed summary/evidence
 - the zero-human path `Depot -> Decision -> Ready -> Execute -> Verify -> Ship -> Completed`
   with `allow_autonomous: true` and `approval_required: false`
+- the repository-free Green Family Cemetery path: deterministic sourced research,
+  a durable cited artifact, a restart-stable future follow-up, and a scoped
+  consequential proposal whose provider cannot run before revision-bound approval
 - decision-loop regression protection for the README inspection versus executable
   verification question, including after reconstructing the store from disk
 - deterministic allocation evidence for compatible multi-project concurrency,

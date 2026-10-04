@@ -63,7 +63,10 @@ npm run demo -- --live
 `npm run acceptance` is the safe deterministic QA harness for the complete
 Roundhouse flow. It uses temporary state, temporary repositories, fixture
 deployment, and real browser/API paths without touching normal local Roundhouse
-state or real project data. `npm run acceptance:live` additionally tries the real
+state or real project data. It also proves the repository-free Green Family
+Cemetery workflow with fixture-only sources, durable outputs, a future follow-up,
+and an approval-gated action proposal that has no real external effect.
+`npm run acceptance:live` additionally tries the real
 local Codex executor against a disposable repository and reports an explicit skip
 when Codex is unavailable.
 

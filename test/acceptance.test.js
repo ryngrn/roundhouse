@@ -11,8 +11,10 @@ import { RoundhouseService } from "../src/workflow/service.js";
 import { Store } from "../src/workflow/store.js";
 import { Engine } from "../src/workflow/engine.js";
 import { git } from "../src/workflow/delivery.js";
+import { validateWorkflowConfig } from "../src/workflow/config.js";
 
 const provider = fileURLToPath(new URL("./support/acceptance-provider.mjs", import.meta.url));
+const greenFamilyProvider = fileURLToPath(new URL("./support/green-family-cemetery-provider.mjs", import.meta.url));
 const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 function request(base, pathname, { method = "GET", body, host = "roundhouse" } = {}) {
@@ -105,6 +107,111 @@ async function overview(base) {
   assert.equal(response.status, 200, response.text);
   return response.json();
 }
+
+test("acceptance: Green Family Cemetery workflow is repository-free, durable, scheduled, and approval-gated", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-green-family-"));
+  const stateDirectory = path.join(root, "state");
+  const configFile = path.join(root, "projects.json");
+  const providerLog = path.join(root, "provider-calls.jsonl");
+  const initialTime = Date.parse("2026-10-03T12:00:00.000Z");
+  const followUpAt = "2026-10-10T12:00:00.000Z";
+  let now = initialTime;
+  const command = (id, capabilities) => ({
+    id,
+    kind: "command",
+    capabilities,
+    command: [process.execPath, greenFamilyProvider, "execute", providerLog],
+  });
+  const rawConfig = {
+    decision: { kind: "command", command: [process.execPath, greenFamilyProvider, "decide", followUpAt] },
+    max_jobs_per_run: 10,
+    execution: {
+      capacity: 1,
+      capabilities: ["research", "connected-source", "artifact", "scheduling", "external-action"],
+      providers: [
+        command("green-research-fixture", ["research", "connected-source"]),
+        command("green-artifact-fixture", ["artifact"]),
+        command("green-scheduling-fixture", ["scheduling"]),
+        command("green-action-fixture", ["external-action"]),
+      ],
+    },
+    projects: [{
+      id: "green-family-cemetery",
+      name: "Green Family Cemetery",
+      purpose: "Research cemetery records without contacting real services.",
+      success_state: "Sourced outputs and bounded next actions are durable.",
+      status: "active",
+      repository_required: false,
+      required_capabilities: [],
+      executor: { kind: "command", command: [process.execPath, greenFamilyProvider, "execute", providerLog] },
+      verification: [],
+      policy: {
+        allow_autonomous: true,
+        approval_required: false,
+        shipping: "durable_output",
+        continuation: "continue_project_queue",
+        max_rework_attempts: 0,
+      },
+    }],
+  };
+  fs.writeFileSync(configFile, JSON.stringify(rawConfig));
+  const config = validateWorkflowConfig(rawConfig, configFile);
+  const store = new Store(stateDirectory);
+  const engine = new Engine({ store, config, clock: () => now });
+  const submitted = store.submit({
+    text: "Research Green Family Cemetery, preserve sources, schedule a follow-up, and propose a records request.",
+    project_id: "green-family-cemetery",
+    source: "acceptance-fixture",
+    actor: "acceptance",
+  }, "green-family-cemetery-workflow");
+
+  let result = await engine.run();
+  assert.equal(result.items[submitted.id].state, "Review");
+  assert.equal(result.items[submitted.id].decision.work_items[3].action_class, "consequential");
+  assert.match(result.items[submitted.id].decision.work_items[3].outcome, /without contacting a custodian/);
+  assert.equal(Object.keys(result.jobs).length, 0);
+  assert.equal(fs.existsSync(providerLog), false, "No execution provider may run before approval.");
+
+  const approvalRevision = result.items[submitted.id].revision;
+  engine.approve(submitted.id, approvalRevision, "cemetery-fixture-reviewer");
+  result = await engine.run();
+  let jobs = result.items[submitted.id].job_ids.map((id) => result.jobs[id]);
+  assert.deepEqual(jobs.map((job) => job.state), ["Shipped", "Shipped", "Ready", "Ready"]);
+  assert.equal(jobs[2].eligibility.status, "waiting");
+  assert.equal(jobs[2].eligibility.eligible_at, followUpAt);
+  assert.equal(jobs[3].action_policy.classification, "consequential");
+  assert.equal(jobs[3].action_policy.approval.item_revision, approvalRevision);
+  const beforeDueCalls = fs.readFileSync(providerLog, "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(beforeDueCalls.map(({ provider: id }) => id), ["green-research-fixture", "green-artifact-fixture"]);
+
+  const research = jobs[0].shipping;
+  assert.equal(research.provenance.provider.id, "green-research-fixture");
+  assert.equal(research.result.sources[0].uri, "fixture://green-family-cemetery/register-1904");
+  assert.equal(research.result.sources[0].retrieved_at, "2026-10-03T12:00:00.000Z");
+  assert.equal(jobs[1].shipping.outputs[0].path, "green-family-cemetery-brief.md");
+  assert.match(Buffer.from(jobs[1].shipping.outputs[0].content, "base64").toString(), /fixture:\/\/green-family-cemetery\/register-1904/);
+
+  const restartedStore = new Store(stateDirectory);
+  const persisted = restartedStore.read();
+  const persistedJobs = persisted.items[submitted.id].job_ids.map((id) => persisted.jobs[id]);
+  assert.deepEqual(persistedJobs[0].shipping.result.sources, research.result.sources);
+  assert.equal(persistedJobs[1].shipping.outputs[0].sha256, jobs[1].shipping.outputs[0].sha256);
+  assert.equal(persistedJobs[2].eligibility.status, "waiting");
+
+  now = Date.parse(followUpAt);
+  result = await new Engine({ store: restartedStore, config, clock: () => now }).run();
+  jobs = result.items[submitted.id].job_ids.map((id) => result.jobs[id]);
+  assert.ok(jobs.every((job) => job.state === "Shipped"));
+  assert.equal(jobs[2].shipping.result.checkpoint.scheduled_for, followUpAt);
+  assert.equal(jobs[3].shipping.result.action.status, "proposed_not_sent");
+  assert.equal(jobs[3].shipping.result.action.external_side_effects, false);
+  assert.equal(jobs[3].shipping.provenance.provider.id, "green-action-fixture");
+  const allCalls = fs.readFileSync(providerLog, "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(allCalls.map(({ provider: id }) => id), [
+    "green-research-fixture", "green-artifact-fixture", "green-scheduling-fixture", "green-action-fixture",
+  ]);
+  assert.ok(jobs.every((job) => job.shipping.repository === null && job.shipping.pushed === false));
+});
 
 test("acceptance: HTTP workflow clarifies once, approves, executes, verifies, fixture-ships, and survives restart", async (t) => {
   const logFile = path.join(os.tmpdir(), `roundhouse-acceptance-${process.pid}.jsonl`);

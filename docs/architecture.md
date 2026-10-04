@@ -134,6 +134,10 @@ durable run identity, and input digest on stdin in the prepared workspace. Exit 
 means operational success; stdout may be empty or contain one JSON object with
 provider-owned results. Repository-free runs require a structured result or
 workspace artifact. Verification and delivery remain Roundhouse-owned boundaries.
+Command providers run in the foreground and must return when their slice completes;
+future and conditional work belongs in the scheduling contract rather than provider
+sleeps, polling loops, or detached processes. Provider stdout and workspace files
+are untrusted outputs until the delivery adapter snapshots and verifies them.
 
 For a new CLI executor, configure `executor.kind: command` with an argv array.
 It receives JSON on stdin containing `work`, `project_context`, and
