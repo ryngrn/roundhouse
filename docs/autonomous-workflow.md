@@ -108,6 +108,13 @@ may write artifact files in their workspace. At least one structured result or f
 is required. Roundhouse records a run UUID, provider ID, input digest, attempt state,
 failures, evidence, immutable output reference, and reconciliation state.
 
+Remote Desktop Commander is never an execution provider. Its permitted scope is
+transport, inspection, connectivity checks, bootstrap, and emergency repair of the
+supported Roundhouse/Herdr path. Workflow configuration rejects it as a decision
+provider, project executor, execution-provider command, verification command,
+deployment command, or Herdr binary. It cannot claim, implement, verify, commit,
+push, or deliver project work.
+
 ### Repository-optional provider workflow
 
 The deterministic Green Family Cemetery acceptance fixture is the concrete

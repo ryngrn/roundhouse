@@ -1,4 +1,5 @@
 import { runProcess } from "./runtime.js";
+import { assertNotRemoteDesktopCommanderCommand } from "./remote-desktop-policy.js";
 
 const providerId = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
 
@@ -67,6 +68,7 @@ class ProjectExecutionAdapter {
 
 class CommandExecutionAdapter {
   constructor(configuration) {
+    assertNotRemoteDesktopCommanderCommand(configuration.command, `Execution provider ${configuration.id}`);
     this.id = configuration.id;
     this.capabilities = configuration.capabilities;
     this.command = configuration.command;

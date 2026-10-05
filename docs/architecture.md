@@ -156,6 +156,13 @@ directory, report token, remote run identity, evidence, and delivery intent. Tha
 evidence is explicitly marked as not independently verified because the remote
 filesystem is not locally visible. Herdr failures never fall back to local work.
 
+Remote Desktop Commander is not an execution adapter or Herdr substitute. It is
+reserved for transport, inspection, connectivity checks, bootstrap, and emergency
+repair. Configuration validation rejects it at decision, execution-provider,
+project-executor, verification, deployment, and Herdr command boundaries. Those
+operational uses can restore or inspect the supported path, but cannot claim,
+execute, verify, commit, push, or deliver project work outside Roundhouse.
+
 ## Extending delivery
 
 The Git delivery adapter owns worktree preparation, candidate commits, optional

@@ -1,4 +1,5 @@
 import { runProcess } from "./runtime.js";
+import { assertNotRemoteDesktopCommanderCommand } from "./remote-desktop-policy.js";
 
 export class FixtureDeployProvider {
   async deploy({ project, verification }) {
@@ -15,6 +16,7 @@ export class FixtureDeployProvider {
 
 export class CommandDeployProvider {
   async deploy({ project, prepared, verification, onStart }) {
+    assertNotRemoteDesktopCommanderCommand(project.deployment.command, `Project ${project.id} deployment provider`);
     const packet = {
       project: project.id,
       repository: project.repository,

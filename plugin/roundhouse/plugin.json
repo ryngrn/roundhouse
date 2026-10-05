@@ -12,7 +12,7 @@
       "interface": {
         "displayName": "Roundhouse",
         "shortDescription": "Send intent to the Depot and resolve material questions.",
-        "longDescription": "Implementation requests become durable Depot items. Roundhouse owns triage, human decisions, readiness, internal executor selection, verification, and delivery; this plugin never exposes a direct execution bypass.",
+        "longDescription": "Substantial project and implementation requests become durable Depot items before execution. Roundhouse owns triage, human decisions, readiness, internal executor or Herdr selection, verification, and delivery; this plugin never exposes a direct execution bypass, and Remote Desktop Commander remains limited to transport, inspection, connectivity, bootstrap, and emergency repair.",
         "developerName": "Roundhouse",
         "category": "Productivity",
         "capabilities": ["Read", "Write"],

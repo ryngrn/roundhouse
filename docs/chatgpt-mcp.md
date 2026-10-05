@@ -1,10 +1,11 @@
 # ChatGPT → Roundhouse Depot
 
 This slice adds a thin ChatGPT adapter over the same authoritative Roundhouse
-Depot, decision, question, and readiness state used by the CLI and browser. For an
-implementation request, ChatGPT's supported action is to create the authoritative
-Depot item. It does not infer projects, decompose work, assign priority, approve
-policy, choose or invoke an executor, or execute jobs.
+Depot, decision, question, and readiness state used by the CLI and browser. For a
+substantial project or implementation request, ChatGPT's supported action is to
+create the authoritative Depot item before any executor or Herdr dispatch. It does
+not infer projects, decompose work, assign priority, approve policy, choose or
+invoke an executor, or execute jobs.
 
 The server exposes four tools over MCP Streamable HTTP at `/mcp`:
 
@@ -22,6 +23,14 @@ There is also intentionally no implementation or executor tool. Codex, command,
 and other configured providers are private runtime adapters selected only after
 Roundhouse triage has produced Ready work and dispatch has authoritatively claimed
 the eligible job.
+
+Remote Desktop Commander is deliberately outside that project execution path. It
+may provide transport, inspect a machine, check connectivity, bootstrap the
+Roundhouse/Herdr path, or perform an explicitly directed emergency repair. It must
+not edit a project, run its implementation agent, verify it, commit it, push it, or
+deliver it as an alternate runtime. A connectivity or bootstrap problem does not
+change this boundary: submit substantial work to the Depot, then let Roundhouse
+select and claim the configured local or Herdr runtime.
 
 The endpoint is dual-era: it preserves the existing MCP 1.x handshake for current
 clients and implements stateless MCP 2.0 protocol version `2026-07-28` for current

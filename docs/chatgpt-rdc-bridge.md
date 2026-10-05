@@ -6,6 +6,13 @@ outcomes. The historical Notion **Roundhouse Depot** was a prototype and is now 
 archive/reference only. Roundhouse never polls it, writes status back to it, or
 uses a Notion value as execution authority.
 
+The retired ChatGPT/Remote Desktop Commander bridge is not an alternate execution
+path. Substantial ChatGPT project work enters the durable Roundhouse Depot before a
+local executor or Herdr agent can be selected or dispatched. Remote Desktop
+Commander remains available only for transport, inspection, connectivity checks,
+bootstrap, and explicitly directed emergency repair. It does not claim, edit,
+implement, verify, commit, push, or deliver project work.
+
 ## One-time import
 
 Export the prototype rows as JSON, then run:

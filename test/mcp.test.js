@@ -160,5 +160,8 @@ test("ChatGPT capability catalog exposes Depot ownership without a direct implem
   assert.match(intake.description, /does not execute work or select an executor/i);
   assert.match(CHATGPT_INTEGRATION_INSTRUCTIONS, /never invoke or present a direct implementation runtime/i);
   assert.match(CHATGPT_INTEGRATION_INSTRUCTIONS, /executor selection, job claims/i);
+  assert.match(CHATGPT_INTEGRATION_INSTRUCTIONS, /before any executor or Herdr dispatch/i);
+  assert.match(CHATGPT_INTEGRATION_INSTRUCTIONS, /Remote Desktop Commander is not a project execution runtime/i);
+  assert.match(CHATGPT_INTEGRATION_INSTRUCTIONS, /transport, inspection, connectivity checks, bootstrap, and emergency repair/i);
   assert.equal(roundhouseToolCatalog.some((tool) => /(?:execute|codex|herdr|implement)/i.test(tool.name)), false);
 });

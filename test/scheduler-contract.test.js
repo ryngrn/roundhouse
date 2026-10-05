@@ -8,6 +8,7 @@ import { Store } from "../src/workflow/store.js";
 import { dispatchConsiderations, eligibleProjectHead, executionEligibility, executionReservation, projectExecutionEligible, projectQueueHead, recordAllocation, recordDispatchRound, reservationAssessment, reservationFits, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
 import { statusView } from "../src/workflow/views.js";
 import { CapabilityRuntime, ExecutionAdapterRegistry, selectExecutionProvider } from "../src/workflow/execution-adapters.js";
+import { REMOTE_DESKTOP_COMMANDER_PERMITTED_USES, isRemoteDesktopCommanderCommand } from "../src/workflow/remote-desktop-policy.js";
 
 function manifest(repository, changes = {}) {
   return {
@@ -99,6 +100,33 @@ test("execution providers: command adapters and the existing project runtime sha
   assert.equal(projectCalls, 1);
   assert.equal(operations.output.received.id, "operations");
   assert.deepEqual(operations.provider.required, ["research", "scheduling"]);
+});
+
+test("execution boundary: Remote Desktop Commander retains operational uses but cannot become a project runtime", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-rdc-boundary-"));
+  const filename = path.join(directory, "config.yaml");
+  assert.deepEqual(REMOTE_DESKTOP_COMMANDER_PERMITTED_USES, [
+    "transport", "inspection", "connectivity_check", "bootstrap", "emergency_repair",
+  ]);
+  assert.equal(isRemoteDesktopCommanderCommand(["/usr/local/bin/rdc"]), true);
+  assert.equal(isRemoteDesktopCommanderCommand(["npx", "remote-desktop-commander"]), true);
+  assert.equal(isRemoteDesktopCommanderCommand(["herdr"]), false);
+
+  assert.throws(() => validateWorkflowConfig(manifest(directory, {
+    executor: { kind: "command", command: ["rdc", "agent", "run"] },
+  }), filename), /executor cannot use Remote Desktop Commander/);
+  assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { providers: [
+    { id: "rdc", kind: "command", capabilities: [], command: ["remote-desktop-commander"] },
+  ] } }, filename), /Execution provider rdc cannot use Remote Desktop Commander/);
+  assert.throws(() => validateWorkflowConfig(manifest(directory, {
+    runtime: "herdr", herdr: { machine: "iMac", agent: "roundhouse-imac", bin: "rdc" },
+  }), filename), /Herdr runtime cannot use Remote Desktop Commander/);
+  assert.throws(() => new CapabilityRuntime([
+    { id: "rdc", kind: "command", capabilities: [], command: ["rdc"] },
+  ], { execute: async () => ({ passed: true }) }), /cannot use Remote Desktop Commander/);
+
+  const ordinary = validateWorkflowConfig(manifest(directory), filename);
+  assert.equal(ordinary.projects[0].runtime, "local");
 });
 
 test("scheduler contract: repository requirements are independent from capability requirements", () => {

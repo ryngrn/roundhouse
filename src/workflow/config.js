@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import { agentRoleIds } from "./roles.js";
+import { assertNotRemoteDesktopCommanderCommand } from "./remote-desktop-policy.js";
 
 export const shippingModes = ["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy", "durable_output", "artifact"];
 const check = (value, message) => { if (!value) throw new Error(message); };
@@ -92,17 +93,25 @@ function normalizeProjects(raw, root, execution) {
       check(nonempty(rule.id) && !verificationKeys.has(rule.id), "Verification IDs must be nonempty and unique.");
       verificationKeys.add(rule.id);
       check(commandValid(rule.command), "Verification command must be an argv array.");
+      assertNotRemoteDesktopCommanderCommand(rule.command, `Project ${project.id} verification command ${rule.id}`);
       check(rule.roles === undefined || (Array.isArray(rule.roles) && rule.roles.length > 0 && rule.roles.every((role) => agentRoleIds.includes(role))), "Verification roles must contain installed agent roles.");
       check(rule.evidence_ids === undefined || (Array.isArray(rule.evidence_ids) && rule.evidence_ids.every(nonempty)), "Verification evidence_ids must be strings.");
     }
     const executor = project.executor ?? { kind: "codex", bin: "codex" };
     check(["codex", "command"].includes(executor.kind), "Unknown executor.");
-    if (executor.kind === "command") check(commandValid(executor.command), "Executor requires an argv array.");
+    if (executor.kind === "command") {
+      check(commandValid(executor.command), "Executor requires an argv array.");
+      assertNotRemoteDesktopCommanderCommand(executor.command, `Project ${project.id} executor`);
+    } else {
+      check(executor.bin === undefined || nonempty(executor.bin), "Codex executor bin must be nonempty.");
+      assertNotRemoteDesktopCommanderCommand([executor.bin ?? "codex"], `Project ${project.id} executor`);
+    }
     if (runtime === "herdr") {
       check(plainObject(project.herdr), `Project ${project.id} requires herdr configuration.`);
       check(nonempty(herdr.machine), `Project ${project.id} requires a nonempty herdr.machine selector.`);
       check(nonempty(herdr.agent), `Project ${project.id} requires a nonempty herdr.agent target.`);
       check(herdr.bin === undefined || nonempty(herdr.bin), `Project ${project.id} herdr.bin must be nonempty.`);
+      assertNotRemoteDesktopCommanderCommand([herdr.bin ?? "herdr"], `Project ${project.id} Herdr runtime`);
       check(["shared_worktree", "machine_local"].includes(herdr.workspace_mode), `Project ${project.id} herdr.workspace_mode must be shared_worktree or machine_local.`);
       if (machineLocal) {
         check(nonempty(herdr.working_directory), `Project ${project.id} machine_local Herdr requires a nonempty herdr.working_directory.`);
@@ -158,7 +167,10 @@ function normalizeProjects(raw, root, execution) {
     if (policy.shipping === "deploy") {
       check(deployment && typeof deployment === "object" && !Array.isArray(deployment), `Project ${project.id} requires deployment configuration.`);
       check(["fixture", "command"].includes(deployment.kind), "Deployment provider must be fixture or command.");
-      if (deployment.kind === "command") check(commandValid(deployment.command), "Command deployment provider requires an argv array.");
+      if (deployment.kind === "command") {
+        check(commandValid(deployment.command), "Command deployment provider requires an argv array.");
+        assertNotRemoteDesktopCommanderCommand(deployment.command, `Project ${project.id} deployment provider`);
+      }
       check(deployment.environment === undefined || nonempty(deployment.environment), "Deployment environment must be nonempty.");
       check(deployment.push_branch === undefined || typeof deployment.push_branch === "boolean", "deployment.push_branch must be boolean.");
       deployment = { environment: "production", push_branch: false, ...deployment };
@@ -192,6 +204,7 @@ export function validateWorkflowConfig(raw, filename) {
     check(declared.every((capability) => capabilities.includes(capability)), `Execution provider ${provider.id} declares a capability unavailable on this installation.`);
     if (provider.kind === "command") check(commandValid(provider.command), `Execution provider ${provider.id} requires an argv array.`);
     else check(provider.command === undefined, `Project execution provider ${provider.id} cannot define a command.`);
+    if (provider.kind === "command") assertNotRemoteDesktopCommanderCommand(provider.command, `Execution provider ${provider.id}`);
     return { ...provider, capabilities: declared };
   });
   check(new Set(providers.map((provider) => provider.id)).size === providers.length, "Execution provider ids must be unique.");
@@ -206,7 +219,13 @@ export function validateWorkflowConfig(raw, filename) {
   const projects = normalizeProjects(raw, path.dirname(absolute), execution);
   const decision = raw.decision ?? { kind: "codex", bin: "codex" };
   check(["codex", "command"].includes(decision.kind), "Unknown decision provider.");
-  if (decision.kind === "command") check(commandValid(decision.command), "Decision provider requires an argv array.");
+  if (decision.kind === "command") {
+    check(commandValid(decision.command), "Decision provider requires an argv array.");
+    assertNotRemoteDesktopCommanderCommand(decision.command, "Decision provider");
+  } else {
+    check(decision.bin === undefined || nonempty(decision.bin), "Codex decision provider bin must be nonempty.");
+    assertNotRemoteDesktopCommanderCommand([decision.bin ?? "codex"], "Decision provider");
+  }
   const max_jobs_per_run = raw.max_jobs_per_run ?? 20;
   check(Number.isInteger(max_jobs_per_run) && max_jobs_per_run > 0 && max_jobs_per_run <= 1000, "max_jobs_per_run must be 1–1000.");
   check(raw.triage === undefined || (raw.triage && typeof raw.triage === "object" && !Array.isArray(raw.triage)), "triage must be an object.");
