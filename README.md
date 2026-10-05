@@ -5,8 +5,8 @@ interpret the request, resolve the project, execute, verify, ship, and optionall
 continue the project's queue. Review means a human decision is needed.
 
 The autonomous vertical slice runs locally, with a durable workflow and replaceable
-decision, execution, verification, shipping, and source adapters. Codex and trusted
-command executors are supported. Shipping currently means a verified local commit
+decision, execution, verification, shipping, and source adapters. Codex, Claude Code,
+and trusted command executors are supported. Shipping currently means a verified local commit
 or a verified commit pushed to a job branch; production deployment is not enabled.
 
 ## Run the complete demonstration
@@ -26,6 +26,12 @@ For a live model-backed demo using your authenticated Codex CLI:
 
 ```sh
 npm run demo -- --live
+```
+
+Or with your authenticated Claude Code CLI for both interpretation and execution:
+
+```sh
+npm run demo -- --live --claude
 ```
 
 ## Use a real project

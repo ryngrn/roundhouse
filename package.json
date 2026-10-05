@@ -10,7 +10,7 @@
   "scripts": {
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.js",
-    "test:unit": "node --test test/item.test.js test/config.test.js test/intake.test.js test/codex-executor.test.js test/workflow-unit.test.js",
+    "test:unit": "node --test test/item.test.js test/config.test.js test/intake.test.js test/codex-executor.test.js test/claude-executor.test.js test/workflow-unit.test.js",
     "test:e2e": "node --test test/workflow-e2e.test.js",
     "demo": "node scripts/demo.mjs"
   },

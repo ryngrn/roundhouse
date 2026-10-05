@@ -26,7 +26,7 @@ export class GitDelivery {
     if (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) throw new Error("State/workspace directory must be outside the target repository.");
     const remote = project.policy.shipping === "push_branch" ? git(project.repository, ["remote", "get-url", "--push", project.remote]) : null;
     const commit = git(project.repository, ["rev-parse", "--verify", `${base ?? project.base_ref}^{commit}`]);
-    const branch = `codex/roundhouse-${job.id}`;
+    const branch = `${project.executor?.kind === "claude" ? "claude" : "codex"}/roundhouse-${job.id}`;
     const workspace = path.join(directory, job.id);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     git(project.repository, ["worktree", "add", "-b", branch, workspace, commit]);
