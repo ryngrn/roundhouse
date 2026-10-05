@@ -171,7 +171,7 @@ export function itemView(data, item) {
   };
 }
 
-export function statusView(data, filters = {}) {
+export function statusView(data, filters = {}, executionActivity = null) {
   const items = Object.values(data.items)
     .filter((item) => !filters.item_id || item.id === filters.item_id)
     .filter((item) => !filters.project_id || item.project_id === filters.project_id || item.input.project_hint === filters.project_id)
@@ -205,6 +205,13 @@ export function statusView(data, filters = {}) {
   return {
     items,
     active_jobs,
+    untracked_activity: Object.keys(filters).length ? [] : executionActivity?.activity ?? [],
+    activity_inspection: executionActivity ? {
+      checked_at: executionActivity.checked_at,
+      process_inspection: executionActivity.process_inspection,
+      worktree_inspection: executionActivity.worktree_inspection,
+      warnings: executionActivity.warnings,
+    } : { checked_at: null, process_inspection: "not_requested", worktree_inspection: "not_requested", warnings: [] },
     next_departure,
     allocations: {
       capacity: scheduler?.capacity ?? null,

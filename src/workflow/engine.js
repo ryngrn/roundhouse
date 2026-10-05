@@ -93,11 +93,12 @@ export class Engine {
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
   processRecorder(collection, id) {
-    return (pid) => {
+    return (pid, launch = {}) => {
       const pending = this.store.change((data) => {
         const entity = data[collection][id];
         entity.processes ??= [];
-        entity.processes.push({ pid, at: new Date().toISOString() });
+        entity.processes.push({ pid, at: new Date().toISOString(), command: launch.command ?? null, cwd: launch.cwd ?? null,
+          started_at: launch.started_at ?? null });
       });
       return pending;
     };

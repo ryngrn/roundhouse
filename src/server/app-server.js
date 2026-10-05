@@ -78,7 +78,7 @@ function localStorageIdentity(store) {
 
 export async function overviewFor(roundhouse, loop) {
   const storage = await roundhouse.getStorageStatus();
-  if (!storage.connected) return { items: [], active_jobs: [], needs_you: [], counts: {},
+  if (!storage.connected) return { items: [], active_jobs: [], untracked_activity: [], needs_you: [], counts: {},
     connection: { local_service: "connected", storage, worker: loop.status() } };
   const status = await roundhouse.getWorkStatus();
   const needs = await roundhouse.getNeedsHuman();
@@ -136,7 +136,7 @@ export async function startRoundhouseServer({
   loop.commandQueue ??= relay;
   let localSnapshot = {
     captured_at: null,
-    items: [], active_jobs: [], needs_you: [], counts: { needs_you: 0, active: 0, queued: 0, completed: 0, blocked: 0 },
+    items: [], active_jobs: [], untracked_activity: [], needs_you: [], counts: { needs_you: 0, active: 0, queued: 0, completed: 0, blocked: 0 },
     notifications: [], cursor: null,
     connection: { local_service: "connected", worker: loop.status(), storage: localStorageIdentity(roundhouse.store) },
   };

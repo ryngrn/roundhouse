@@ -96,6 +96,15 @@ artifacts. PostgreSQL-backed nodes heartbeat their stable installation identitie
 only while safety-critical work owns a lease. The installed LaunchAgent keeps the
 local server alive; an HTTP wake stream and local mutations trigger worker cycles.
 
+Status reads also make a best-effort local observation of configured executor
+processes and configured-repository worktrees. Observations are correlated with
+the durable process-launch and prepared-worktree records. An unmatched observation
+is projected separately as `untracked_activity`; it never becomes an active job and
+does not imply a Roundhouse owner, lifecycle state, completion, verification, or
+delivery. Platforms that cannot provide process or Git worktree inspection report
+that limitation in `activity_inspection` while normal durable status and dispatch
+continue unchanged.
+
 Time and external-condition waits are eligibility state on Ready jobs, independent
 from the item/job lifecycle state. Absolute timestamps avoid timezone/default-clock
 reinterpretation. Recurrence timestamps derive from a persisted anchor and ordinal,

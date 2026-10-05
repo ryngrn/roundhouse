@@ -247,6 +247,10 @@ test("served browser client renders local and machine-local active jobs from the
   });
   const script = fs.readFileSync(new URL("../src/web/app.js", import.meta.url), "utf8");
   const projected = statusView(h.store.read());
+  projected.untracked_activity = [
+    { kind: "process", status: "untracked", authoritative: false, pid: 909, parent_pid: 1, executable: "codex", observed_at: "2026-10-05T00:00:00.000Z" },
+    { kind: "worktree", status: "untracked", authoritative: false, repository: "/repo", path: "/tmp/manual-agent", branch: "manual-agent", commit: "abc", observed_at: "2026-10-05T00:00:00.000Z" },
+  ];
   const responses = {
     "/api/overview": { ...projected, counts: { needs_you: 0, active: 2, queued: 0, completed: 0, blocked: 0 },
       connection: { worker: { running: false }, storage: { kind: "local", node: null } } },
@@ -266,6 +270,11 @@ test("served browser client renders local and machine-local active jobs from the
   assert.match(rendered, /Chugging along…\s+kmac · Update Kmac\s+Machine-local execution on iMac/);
   assert.match(rendered, /Agent · roundhouse-imac\s+Directory · \/home\/ryngrn\/kmac\s+Remote run · remote-run-42/);
   assert.doesNotMatch(rendered, /Herdr queue/i);
+  const untracked = elementText(document.querySelector("#untracked-activity"));
+  assert.equal(document.querySelector("#untracked-activity-section").hidden, false);
+  assert.match(untracked, /Untracked\s+Possible executor process · PID 909\s+Executable · codex/);
+  assert.match(untracked, /Repository worktree · manual-agent\s+\/tmp\/manual-agent/);
+  assert.match(untracked, /Observed only · no job, owner, completion, or delivery inferred/);
 });
 
 test("served browser client uses one explicit atomic decision-session submission", async (t) => {

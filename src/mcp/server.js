@@ -25,6 +25,12 @@ const activeJobSchema = z.object({
   workspace_mode: z.string().nullable(), working_directory: z.string().nullable(), remote_run_id: z.union([z.string(), z.number()]).nullable(),
   remote_execution: z.unknown().nullable(), owning_node: z.string().nullable(),
 }).passthrough();
+const untrackedActivitySchema = z.object({
+  kind: z.enum(["process", "worktree"]), status: z.literal("untracked"), authoritative: z.literal(false), observed_at: z.string(),
+}).passthrough();
+const activityInspectionSchema = z.object({
+  checked_at: z.string().nullable(), process_inspection: z.string(), worktree_inspection: z.string(), warnings: z.array(z.string()),
+});
 const completionReportSchema = z.object({
   summary: z.string(), design_decisions: z.array(z.string()),
   evidence: z.array(z.object({ id: z.string(), passed: z.boolean(), summary: z.string(), artifacts: z.array(z.string()) })),
@@ -138,7 +144,8 @@ const toolSpecs = [
     title: "Get Roundhouse work status",
     description: "Get compact durable status for Roundhouse Depot items and their work. Use this for progress or outcome questions; it does not change or advance work.",
     input: filterSchema,
-    output: z.object({ items: z.array(itemSchema), active_jobs: z.array(activeJobSchema), next_departure: nextDepartureSchema.nullable(), allocations: allocationsSchema,
+    output: z.object({ items: z.array(itemSchema), active_jobs: z.array(activeJobSchema), untracked_activity: z.array(untrackedActivitySchema),
+      activity_inspection: activityInspectionSchema, next_departure: nextDepartureSchema.nullable(), allocations: allocationsSchema,
       projects: z.record(z.string(), z.unknown()),
       project_candidates: z.record(z.string(), z.unknown()), system_metadata: z.record(z.string(), z.unknown()) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

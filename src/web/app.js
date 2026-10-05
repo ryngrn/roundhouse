@@ -167,6 +167,25 @@ function renderActiveJobs(overview) {
   }
 }
 
+function renderUntrackedActivity(overview) {
+  const section = $("#untracked-activity-section");
+  const root = $("#untracked-activity");
+  const activity = overview.untracked_activity || [];
+  section.hidden = activity.length === 0;
+  root.replaceChildren();
+  for (const entry of activity) {
+    const card = node("div", undefined, "active-job untracked-activity");
+    const heading = node("span", undefined, "active-job-heading");
+    heading.append(node("span", "Untracked", "state state-untracked"),
+      node("strong", entry.kind === "process" ? `Possible executor process · PID ${entry.pid}` : `Repository worktree · ${entry.branch || "detached"}`));
+    const details = node("span", undefined, "active-job-details");
+    details.append(node("span", entry.kind === "process" ? `Executable · ${entry.executable || "configured executor"}` : entry.path, "active-job-location"));
+    details.append(node("span", "Observed only · no job, owner, completion, or delivery inferred", "active-job-fact"));
+    card.append(heading, details);
+    root.append(card);
+  }
+}
+
 function rowMeta(label, value, className = "") {
   const span = node("span", undefined, `row-meta ${className}`.trim());
   span.append(node("b", label), node("span", value || "—"));
@@ -499,7 +518,7 @@ let pendingLoads = 0;
 async function readAndRender() {
   try {
     const [overview, config] = await Promise.all([api("/api/overview"), api("/api/config")]); currentOverview = overview; configuration = config.configuration;
-    renderConnection(overview); renderActiveJobs(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
+    renderConnection(overview); renderActiveJobs(overview); renderUntrackedActivity(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
   } catch (error) { $("#connection").textContent = `● App unavailable · ${error.message}`; $("#connection").className = "connection failed"; }
 }
 function load() {

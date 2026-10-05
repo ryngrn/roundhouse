@@ -48,7 +48,7 @@ export async function runProcess(command, { cwd, input = "", timeout = 120000, o
   child.stderr.on("data", (chunk) => append("err", chunk));
   child.stdin.on("error", () => {});
   let startError;
-  try { if (child.pid) await onStart(child.pid); } catch (error) { startError = error; terminate(); }
+  try { if (child.pid) await onStart(child.pid, { command: [...command], cwd: cwd ?? null, started_at }); } catch (error) { startError = error; terminate(); }
   child.stdin.end(input);
   const exit_code = await new Promise((resolve) => {
     child.once("error", (error) => { stderr += error.message; resolve(-1); });

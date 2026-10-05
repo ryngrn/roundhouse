@@ -116,6 +116,11 @@ dialog { padding:0; color:var(--text); background:var(--surface-1); border:1px s
 .active-job-location { color:var(--moving); font-weight:720; }
 .active-job-fact { overflow:hidden; max-width:100%; text-overflow:ellipsis; white-space:nowrap; }
 .active-job-arrow { color:var(--moving); font-size:16px; }
+.untracked-activity-panel { border-color:#5a492c; box-shadow:inset 3px 0 var(--signal); }
+.untracked-activity-panel .active-jobs-header { background:var(--signal-muted); border-color:#4c3d22; }
+.untracked-activity { grid-template-columns:minmax(230px,.8fr) minmax(360px,1.2fr); }
+.untracked-activity .state,.state-untracked { color:var(--signal); background:var(--signal-muted); border-color:#5a492c; }
+.untracked-activity .active-job-location { color:var(--signal); }
 
 .portfolio-controls { display:grid; grid-template-columns:minmax(260px,1fr) auto auto auto auto; align-items:center; gap:8px; padding:9px 10px; background:var(--surface-0); border:1px solid var(--border); border-radius:var(--radius-md); }
 .search-control { position:relative; display:flex; align-items:center; min-width:0; }

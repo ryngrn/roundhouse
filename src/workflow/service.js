@@ -6,6 +6,7 @@ import { normalizeDepotIntake, submitToDepot } from "./intake-contract.js";
 import { itemView, needsHumanView, notificationView, statusView } from "./views.js";
 import { mapResult } from "../storage/repository.js";
 import { migrateLegacyDecisionQuestions } from "./legacy-decisions.js";
+import { inspectExecutionActivity } from "./execution-activity.js";
 
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const jsonSize = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -44,11 +45,12 @@ export function normalizeIntake(input, adapter = {}) {
 }
 
 export class RoundhouseService {
-  constructor({ stateDirectory, configFile, store, engine } = {}) {
+  constructor({ stateDirectory, configFile, store, engine, activityInspector = inspectExecutionActivity } = {}) {
     this.store = store ?? new Store(stateDirectory);
     this.configFile = configFile ?? engine?.config?.filename ?? null;
     this.config = engine?.config ?? (configFile ? loadWorkflowConfig(configFile) : null);
     this.engine = engine ?? (this.config ? new Engine({ store: this.store, config: this.config }) : null);
+    this.activityInspector = activityInspector;
     // Idempotent domain migration through the persistence boundary. This keeps
     // the service compatible with alternate stores while upgrading legacy data.
     this.initialization = this.store.shared ? null : migrateLegacyDecisionQuestions(this.store);
@@ -72,7 +74,16 @@ export class RoundhouseService {
   }
 
   getWorkStatus(filters = {}) {
-    return mapResult(this.store.read(), (data) => statusView(data, validateFilters(filters)));
+    return mapResult(this.store.read(), (data) => {
+      let inspection;
+      try { inspection = this.activityInspector({ data, projects: this.config?.projects ?? [], providers: this.config?.execution?.providers ?? [],
+        stateDirectory: this.store.directory }); }
+      catch (error) {
+        inspection = { checked_at: new Date().toISOString(), process_inspection: "unavailable", worktree_inspection: "unavailable",
+          warnings: [`Execution activity inspection unavailable: ${error.message}`], activity: [] };
+      }
+      return statusView(data, validateFilters(filters), inspection);
+    });
   }
 
   getNotifications(options = {}) {

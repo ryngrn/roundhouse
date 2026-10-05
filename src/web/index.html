@@ -36,6 +36,14 @@
       <div id="active-jobs" class="active-jobs" aria-live="polite"></div>
     </section>
 
+    <section id="untracked-activity-section" class="active-jobs-panel untracked-activity-panel" aria-labelledby="untracked-activity-heading" hidden>
+      <header class="active-jobs-header">
+        <div><span class="eyebrow">Observed locally</span><h2 id="untracked-activity-heading">Untracked execution activity</h2></div>
+        <p>Possible executor activity without matching Roundhouse launch provenance. This is not an active job or delivery status.</p>
+      </header>
+      <div id="untracked-activity" class="active-jobs" aria-live="polite"></div>
+    </section>
+
     <section class="portfolio-controls" aria-label="Project controls">
       <label class="search-control"><span aria-hidden="true">⌕</span><input id="project-search" type="search" placeholder="Search projects, tasks, or labels…" aria-label="Search projects, tasks, or labels"></label>
       <label class="select-control"><span>Sort:</span><select id="project-sort" aria-label="Sort projects"><option value="priority">Priority</option><option value="name">Name</option></select></label>
