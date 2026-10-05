@@ -33,8 +33,9 @@ export function loadWorkflowConfig(filename) {
       check(commandValid(rule.command), "Verification command must be an argv array.");
     }
     const executor = p.executor ?? { kind: "codex", bin: "codex" };
-    check(["codex", "command"].includes(executor.kind), "Unknown executor.");
+    check(["codex", "claude", "command"].includes(executor.kind), "Unknown executor.");
     if (executor.kind === "command") check(commandValid(executor.command), "Executor requires an argv array.");
+    if (executor.kind === "claude" && executor.allowed_tools !== undefined) check(commandValid(executor.allowed_tools), "allowed_tools must be a nonempty list of tool rules.");
     check((p.runtime ?? "local") === "local", "Only the local runtime is installed.");
     const timeout_ms = p.timeout_ms ?? 120 * 60_000;
     check(Number.isInteger(timeout_ms) && timeout_ms > 0, "timeout_ms must be positive.");
@@ -42,7 +43,7 @@ export function loadWorkflowConfig(filename) {
     return { ...p, repository, policy, executor, runtime: "local", timeout_ms, remote: p.remote ?? "origin", base_ref: p.base_ref ?? "HEAD" };
   });
   const decision = raw.decision ?? { kind: "codex", bin: "codex" };
-  check(["codex", "command"].includes(decision.kind), "Unknown decision provider.");
+  check(["codex", "claude", "command"].includes(decision.kind), "Unknown decision provider.");
   if (decision.kind === "command") check(commandValid(decision.command), "Decision provider requires an argv array.");
   const max_jobs_per_run = raw.max_jobs_per_run ?? 20;
   check(Number.isInteger(max_jobs_per_run) && max_jobs_per_run > 0 && max_jobs_per_run <= 1000, "max_jobs_per_run must be 1–1000.");

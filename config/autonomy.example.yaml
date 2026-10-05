@@ -18,7 +18,7 @@ projects:
     max_concurrent_runs: 1
     runtime: local
     executor:
-      kind: codex
+      kind: codex   # or claude; claude also accepts allowed_tools, e.g. [Read, Edit, Write, Glob, Grep, "Bash(npm test:*)"]
       bin: codex
     timeout_ms: 7200000
     policy:

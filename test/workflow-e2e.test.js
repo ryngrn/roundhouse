@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { harness } from "./support/harness.js";
+import { harness, fakeClaude } from "./support/harness.js";
 import { Engine } from "../src/workflow/engine.js";
 import { Store } from "../src/workflow/store.js";
 import { git } from "../src/workflow/delivery.js";
@@ -238,4 +238,21 @@ test("e2e: independent CLI worker is excluded, crash recovery blocks interrupted
   assert.equal(recovered.projects.example.blocked, true);
   assert.equal((await h.engine.run()).executed, 0);
   assert.equal(h.store.read().jobs[executing.id].attempts.length, 1);
+});
+test("e2e: Claude Code interprets and implements a request, then Roundhouse verifies and pushes a claude/ branch", async () => {
+  const h = harness({ decision: { kind: "claude", bin: fakeClaude }, executor: { kind: "claude", bin: fakeClaude } });
+  h.submit("claude useful change");
+  const result = await h.engine.run();
+  const job = Object.values(result.jobs)[0];
+  assert.equal(job.state, "Shipped");
+  assert.match(job.shipping.branch, /^claude\/roundhouse-/);
+  assert.equal(git(h.remote, ["rev-parse", job.shipping.branch]), job.shipping.commit);
+  assert.match(git(h.remote, ["show", `${job.shipping.commit}:feature.txt`]), /claude useful change/);
+});
+test("e2e: a Claude Code error result is a failed attempt even with exit 0", async () => {
+  const h = harness({ policy: { max_rework_attempts: 0 }, decision: { kind: "claude", bin: fakeClaude }, executor: { kind: "claude", bin: fakeClaude } });
+  h.submit("executor fails under claude");
+  const job = Object.values((await h.engine.run()).jobs)[0];
+  assert.equal(job.state, "Blocked");
+  assert.equal(job.shipping, undefined);
 });

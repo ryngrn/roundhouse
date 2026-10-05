@@ -55,7 +55,22 @@ and prints a product result with `passed: true`. It retains its temporary direct
 and `demo-result.json` for inspection. It never contacts a hosted Git provider.
 `npm run demo -- --live` exercises the same workflow using your authenticated
 Codex CLI for both interpretation and execution. It may use model quota. Set
-`ROUNDHOUSE_CODEX_BIN` if Codex is not on PATH.
+`ROUNDHOUSE_CODEX_BIN` if Codex is not on PATH. `npm run demo -- --live --claude`
+does the same with your authenticated Claude Code CLI; set `ROUNDHOUSE_CLAUDE_BIN`
+if `claude` is not on PATH.
+
+## Claude Code
+
+Set `decision.kind: claude` and/or a project's `executor.kind: claude`. Both run
+`claude -p` headless with session persistence disabled. Decisions run with no
+tools and `--json-schema`, so Claude Code returns the decision object directly.
+Execution runs in the job worktree with `--permission-mode acceptEdits` and an
+explicit `allowed_tools` list (default `Read, Edit, Write, Glob, Grep`). Anything
+outside that list, including every shell command, is denied rather than prompted.
+Add narrow rules such as `Bash(npm test:*)` when the executor should run checks
+itself; Roundhouse still runs the configured verification afterwards. Only the
+final result summary is retained. A result marked as an error fails the attempt
+even when the process exits 0. Claude Code jobs ship on `claude/roundhouse-<job-id>`.
 
 ## Run a real request
 
@@ -84,7 +99,8 @@ the decision provider infers a project from the configured project context.
 
 ## Shipping and verification
 
-The engine creates an isolated worktree on `codex/roundhouse-<job-id>`, executes the
+The engine creates an isolated worktree on `codex/roundhouse-<job-id>` (or
+`claude/roundhouse-<job-id>` for the Claude Code executor), executes the
 work there, commits a candidate, and tests that exact commit. Changes made during
 verification invalidate it. Failed candidates are retained locally but not shipped.
 The execution runtime is instructed not to push; delivery belongs to Roundhouse.
@@ -104,7 +120,7 @@ Delivery evidence includes repository, remote, branch, commit, verification comm
 arguments, output, exit codes, timestamps, and nullable PR/deployment fields.
 Project commands are trusted executable configuration, not model-generated shell
 strings. Local command executors are not a security sandbox; Codex uses its
-workspace-write sandbox. Use trusted projects and commands.
+workspace-write sandbox, and Claude Code is limited to its configured tool allowlist. Use trusted projects and commands.
 
 Subsequent jobs for a project start from its last shipped commit, so queued changes
 build on each other even when delivered to separate branches. There is no implicit

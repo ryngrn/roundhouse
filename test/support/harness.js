@@ -8,7 +8,8 @@ import { loadWorkflowConfig } from "../../src/workflow/config.js";
 import { Engine } from "../../src/workflow/engine.js";
 
 export const provider = fileURLToPath(new URL("./providers.mjs", import.meta.url));
-export function harness({ policy = {}, verification, executor } = {}) {
+export const fakeClaude = fileURLToPath(new URL("./fake-claude.mjs", import.meta.url));
+export function harness({ policy = {}, verification, executor, decision } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-flow-"));
   const repository = path.join(root, "repository");
   const remote = path.join(root, "remote.git");
@@ -23,7 +24,7 @@ export function harness({ policy = {}, verification, executor } = {}) {
   git(repository, ["remote", "add", "origin", remote]);
   git(repository, ["push", "-u", "origin", "main"]);
   const configuration = {
-    decision: { kind: "command", command: [process.execPath, provider, "decide"] },
+    decision: decision ?? { kind: "command", command: [process.execPath, provider, "decide"] },
     max_jobs_per_run: 10,
     projects: [{ id: "example", name: "Example", purpose: "Prove delivery", success_state: "Verified changes are delivered", status: "active",
       repository, context_sources: ["README.md"], executor: executor ?? { kind: "command", command: [process.execPath, provider, "execute"] },

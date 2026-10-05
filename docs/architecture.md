@@ -8,14 +8,14 @@ legacy manual-delivery adapter; it is not the autonomous workflow.
 | --- | --- | --- |
 | Depot source | CLI JSON/text and exported Notion page | Submit immutable input with a stable key |
 | Project/context store | YAML/JSON manifests plus local context files | Validated project policy and context snapshot |
-| Decision provider | Structured Codex response or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
+| Decision provider | Structured Codex or Claude Code response, or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
 | Durable workflow | Atomic local snapshot store, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
-| Execution runtime | Local subprocess, Codex or configured command | `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
+| Execution runtime | Local subprocess, Codex, Claude Code or configured command | `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
 | Verification | Configured argv commands plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree, commit, verified branch push | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | CLI approval/clarification and bridge event outbox | Revision-bound human response, durable audit record |
 
-The Engine imports no Notion SDK and contains no Codex command-line flags. Those
+The Engine imports no Notion SDK and contains no Codex or Claude Code command-line flags. Those
 belong to adapters. Runtime state is distinct from product state: a process exiting
 does not decide that work is Shipped or needs Review.
 
@@ -72,6 +72,6 @@ files are private local data, not a tamper-proof audit system or multi-user auth
 service. The `actor` field records the local operator's declared identity.
 
 No hidden chain-of-thought is requested or persisted. Decision records contain only
-the schema fields; raw Codex event streams are discarded. Command-provider output
+the schema fields; raw Codex event streams are discarded, and only Claude Code's final result summary is kept. Command-provider output
 and verification output are retained as configured operational evidence, so avoid
 commands that print secrets.
