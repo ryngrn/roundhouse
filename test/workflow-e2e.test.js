@@ -145,6 +145,16 @@ test("integration: unsupported delivery policy blocks before executor invocation
   const job = Object.values((await h.engine.run()).jobs)[0];
   assert.equal(job.state, "Blocked"); assert.equal(job.attempts.length, 0);
 });
+test("integration: execution boundary rejects Ready work whose acceptance criteria were removed", async () => {
+  const h = harness(); const item = h.submit("criteria boundary");
+  await h.engine.decide(item.id);
+  const jobId = h.store.read().items[item.id].job_ids[0];
+  h.store.change((data) => { data.jobs[jobId].work.acceptance_criteria = []; });
+  const job = (await h.engine.run()).jobs[jobId];
+  assert.equal(job.state, "Blocked");
+  assert.equal(job.attempts.length, 0);
+  assert.match(job.history.at(-1).reason, /requires acceptance criteria/);
+});
 test("integration: dirty source repository is preserved and blocks work", async () => {
   const h = harness(); fs.writeFileSync(path.join(h.repository, "personal.txt"), "preserve me"); h.submit("change");
   const job = Object.values((await h.engine.run()).jobs)[0];

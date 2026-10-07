@@ -48,6 +48,12 @@ export function computeAdvisory(project) {
   };
 }
 
+export function hasExecutableAcceptanceCriteria(work, project) {
+  return Boolean(work && work.title?.trim() && work.outcome?.trim() && work.acceptance_criteria?.length &&
+    work.acceptance_criteria.every((criterion) => criterion.description?.trim() && criterion.verification_ids?.length &&
+      criterion.verification_ids.every((id) => project.verification.some((verification) => verification.id === id))));
+}
+
 export function routeDecision(decision, projects, explicitProject) {
   validateDecision(decision);
   const project = projects.find((p) => p.id === decision.project);
@@ -63,7 +69,7 @@ export function routeDecision(decision, projects, explicitProject) {
     const question = decision.question || "What single detail is needed to make this request executable?";
     return { state: "Needs Clarification", reason: question, question, refinement: "scope" };
   }
-  if (!decision.work_items.length || decision.work_items.some((w) => !w.title.trim() || !w.outcome.trim() || !w.acceptance_criteria.length || w.acceptance_criteria.some((a) => !a.description.trim() || !a.verification_ids.length || a.verification_ids.some((id) => !project.verification.some((v) => v.id === id))))) {
+  if (!decision.work_items.length || decision.work_items.some((work) => !hasExecutableAcceptanceCriteria(work, project))) {
     const question = "What acceptance criteria, mapped to the configured verification checks, must be met?";
     return { state: "Needs Clarification", reason: question, question, refinement: "acceptance_criteria" };
   }

@@ -203,6 +203,7 @@ function workItemFromJob(job, data) {
     display_state: job.state,
     needs_you: ["Needs Clarification", "Review"].includes(job.state),
     project: job.project_id ?? null,
+    goal: job.goal_id ?? parent?.goal_id ?? null,
     priority: parent?.input?.priority || "P2",
     agent_role: parent?.decision?.executor || job.project_context?.executor?.kind || "Executor",
     owning_node: job.project_context?.name || job.project_id || "Roundhouse",

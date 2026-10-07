@@ -2,7 +2,7 @@ import path from "node:path";
 import { acquireLock, digest } from "./store.js";
 import { record } from "./state.js";
 import { projectContext } from "./config.js";
-import { computeAdvisory, DecisionProvider, routeDecision } from "./decision.js";
+import { computeAdvisory, DecisionProvider, hasExecutableAcceptanceCriteria, routeDecision } from "./decision.js";
 import { LocalRuntime, CommandVerifier } from "./runtime.js";
 import { GitDelivery } from "./delivery.js";
 
@@ -129,10 +129,11 @@ export class Engine {
   async execute(id, project) {
     let releaseRepo;
     try {
-      releaseRepo = this.shipping.lock(project);
-      this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? null; });
       const state = this.store.read();
       const job = state.jobs[id];
+      if (!hasExecutableAcceptanceCriteria(job?.work, project)) throw new Error("Execution requires acceptance criteria mapped to configured verification checks.");
+      releaseRepo = this.shipping.lock(project);
+      this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? null; });
       if (digest(projectContext(project)) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
       if (!this.shipping.supports(project.policy.shipping)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
