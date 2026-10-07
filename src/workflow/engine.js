@@ -195,7 +195,7 @@ export class Engine {
       const stopped = new Set();
       while (executed < this.config.max_jobs_per_run) {
         const state = this.store.read();
-        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review"));
+        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && p.runtime === "local" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review"));
         // Weighted turns across projects; each project's own order is preserved.
         candidates.sort((a, b) => ((state.projects[a.id]?.turns ?? 0) / a.weight) - ((state.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
         let selected;

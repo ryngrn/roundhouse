@@ -36,11 +36,11 @@ export function loadWorkflowConfig(filename) {
     check(["codex", "claude", "command"].includes(executor.kind), "Unknown executor.");
     if (executor.kind === "command") check(commandValid(executor.command), "Executor requires an argv array.");
     if (executor.kind === "claude" && executor.allowed_tools !== undefined) check(commandValid(executor.allowed_tools), "allowed_tools must be a nonempty list of tool rules.");
-    check((p.runtime ?? "local") === "local", "Only the local runtime is installed.");
+    check(["local", "herdr"].includes(p.runtime ?? "local"), "Unsupported runtime.");
     const timeout_ms = p.timeout_ms ?? 120 * 60_000;
     check(Number.isInteger(timeout_ms) && timeout_ms > 0, "timeout_ms must be positive.");
     check(p.context_sources === undefined || (Array.isArray(p.context_sources) && p.context_sources.every((s) => typeof s === "string")), "context_sources must be file paths.");
-    return { ...p, repository, policy, executor, runtime: "local", timeout_ms, remote: p.remote ?? "origin", base_ref: p.base_ref ?? "HEAD" };
+    return { ...p, repository, policy, executor, runtime: p.runtime ?? "local", timeout_ms, remote: p.remote ?? "origin", base_ref: p.base_ref ?? "HEAD" };
   });
   const decision = raw.decision ?? { kind: "codex", bin: "codex" };
   check(["codex", "claude", "command"].includes(decision.kind), "Unknown decision provider.");
