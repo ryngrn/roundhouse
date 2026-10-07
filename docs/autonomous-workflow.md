@@ -23,6 +23,14 @@ the aggregate item state; all jobs must ship before the item displays Shipped.
 The original request, clarifications, prior decisions, project context, and job
 attempts remain on disk.
 
+Project is the highest organization level. An item may carry an optional `goal_id`,
+but a goal is project-scoped metadata and is never used in place of project
+classification. Ambiguous project classification asks for the project first.
+Refinement then proceeds one current question at a time; each answer records the
+question it answered, and prior decisions and answers are supplied to the next
+decision pass. State written before structured questions existed remains readable
+and is adapted when the next clarification is submitted.
+
 The Codex decision provider returns structured JSON: likely project, project and
 execution confidence, context sufficiency, safety/approval judgments, dependencies,
 outcomes, executable acceptance criteria, runtime, executor, and shipping policy.
@@ -37,6 +45,12 @@ verification command runs, even if only some IDs are referenced by the decision.
 The decision agent must ask for clarification when those checks cannot establish
 the outcome. Automated tests establish what they actually check, not arbitrary
 product correctness; select meaningful project checks.
+
+Each classified item also exposes a local-first compute advisory. The advisory is
+informational: it recommends local compute only when the project's configured
+runtime is local, and explicitly retains a configured non-local runtime. Runtime,
+executor, and shipping mismatches still route to clarification and can never be
+overridden by the advisory.
 
 ## Try it without credentials
 
@@ -93,8 +107,9 @@ node src/cli.js depot status --state-dir /absolute/path/to/roundhouse-state
 ```
 
 The stable submission key makes retries idempotent. Reusing a key with different
-content is rejected. JSON input uses `text`, optional `project_id`, `source`, and
-`actor`. Explicit project selection is checked against the decision. Without it,
+content is rejected. JSON input uses `text`, optional `project_id`, optional
+project-scoped `goal_id`, `source`, and `actor`. Text submissions also accept
+`--goal`. Explicit project selection is checked against the decision. Without it,
 the decision provider infers a project from the configured project context.
 
 ## Shipping and verification

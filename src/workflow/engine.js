@@ -2,7 +2,7 @@ import path from "node:path";
 import { acquireLock, digest } from "./store.js";
 import { record } from "./state.js";
 import { projectContext } from "./config.js";
-import { DecisionProvider, routeDecision } from "./decision.js";
+import { computeAdvisory, DecisionProvider, hasExecutableAcceptanceCriteria, routeDecision } from "./decision.js";
 import { LocalRuntime, CommandVerifier } from "./runtime.js";
 import { GitDelivery } from "./delivery.js";
 
@@ -39,13 +39,27 @@ export class Engine {
         if (current.decision) current.decision_history.push(current.decision);
         current.decision = decision;
         current.project_id = project?.id ?? null;
+        current.goal_id ??= current.input.goal_id ?? null;
         current.policy_hash = project ? digest(project) : null;
         current.project_context = project ?? null;
+        current.compute_advisory = project ? computeAdvisory(project) : null;
         current.processes = [];
+        current.refinement ??= { active_question: null, answers: [] };
         if (decision.dependencies.some((dependency) => !data.jobs[dependency])) {
-          this.store.move(data, current, "Needs Clarification", "Decision referenced unknown dependencies.");
+          const question = "Which existing work items should this request depend on?";
+          this.store.move(data, current, "Needs Clarification", question);
+          current.refinement.active_question = {
+            id: `${current.id}:decision:${current.revision}`, prompt: question,
+            kind: "dependencies", revision: current.revision,
+          };
         } else {
           this.store.move(data, current, route.state, route.reason);
+          current.refinement.active_question = route.state === "Needs Clarification" ? {
+            id: `${current.id}:decision:${current.revision}`,
+            prompt: route.question || route.reason,
+            kind: route.refinement ?? "scope",
+            revision: current.revision,
+          } : null;
           if (route.state === "Ready") this.createJobs(data, current);
         }
       });
@@ -57,7 +71,7 @@ export class Engine {
     item.job_ids = item.decision.work_items.map((work, index) => {
       const id = `${item.id}-${index + 1}`;
       if (data.jobs[id]) throw new Error("Work already exists for this decision.");
-      data.jobs[id] = record(id, { state: "Ready", parent_id: item.id, project_id: item.project_id,
+      data.jobs[id] = record(id, { state: "Ready", parent_id: item.id, project_id: item.project_id, goal_id: item.goal_id ?? null,
         work, project_context: item.project_context, policy_hash: item.policy_hash,
         dependencies: [...item.decision.dependencies, ...(index ? [`${item.id}-${index}`] : [])],
         attempts: [], processes: [], position: Object.keys(data.jobs).length });
@@ -83,17 +97,29 @@ export class Engine {
       return item;
     });
   }
-  clarify(id, text, actor, projectId) {
+  clarify(id, text, actor, projectId, questionId) {
     if (!text?.trim() || !actor?.trim()) throw new Error("Clarification needs text and actor.");
     return this.store.change((data) => {
       const item = data.items[id];
       if (!item || !["Needs Clarification", "Review"].includes(item.state) || item.job_ids.length) throw new Error("Item cannot be clarified here.");
-      item.clarifications.push({ text, actor, project_id: projectId ?? null, at: new Date().toISOString() });
+      // Lazily adapt state written before structured refinement questions existed.
+      const active = item.refinement?.active_question ?? {
+        id: item.state === "Needs Clarification" ? `${item.id}:decision:${item.revision}` : `${item.id}:decision`,
+        prompt: item.decision?.question || item.history.at(-1)?.reason || "What detail is needed before continuing?",
+        kind: item.state === "Review" ? "review" : "scope", revision: item.revision,
+      };
+      if (questionId && questionId !== active?.id) throw new Error("Clarification must answer the current refinement question.");
       if (projectId) {
         if (!this.config.projects.some((p) => p.id === projectId)) throw new Error("Unknown project.");
         // Original input remains immutable; the provider receives this explicit correction.
         item.selected_project = projectId;
       }
+      const answer = { question_id: active?.id ?? null, question: active?.prompt ?? null, text, actor, project_id: projectId ?? null, at: new Date().toISOString() };
+      item.clarifications.push(answer);
+      item.refinement ??= { active_question: null, answers: [] };
+      item.refinement.answers ??= [];
+      item.refinement.answers.push(answer);
+      item.refinement.active_question = null;
       this.store.move(data, item, "Decision", "Human clarification received.");
       // Re-entered by the next run without automatically repeating an interrupted decision.
       item.awaiting_decision = true;
@@ -103,10 +129,11 @@ export class Engine {
   async execute(id, project) {
     let releaseRepo;
     try {
-      releaseRepo = this.shipping.lock(project);
-      this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? null; });
       const state = this.store.read();
       const job = state.jobs[id];
+      if (!hasExecutableAcceptanceCriteria(job?.work, project)) throw new Error("Execution requires acceptance criteria mapped to configured verification checks.");
+      releaseRepo = this.shipping.lock(project);
+      this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? null; });
       if (digest(projectContext(project)) !== job.policy_hash) throw new Error("Project policy or context changed after decision; resubmit for a new decision.");
       if (!this.shipping.supports(project.policy.shipping)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
@@ -195,7 +222,7 @@ export class Engine {
       const stopped = new Set();
       while (executed < this.config.max_jobs_per_run) {
         const state = this.store.read();
-        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review"));
+        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && p.runtime === "local" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review"));
         // Weighted turns across projects; each project's own order is preserved.
         candidates.sort((a, b) => ((state.projects[a.id]?.turns ?? 0) / a.weight) - ((state.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
         let selected;

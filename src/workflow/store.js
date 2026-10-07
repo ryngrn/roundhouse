@@ -62,6 +62,9 @@ export class Store {
   }
   submit(input, key) {
     if (!input || typeof input.text !== "string" || !input.text.trim()) throw new Error("Depot input requires nonempty text.");
+    for (const field of ["project_id", "goal_id"]) {
+      if (input[field] !== undefined && (typeof input[field] !== "string" || !input[field].trim())) throw new Error(`${field} must be a nonempty string when provided.`);
+    }
     if (typeof key !== "string" || !key.trim()) throw new Error("A stable submission key is required.");
     const id = digest(key).slice(0, 24);
     return this.change((data) => {
@@ -69,7 +72,11 @@ export class Store {
         if (digest(data.items[id].input) !== digest(input)) throw new Error("Submission key already exists with different content. Use clarify or a new key.");
         return data.items[id];
       }
-      data.items[id] = record(id, { input, clarifications: [], decision: null, job_ids: [] });
+      data.items[id] = record(id, {
+        input, project_id: input.project_id ?? null, goal_id: input.goal_id ?? null,
+        clarifications: [], decision: null, decision_history: [], job_ids: [],
+        refinement: { active_question: null, answers: [] },
+      });
       return data.items[id];
     });
   }

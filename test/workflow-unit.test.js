@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { transitions, record, transition } from "../src/workflow/state.js";
-import { validateDecision, routeDecision } from "../src/workflow/decision.js";
+import { computeAdvisory, validateDecision, routeDecision } from "../src/workflow/decision.js";
 import { Store, acquireLock } from "../src/workflow/store.js";
 import { runProcess } from "../src/workflow/runtime.js";
 import { notionInput } from "../src/workflow/cli.js";
@@ -36,6 +36,23 @@ test("unit: threshold boundaries, authority, configuration routing and readiness
   assert.throws(() => validateDecision({ ...decision, project_confidence: 2 }));
   assert.throws(() => validateDecision({ ...decision, private_reasoning: "not allowed" }));
 });
+test("unit: project classification, acceptance criteria, and compute advice remain policy bounded", () => {
+  const ambiguous = routeDecision({ ...decision, project: null }, [project]);
+  assert.deepEqual({ state: ambiguous.state, refinement: ambiguous.refinement }, { state: "Needs Clarification", refinement: "project" });
+  assert.match(ambiguous.question, /Which configured project/);
+  const missingCriteria = routeDecision({ ...decision, work_items: [{ ...decision.work_items[0], acceptance_criteria: [] }] }, [project]);
+  assert.equal(missingCriteria.refinement, "acceptance_criteria");
+  assert.match(missingCriteria.question, /acceptance criteria/i);
+  assert.deepEqual(computeAdvisory(project), {
+    preference: "local-first", configured_runtime: "local", applicable: true,
+    recommendation: "Use the configured local runtime when capacity and policy permit.",
+  });
+  const remote = computeAdvisory({ ...project, runtime: "herdr" });
+  assert.equal(remote.applicable, false);
+  assert.equal(remote.configured_runtime, "herdr");
+  assert.match(remote.recommendation, /Keep the configured herdr runtime/);
+  assert.equal(routeDecision({ ...decision, runtime: "local" }, [{ ...project, runtime: "herdr" }]).state, "Needs Clarification");
+});
 test("unit: idempotent submission, conflicting keys and owner-safe lock release", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-store-"));
   const store = new Store(directory);
@@ -49,6 +66,15 @@ test("unit: idempotent submission, conflicting keys and owner-safe lock release"
   assert.throws(() => store.recover(), /live/);
   release();
   assert.equal(new Store(directory).read().items[first.id].input.text, "idea");
+});
+test("unit: optional goals remain subordinate metadata on project-owned items", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-goal-"));
+  const store = new Store(directory);
+  const item = store.submit({ text: "idea", project_id: "example", goal_id: "launch" }, "goal-key");
+  assert.equal(item.project_id, "example");
+  assert.equal(item.goal_id, "launch");
+  assert.equal(item.refinement.active_question, null);
+  assert.throws(() => store.submit({ text: "idea", goal_id: " " }, "bad-goal"), /goal_id/);
 });
 test("unit: process failure, timeout and non-shell argv remain bounded", async () => {
   const failed = await runProcess([process.execPath, "-e", "process.exit(3)"]);

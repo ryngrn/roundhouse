@@ -7,6 +7,9 @@ if (process.argv[2] === "decide") {
   const project = packet.projects.find((p) => p.id === packet.input.project_id) ?? packet.projects[0];
   const text = packet.input.text;
   const low = text.includes("ambiguous") && packet.clarifications.length === 0;
+  if (text.includes("require prior decision") && packet.clarifications.length && packet.prior_decisions.length !== 1) {
+    throw new Error("Prior structured decision was not preserved for refinement.");
+  }
   const review = text.includes("approval");
   const titles = text.includes("decompose") ? ["first part", "second part"] : [text];
   process.stdout.write(JSON.stringify({

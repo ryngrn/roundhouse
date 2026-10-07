@@ -52,6 +52,29 @@ test("relay: dashboard projection exposes changed state for the web dashboard", 
   assert.equal(projection.overview.counts.queued, 1);
 });
 
+test("relay: refinement sessions accept only the current single question", async () => {
+  const h = harness();
+  const item = h.submit("ambiguous idea");
+  const decided = await h.engine.run();
+  const question = decided.items[item.id].refinement.active_question;
+  await assert.rejects(() => applyRemoteCommand({
+    store: h.store, config: h.config,
+    command: remoteCommand("decision_session", { item_id: item.id, answers: [
+      { question_id: question.id, answer: "First" },
+      { question_id: question.id, answer: "Second" },
+    ] }),
+  }), /exactly one/);
+  await applyRemoteCommand({
+    store: h.store, config: h.config,
+    command: remoteCommand("decision_session", { item_id: item.id, project_id: "example", answers: [
+      { question_id: question.id, answer: "Append a feature entry" },
+    ] }),
+  });
+  const updated = h.store.read().items[item.id];
+  assert.equal(updated.clarifications.length, 1);
+  assert.equal(updated.refinement.active_question, null);
+});
+
 test("relay: wake watcher syncs once on startup and once per ntfy message", async () => {
   const h = harness();
   let syncs = 0;

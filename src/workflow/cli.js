@@ -13,7 +13,8 @@ export function statusView(data) {
       const state = !jobs.length ? item.state : jobs.every((j) => j.state === "Shipped") ? "Shipped" :
         ["Blocked", "Review", "Rework", "Verification", "Executing", "Ready"].find((s) => jobs.some((j) => j.state === s));
       return { id: item.id, state, revision: item.revision, project: item.project_id ?? null,
-        question: item.decision?.question || item.history.at(-1)?.reason || null,
+        goal: item.goal_id ?? null, question: item.refinement?.active_question?.prompt || item.decision?.question || item.history.at(-1)?.reason || null,
+        refinement: item.refinement ?? null, compute_advisory: item.compute_advisory ?? null,
         jobs: jobs.map((job) => ({ id: job.id, title: job.work.title, state: job.state, reason: job.history.at(-1)?.reason,
           attempts: job.attempts.length, shipping: job.shipping ?? null })) };
     }), projects: data.projects,
@@ -45,7 +46,7 @@ export async function depotCommand(argv) {
     pickup: ["--state-dir", "--config", "--input"],
     "notion-updates": ["--state-dir"],
     "notion-ack": ["--state-dir", "--input"],
-    submit: ["--state-dir", "--input", "--key", "--text", "--project", "--config", "--notion"],
+    submit: ["--state-dir", "--input", "--key", "--text", "--project", "--goal", "--config", "--notion"],
     run: ["--state-dir", "--config", "--project"],
     status: ["--state-dir"], outbox: ["--state-dir"],
     approve: ["--state-dir", "--config", "--id", "--revision", "--actor"],
@@ -108,6 +109,7 @@ export async function depotCommand(argv) {
     if (options["--notion"]) input = notionInput(JSON.parse(fs.readFileSync(options["--notion"], "utf8")), loadWorkflowConfig(required("--config")).projects);
     else input = options["--input"] ? JSON.parse(fs.readFileSync(options["--input"], "utf8")) : { text: options["--text"], source: "cli", actor: "operator" };
     if (options["--project"]) input.project_id = options["--project"];
+    if (options["--goal"]) input.goal_id = options["--goal"];
     const item = store.submit(input, options["--key"] ?? (options["--notion"] ? input.source : required("--key")));
     return { id: item.id, state: item.state, message: "Saved in Depot. Run the worker to interpret and execute eligible work." };
   }
