@@ -90,7 +90,7 @@ test("relay: remote intake downloads verified assets into private state and proj
   assert.equal(fs.statSync(`${h.store.directory}/assets`).mode & 0o777, 0o700);
   assert.doesNotMatch(JSON.stringify(h.store.read()), /dedicated-test-secret/);
 
-  const projected = dashboardProjection(h.store.read(), h.config).overview.items[0].attachments[0];
+  const projected = dashboardProjection(h.store.read(), h.config).overview.items[0].assets[0];
   assert.deepEqual(projected, {
     id: assetId,
     filename: "reference.png",

@@ -239,7 +239,7 @@ function workItemFromJob(job, data) {
     prior_decisions: parent?.decision_history ?? [],
     history: job.history,
     questions: questionFor(job),
-    attachments: projectedAttachments(parent?.input?.attachments),
+    assets: projectedAttachments(parent?.input?.attachments),
   };
 }
 
@@ -273,7 +273,7 @@ function workItemFromItem(item) {
     prior_decisions: item.decision_history ?? [],
     history: item.history,
     questions: questionFor(item),
-    attachments: projectedAttachments(item.input?.attachments),
+    assets: projectedAttachments(item.input?.attachments),
   };
 }
 
