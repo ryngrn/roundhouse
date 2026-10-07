@@ -217,6 +217,15 @@ bytes, and total bytes. Designer work records material design decisions and expl
 browser/visual evidence. Automated checks and agent visual review have distinct
 evidence sources; Roundhouse does not treat an automated score as proof of beauty.
 
+Local execution guidance prefers the low-token `npx -y gh-axi` interface for
+GitHub operations and `npx -y chrome-devtools-axi` for browser automation,
+inspection, and verification. Existing Git/GitHub CLI and Playwright/browser
+tooling remain explicit fallbacks when AXI is unavailable or unsuitable. These are
+interface preferences, not additional authority: they cannot approve work, alter
+protected branches, authorize destructive operations or shipping, change configured
+verification policy, or infer delivery intent. Command boundaries remain argv-first;
+request content must never be interpolated into shell source.
+
 ## Try it without credentials
 
 From this repository:
