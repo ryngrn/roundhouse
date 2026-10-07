@@ -12,6 +12,8 @@ import { Store } from "../src/workflow/store.js";
 import { Engine } from "../src/workflow/engine.js";
 import { git } from "../src/workflow/delivery.js";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
+import { correlateExecutionActivity } from "../src/workflow/execution-activity.js";
+import { REMOTE_DESKTOP_COMMANDER_PERMITTED_USES } from "../src/workflow/remote-desktop-policy.js";
 import { harness } from "./support/harness.js";
 
 const provider = fileURLToPath(new URL("./support/acceptance-provider.mjs", import.meta.url));
@@ -165,6 +167,20 @@ test("acceptance: desktop and menu consume authoritative active-job details with
   assert.doesNotMatch(`${html}\n${web}\n${menu}`, /Herdr queue/i);
 });
 
+test("acceptance: RDC operational uses remain allowed while execution bypasses are rejected", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-rdc-acceptance-"));
+  assert.deepEqual(REMOTE_DESKTOP_COMMANDER_PERMITTED_USES, [
+    "transport", "inspection", "connectivity_check", "bootstrap", "emergency_repair",
+  ]);
+  assert.throws(() => validateWorkflowConfig({
+    projects: [{
+      id: "rdc-bypass", name: "RDC bypass", purpose: "Must be rejected", success_state: "Never dispatched", status: "active",
+      repository: root, executor: { kind: "command", command: ["sh", "-c", "rdc agent run"] },
+      verification: [{ id: "tests", command: [process.execPath, "--test"] }],
+    }],
+  }, path.join(root, "projects.yaml")), /executor cannot use Remote Desktop Commander/);
+});
+
 test("acceptance: dispatched machine-local Herdr work is app-visible while a local job completes, then becomes terminal", async () => {
   const h = harness({ policy: { max_rework_attempts: 0 } });
   const fixture = gatedMachineLocalHerdr(h.root);
@@ -189,7 +205,25 @@ test("acceptance: dispatched machine-local Herdr work is app-visible while a loc
   h.store.submit({ text: "remote machine-local acceptance", project_id: remote.id, source: "fixture", actor: "acceptance" }, "remote-machine-local");
   h.store.submit({ text: "parallel local regression", project_id: local.id, source: "fixture", actor: "acceptance" }, "parallel-local");
 
-  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const service = new RoundhouseService({ store: h.store, engine: h.engine,
+    activityInspector: ({ data, projects, providers }) => {
+      const remoteJob = Object.values(data.jobs).find((job) => job.project_id === remote.id);
+      const localJob = Object.values(data.jobs).find((job) => job.project_id === local.id);
+      const trackedProcess = remoteJob?.processes?.at(-1);
+      const activity = correlateExecutionActivity({ data, projects, providers,
+        observedProcesses: [
+          ...(trackedProcess ? [{ pid: trackedProcess.pid, command: trackedProcess.command }] : []),
+          { pid: 999_991, command: `${fixture.filename} --machine iMac agent prompt roundhouse-imac` },
+          { pid: 999_992, command: `logger ${fixture.filename} --machine iMac agent prompt roundhouse-imac` },
+        ],
+        observedWorktrees: [
+          { repository: h.repository, path: h.repository, branch: "main" },
+          ...(localJob?.prepared?.workspace ? [{ repository: h.repository, path: localJob.prepared.workspace, branch: localJob.prepared.branch }] : []),
+          { repository: h.repository, path: path.join(h.root, "manual-worktree"), branch: "manual-agent" },
+        ],
+      });
+      return { checked_at: "2026-10-07T12:00:00.000Z", process_inspection: "available", worktree_inspection: "available", warnings: [], activity };
+    } });
   const loop = { status: () => ({ running: true }) };
   const run = h.engine.run();
 
@@ -199,6 +233,12 @@ test("acceptance: dispatched machine-local Herdr work is app-visible while a loc
   const active = await appOverview(service, loop);
   assert.deepEqual(active.counts, { needs_you: 0, active: 1, queued: 0, completed: 1, blocked: 0 });
   assert.equal(active.active_jobs.length, 1);
+  assert.deepEqual(active.untracked_activity.map((entry) => [entry.kind, entry.pid ?? entry.branch]), [
+    ["process", 999_991], ["worktree", "manual-agent"],
+  ]);
+  assert.ok(active.untracked_activity.every((entry) => entry.authoritative === false && entry.status === "untracked"));
+  assert.equal(active.active_jobs[0].remote_execution.phase, "prompting");
+  assert.equal(active.active_jobs[0].remote_execution.machine_selector, "iMac");
   assert.deepEqual({
     project: active.active_jobs[0].project,
     state: active.active_jobs[0].state,
@@ -229,6 +269,8 @@ test("acceptance: dispatched machine-local Herdr work is app-visible while a loc
   const remoteTerminal = terminal.items.find((item) => item.project === remote.id).jobs[0];
   assert.equal(remoteTerminal.state, "Shipped");
   assert.equal(remoteTerminal.remote_run_id, "imac-run-42");
+  assert.equal(remoteTerminal.remote_execution.execution_id, "imac-run-42");
+  assert.equal(remoteTerminal.remote_execution.phase, "completed");
   assert.equal(remoteTerminal.shipping.source, "remote_agent_report");
   assert.equal(remoteTerminal.shipping.verification.independently_verified, false);
 });

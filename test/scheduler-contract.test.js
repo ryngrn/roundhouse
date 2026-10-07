@@ -110,10 +110,17 @@ test("execution boundary: Remote Desktop Commander retains operational uses but 
   ]);
   assert.equal(isRemoteDesktopCommanderCommand(["/usr/local/bin/rdc"]), true);
   assert.equal(isRemoteDesktopCommanderCommand(["npx", "remote-desktop-commander"]), true);
+  assert.equal(isRemoteDesktopCommanderCommand(["sh", "-c", "rdc agent run"]), true);
+  assert.equal(isRemoteDesktopCommanderCommand(["sh", "-c", "exec /opt/remote-desktop-commander agent run"]), true);
   assert.equal(isRemoteDesktopCommanderCommand(["herdr"]), false);
+  assert.equal(isRemoteDesktopCommanderCommand(["node", "/opt/rdc-notes.js"]), false);
+  assert.equal(isRemoteDesktopCommanderCommand(["node", "/opt/remote-desktop-commander-notes.js"]), false);
 
   assert.throws(() => validateWorkflowConfig(manifest(directory, {
     executor: { kind: "command", command: ["rdc", "agent", "run"] },
+  }), filename), /executor cannot use Remote Desktop Commander/);
+  assert.throws(() => validateWorkflowConfig(manifest(directory, {
+    executor: { kind: "command", command: ["sh", "-c", "rdc agent run"] },
   }), filename), /executor cannot use Remote Desktop Commander/);
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { providers: [
     { id: "rdc", kind: "command", capabilities: [], command: ["remote-desktop-commander"] },

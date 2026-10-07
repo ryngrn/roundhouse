@@ -105,6 +105,15 @@ delivery. Platforms that cannot provide process or Git worktree inspection repor
 that limitation in `activity_inspection` while normal durable status and dispatch
 continue unchanged.
 
+Correlation deliberately recognizes only configured executor command prefixes and
+prepared worktrees. A command that merely mentions an executor and the repository's
+main worktree are excluded to limit false positives. Detection remains advisory:
+PID reuse, wrappers, containers, remote hosts, and `machine_local` filesystems can
+hide or confuse observations. Operators inspect the reported local resource and
+durable provenance, preserve or stop unexpected work as appropriate, reconcile any
+external effects, and route unfinished intent back through Depot intake. They do
+not attach an observation to a job or infer delivery from it.
+
 Time and external-condition waits are eligibility state on Ready jobs, independent
 from the item/job lifecycle state. Absolute timestamps avoid timezone/default-clock
 reinterpretation. Recurrence timestamps derive from a persisted anchor and ordinal,

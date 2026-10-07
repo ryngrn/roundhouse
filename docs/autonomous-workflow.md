@@ -115,6 +115,16 @@ provider, project executor, execution-provider command, verification command,
 deployment command, or Herdr binary. It cannot claim, implement, verify, commit,
 push, or deliver project work.
 
+The supported ChatGPT path is `add_to_depot` → durable triage/readiness → an
+authoritative Roundhouse claim → the configured local executor or Herdr runtime.
+ChatGPT and Remote Desktop Commander do not own readiness, dispatch, verification,
+or delivery. Best-effort local process and worktree observations appear separately
+as untracked activity and never create or advance a job. An operator who sees one
+should inspect the reported process/worktree, preserve evidence, stop unexpected
+work when safe, reconcile possible side effects, and resubmit still-needed intent
+through the Depot. Absence of a warning is not proof that no work exists: remote
+machines and unavailable host inspection are outside this observation boundary.
+
 ### Repository-optional provider workflow
 
 The deterministic Green Family Cemetery acceptance fixture is the concrete

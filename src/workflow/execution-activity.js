@@ -14,10 +14,15 @@ function executorSignatures(projects, providers = []) {
   for (const project of projects ?? []) {
     if (project.executor?.kind === "codex") signatures.push(commandText([project.executor.bin ?? "codex", "exec"]));
     if (project.executor?.kind === "command" && project.executor.command?.length) signatures.push(commandText(project.executor.command));
-    if (project.runtime === "herdr") signatures.push("herdr --machine");
+    if (project.runtime === "herdr") signatures.push(commandText([project.herdr?.bin ?? "herdr", "--machine"]));
   }
   for (const provider of providers) if (provider.kind === "command" && provider.command?.length) signatures.push(commandText(provider.command));
   return [...new Set(signatures.filter(Boolean))];
+}
+
+function startsWithCommand(command, signature) {
+  const text = commandText(command);
+  return text === signature || (text.startsWith(signature) && /\s/.test(text[signature.length]));
 }
 
 function systemProcesses() {
@@ -48,11 +53,11 @@ export function correlateExecutionActivity({ data, projects = [], providers = []
   const preparedWorkspaces = new Set(Object.values(data.jobs ?? {}).map((job) => resolved(job.prepared?.workspace)).filter(Boolean));
   const signatures = executorSignatures(projects, providers);
   const processes = observedProcesses
-    .map((entry) => ({ entry, signature: signatures.find((signature) => commandText(entry.command).includes(signature)) }))
+    .map((entry) => ({ entry, signature: signatures.find((signature) => startsWithCommand(entry.command, signature)) }))
     .filter(({ signature }) => signature)
     .filter(({ entry }) => {
       const launch = recordedProcesses.get(Number(entry.pid));
-      return !launch || (launch.command && !commandText(entry.command).includes(commandText(launch.command)));
+      return !launch || (launch.command && !startsWithCommand(entry.command, commandText(launch.command)));
     })
     .map(({ entry, signature }) => ({ kind: "process", status: "untracked", authoritative: false, pid: Number(entry.pid),
       parent_pid: entry.parent_pid === undefined ? null : Number(entry.parent_pid), executable: path.basename(signature.split(" ")[0]),

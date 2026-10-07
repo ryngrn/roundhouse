@@ -16,6 +16,8 @@ test("execution activity correlates durable process and worktree launch provenan
       { pid: 41, parent_pid: 1, command: "/opt/codex exec -" },
       { pid: 42, parent_pid: 1, command: "/opt/codex exec --ephemeral -" },
       { pid: 43, parent_pid: 1, command: "unrelated --worker" },
+      { pid: 44, parent_pid: 1, command: "logger /opt/codex exec --ephemeral -" },
+      { pid: 45, parent_pid: 1, command: "/opt/codex-experimental exec --ephemeral -" },
     ],
     observedWorktrees: [
       { repository: "/repo", path: "/repo", branch: "main" },
@@ -64,4 +66,15 @@ test("configured capability providers are feasible executor processes", () => {
     observedProcesses: [{ pid: 77, command: "/opt/research-agent run --foreground" }] });
   assert.equal(activity.length, 1);
   assert.equal(activity[0].executable, "research-agent");
+});
+
+test("custom Herdr binaries are observed without treating command mentions as executions", () => {
+  const activity = correlateExecutionActivity({ data: { jobs: {} }, projects: [{
+    id: "remote", runtime: "herdr", herdr: { bin: "/opt/herdr-custom" },
+  }], observedProcesses: [
+    { pid: 81, command: "/opt/herdr-custom --machine iMac agent prompt worker" },
+    { pid: 82, command: "logger /opt/herdr-custom --machine iMac agent prompt worker" },
+  ] });
+  assert.deepEqual(activity.map((entry) => entry.pid), [81]);
+  assert.equal(activity[0].executable, "herdr-custom");
 });

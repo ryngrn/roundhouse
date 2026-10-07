@@ -32,6 +32,22 @@ deliver it as an alternate runtime. A connectivity or bootstrap problem does not
 change this boundary: submit substantial work to the Depot, then let Roundhouse
 select and claim the configured local or Herdr runtime.
 
+Roundhouse status is authoritative only for work with durable Depot, job, claim,
+and execution records. The control room may also show **Untracked execution
+activity** when a best-effort local scan finds a configured executor process or an
+extra configured-repository worktree without matching launch provenance. Treat
+that section as an operator warning, not proof that work is running, complete, or
+delivered. First inspect the reported PID or worktree and the durable Roundhouse
+status. Stop or preserve unexpected work as appropriate, reconcile any possible
+side effects, and submit replacement work through `add_to_depot` if the intended
+work still needs to run. Never mark an item complete from an untracked observation.
+
+This observation is intentionally limited. Roundhouse cannot see arbitrary remote
+processes, ChatGPT activity, or a machine-local Herdr filesystem, and process or Git
+inspection may be unavailable on the host. Machine-local Herdr work is authoritative
+only through its persisted `remote_execution`, delivery intent, and nonce-correlated
+remote report; that evidence remains marked `independently_verified: false`.
+
 The endpoint is dual-era: it preserves the existing MCP 1.x handshake for current
 clients and implements stateless MCP 2.0 protocol version `2026-07-28` for current
 ChatGPT plugin discovery. MCP 2.0 requests receive `server/discover`, the same four
