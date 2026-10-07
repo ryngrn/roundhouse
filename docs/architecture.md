@@ -13,7 +13,7 @@ legacy manual-delivery adapter; it is not the autonomous workflow.
 | Execution runtime | Local subprocess, Codex, Claude Code or configured command | `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
 | Verification | Configured argv commands plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree, commit, verified branch push | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
-| Human feedback | CLI approval/clarification and bridge event outbox | Revision-bound human response, durable audit record |
+| Human feedback | CLI approval/clarification and bridge event outbox | One current refinement question, revision-bound human response, durable audit record |
 
 The Engine imports no Notion SDK and contains no Codex or Claude Code command-line flags. Those
 belong to adapters. Runtime state is distinct from product state: a process exiting

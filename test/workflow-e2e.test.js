@@ -94,13 +94,30 @@ test("e2e: decomposed work executes sequentially with dependency links", async (
   assert.ok(jobs.every((j) => j.state === "Shipped"));
 });
 test("e2e: clarification preserves original request and re-decides with human context", async () => {
-  const h = harness(); const item = h.submit("ambiguous idea");
-  await h.engine.run();
-  h.engine.clarify(item.id, "Append a feature entry", "human", "example");
+  const h = harness(); const item = h.submit("ambiguous idea require prior decision");
+  const first = await h.engine.run();
+  const question = first.items[item.id].refinement.active_question;
+  assert.equal(question.kind, "project");
+  assert.throws(() => h.engine.clarify(item.id, "wrong turn", "human", "example", `${item.id}:stale`), /current refinement question/);
+  h.engine.clarify(item.id, "Append a feature entry", "human", "example", question.id);
   const result = await h.engine.run();
-  assert.equal(result.items[item.id].input.text, "ambiguous idea");
+  assert.equal(result.items[item.id].input.text, "ambiguous idea require prior decision");
   assert.equal(result.items[item.id].clarifications.length, 1);
+  assert.equal(result.items[item.id].clarifications[0].question_id, question.id);
+  assert.equal(result.items[item.id].decision_history.length, 1);
+  assert.equal(result.items[item.id].refinement.answers.length, 1);
   assert.equal(statusView(result).items[0].state, "Shipped");
+});
+test("e2e: optional goal metadata follows work without affecting project or runtime", async () => {
+  const h = harness();
+  const item = h.store.submit({ text: "goal-linked change", project_id: "example", goal_id: "launch", source: "fixture", actor: "test" }, "goal-linked");
+  const result = await h.engine.run();
+  const job = result.jobs[result.items[item.id].job_ids[0]];
+  assert.equal(result.items[item.id].project_id, "example");
+  assert.equal(result.items[item.id].goal_id, "launch");
+  assert.equal(job.goal_id, "launch");
+  assert.equal(result.items[item.id].compute_advisory.configured_runtime, "local");
+  assert.equal(job.project_context.runtime, "local");
 });
 test("e2e: commit-only policy verifies but does not push", async () => {
   const h = harness({ policy: { shipping: "commit_only" } }); h.submit("local only");

@@ -172,9 +172,10 @@ export async function applyRemoteCommand({ store, config, command, engine = new 
   }
   if (command.kind === "decision_session") {
     const answers = payload.answers ?? [];
-    if (!Array.isArray(answers) || !answers.length) throw new Error("Decision session is incomplete.");
-    const text = answers.map((answer) => `${answer.question_id}: ${answer.answer}`).join("\n\n");
-    const item = engine.clarify(payload.item_id, text, "remote-dashboard", payload.project_id);
+    if (!Array.isArray(answers) || answers.length !== 1) throw new Error("Decision session must answer exactly one current question.");
+    const [answer] = answers;
+    if (typeof answer.question_id !== "string" || !answer.question_id.trim()) throw new Error("Decision session must identify the current question.");
+    const item = engine.clarify(payload.item_id, answer.answer, "remote-dashboard", payload.project_id, answer.question_id);
     return { item_id: item.id, revision: item.revision };
   }
   throw new Error(`Unsupported remote command: ${command.kind}`);
@@ -186,8 +187,9 @@ function latestAttempt(job) {
 
 function questionFor(entity) {
   if (!["Needs Clarification", "Review"].includes(entity.state)) return [];
-  const prompt = entity.decision?.question || entity.history.at(-1)?.reason || "What should Roundhouse know before continuing?";
-  return [{ id: `${entity.id}:decision`, prompt, revision: entity.revision }];
+  const active = entity.refinement?.active_question;
+  const prompt = active?.prompt || entity.decision?.question || entity.history.at(-1)?.reason || "What should Roundhouse know before continuing?";
+  return [{ id: active?.id ?? `${entity.id}:decision`, prompt, revision: active?.revision ?? entity.revision }];
 }
 
 function workItemFromJob(job, data) {
@@ -233,6 +235,7 @@ function workItemFromItem(item) {
     display_state: item.state,
     needs_you: ["Needs Clarification", "Review"].includes(item.state),
     project: item.project_id ?? item.selected_project ?? item.input?.project_id ?? null,
+    goal: item.goal_id ?? item.input?.goal_id ?? null,
     priority: item.input?.priority || "P2",
     agent_role: item.decision?.executor || "Decision",
     owning_node: item.project_context?.name || item.project_id || "Roundhouse",
