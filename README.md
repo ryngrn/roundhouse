@@ -59,6 +59,14 @@ node src/cli.js depot relay --state-dir /absolute/path/to/state \
   --config /absolute/path/to/autonomy.yaml
 ```
 
+Remote intake may include up to eight image/PDF asset descriptors. To enable
+those downloads, set `ROUNDHOUSE_RELAY_ASSET_BASE_URL` to the dashboard's HTTPS
+asset endpoint and `ROUNDHOUSE_RELAY_ASSET_BEARER_TOKEN` to its dedicated worker
+credential. The worker derives download and thumbnail URLs from each asset UUID;
+commands cannot supply URLs. Verified files are stored with private permissions
+under the state directory's `assets` folder. Keep that folder outside project
+repositories and output directories.
+
 For the normal always-on Studio process, set `ROUNDHOUSE_WAKE_SUBSCRIBE_URL` to
 the same private ntfy topic used by the dashboard and run:
 

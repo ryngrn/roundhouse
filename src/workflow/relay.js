@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { digest } from "./store.js";
 import { projectContext } from "./config.js";
 import { Engine } from "./engine.js";
+import { cleanupDownloadedAssets, downloadRemoteAssets, projectedAttachments } from "./assets.js";
 
 const { Pool } = pg;
 let pool;
@@ -110,16 +111,30 @@ function projectHint(payload) {
   return values[0]?.trim() || payload.hint || "New Project";
 }
 
-export async function applyRemoteCommand({ store, config, command, engine = new Engine({ store, config }) }) {
+export async function applyRemoteCommand({
+  store, config, command, engine = new Engine({ store, config }), fetchImpl = globalThis.fetch,
+  assetBaseUrl = process.env.ROUNDHOUSE_RELAY_ASSET_BASE_URL,
+  assetBearerToken = process.env.ROUNDHOUSE_RELAY_ASSET_BEARER_TOKEN,
+}) {
   const payload = command.payload ?? {};
   if (command.kind === "intake") {
-    const item = store.submit({
-      text: payload.content,
-      source: "remote-dashboard",
-      actor: "remote-dashboard",
-      ...(payload.project_hint ? { project_id: payload.project_hint } : {}),
-    }, payload.idempotency_key ?? `remote:${command.id}`);
-    return { item_id: item.id, revision: item.revision };
+    const attachments = await downloadRemoteAssets({
+      descriptors: payload.assets, stateDirectory: store.directory, fetchImpl,
+      baseUrl: assetBaseUrl, bearerToken: assetBearerToken,
+    });
+    try {
+      const item = store.submit({
+        text: payload.content,
+        source: "remote-dashboard",
+        actor: "remote-dashboard",
+        ...(payload.project_hint ? { project_id: payload.project_hint } : {}),
+        ...(attachments.length ? { attachments } : {}),
+      }, payload.idempotency_key ?? `remote:${command.id}`);
+      return { item_id: item.id, revision: item.revision };
+    } catch (error) {
+      cleanupDownloadedAssets(attachments);
+      throw error;
+    }
   }
   if (command.kind === "project_create") {
     return store.change((data) => {
@@ -224,6 +239,7 @@ function workItemFromJob(job, data) {
     prior_decisions: parent?.decision_history ?? [],
     history: job.history,
     questions: questionFor(job),
+    assets: projectedAttachments(parent?.input?.attachments),
   };
 }
 
@@ -257,6 +273,7 @@ function workItemFromItem(item) {
     prior_decisions: item.decision_history ?? [],
     history: item.history,
     questions: questionFor(item),
+    assets: projectedAttachments(item.input?.attachments),
   };
 }
 
@@ -325,7 +342,11 @@ export async function claimRemoteCommand({ client }) {
   return result.rows[0] ?? null;
 }
 
-export async function processRemoteCommands({ store, config, limit = 25, pool: providedPool = relayPool() } = {}) {
+export async function processRemoteCommands({
+  store, config, limit = 25, pool: providedPool = relayPool(), fetchImpl = globalThis.fetch,
+  assetBaseUrl = process.env.ROUNDHOUSE_RELAY_ASSET_BASE_URL,
+  assetBearerToken = process.env.ROUNDHOUSE_RELAY_ASSET_BEARER_TOKEN,
+} = {}) {
   await ensureRelay({ query: (...args) => providedPool.query(...args) });
   const processed = [];
   for (let index = 0; index < limit; index += 1) {
@@ -343,7 +364,7 @@ export async function processRemoteCommands({ store, config, limit = 25, pool: p
     }
     if (!command) break;
     try {
-      const result = await applyRemoteCommand({ store, config, command });
+      const result = await applyRemoteCommand({ store, config, command, fetchImpl, assetBaseUrl, assetBearerToken });
       await providedPool.query("UPDATE roundhouse_relay.remote_commands SET status='completed', result=$2, finished_at=clock_timestamp() WHERE id=$1", [command.id, result ?? {}]);
       processed.push({ id: command.id, kind: command.kind, status: "completed", result });
     } catch (error) {
