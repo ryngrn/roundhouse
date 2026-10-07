@@ -14,6 +14,7 @@ Notion prototype is available only through the one-time archive importer.
 | Scheduled eligibility | Persisted absolute timestamps, recurrence cursors, and condition signals | Explain waiting/due transitions and release each occurrence at most once |
 | Triage control plane | Independent bounded worker pass with durable attempts/backoff | Release imported work safely, classify, reconcile exact identities, slice, question, block, or make Ready |
 | Execution runtime | Capability-selected provider over local Codex, project command, or registered command adapters | Providers declare stable IDs/capabilities; `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
+| Execution-tool interface | Centrally supplied AXI preference with existing Git/GitHub CLI and Playwright/browser fallbacks | Let an executor choose an efficient supported tool without changing its runtime or authority |
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | Batched browser decision sessions, CLI approval/clarification, durable questions, and MCP answers | Revision-bound atomic response set, durable audit record, exactly one readiness reevaluation |
@@ -21,6 +22,41 @@ Notion prototype is available only through the one-time archive importer.
 
 The Engine imports no Notion SDK and contains no Codex command-line flags. Runtime state is distinct from product state: a process exiting
 does not decide that work is Shipped or needs Review.
+
+## Control plane, runtime, and execution tools
+
+Roundhouse is the control plane. It owns intake, policy, project and provider
+selection, claims, approval gates, configured verification requirements, delivery
+intent, lifecycle state, and reconciliation. The selected execution runtime owns
+only the bounded implementation attempt. Local Codex or a configured command is the
+default software-project path; when work must run on a fleet machine, Herdr remains
+the preferred runtime because it supplies the configured machine and agent boundary.
+
+AXI sits one layer below that runtime. Model-agent prompts centrally prefer
+`npx -y gh-axi` for supported GitHub operations and
+`npx -y chrome-devtools-axi` for supported browser automation, inspection, and
+verification. This shared prompt default applies to local Codex and both Herdr
+workspace modes, so projects do not repeat AXI settings in their manifests. It does
+not apply to arbitrary command providers, whose argv and behavior remain entirely
+operator-owned.
+
+An executor may use the existing Git or GitHub CLI path when GitHub AXI is absent,
+cannot authenticate in that environment, or does not support the required
+operation. It may use existing Playwright or browser tooling when browser AXI is
+absent, cannot reach the target, or cannot perform the required inspection. This is
+a tool-level fallback within the already selected runtime, not permission to switch
+runtimes or providers. In particular, a Herdr probe, authentication, version, or
+execution failure blocks for reconciliation; it never falls back to local work.
+
+Tool choice does not change authority. AXI and fallback tools cannot approve work,
+alter protected branches, authorize destructive actions, weaken or replace checks,
+or infer permission to ship. In local and shared-worktree execution, Roundhouse
+snapshots the result, runs configured verification, confirms the candidate is
+unchanged, and performs the configured delivery. In machine-local Herdr execution,
+the remote agent runs the exact configured checks and performs only the configured
+`commit_only` or `push_branch` action; Roundhouse validates and records its
+nonce-correlated attestation as not independently verified. Roundhouse remains the
+authority for both paths and alone advances the durable job to Shipped.
 
 `RoundhouseService` is the reusable external-adapter boundary. It normalizes intake,
 queries work/questions, and submits guarded human answers to the Engine. The MCP

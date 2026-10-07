@@ -217,14 +217,29 @@ bytes, and total bytes. Designer work records material design decisions and expl
 browser/visual evidence. Automated checks and agent visual review have distinct
 evidence sources; Roundhouse does not treat an automated score as proof of beauty.
 
-Local execution guidance prefers the low-token `npx -y gh-axi` interface for
-GitHub operations and `npx -y chrome-devtools-axi` for browser automation,
-inspection, and verification. Existing Git/GitHub CLI and Playwright/browser
-tooling remain explicit fallbacks when AXI is unavailable or unsuitable. These are
-interface preferences, not additional authority: they cannot approve work, alter
-protected branches, authorize destructive operations or shipping, change configured
-verification policy, or infer delivery intent. Command boundaries remain argv-first;
-request content must never be interpolated into shell source.
+Model-agent execution guidance centrally prefers the low-token `npx -y gh-axi` interface
+for supported GitHub operations and `npx -y chrome-devtools-axi` for supported
+browser automation, inspection, and verification. The same preference is included
+in local, shared-worktree Herdr, and machine-local Herdr prompts; it needs no
+per-project manifest setting. Operator-owned command providers retain their exact
+configured argv and do not inherit model tool preferences.
+
+AXI is a tool interface beneath the selected executor, not a Roundhouse control
+plane, execution runtime, verification provider, or shipping provider. Herdr remains
+the preferred fleet runtime: it selects the operator-configured machine and agent,
+while AXI may reduce tool traffic inside that agent's bounded attempt. Existing
+Git/GitHub CLI tooling is the fallback when GitHub AXI is unavailable, cannot
+authenticate, or does not support the required operation. Existing Playwright or
+browser tooling is the fallback under the equivalent conditions for browser work.
+These fallbacks do not permit a runtime or provider switch; a Herdr failure still
+blocks and never falls back to local execution.
+
+Neither AXI nor a fallback grants additional authority. They cannot approve work,
+alter protected branches, authorize destructive operations or shipping, change
+configured verification policy, or infer delivery intent. Roundhouse continues to
+own claims, policy, verification requirements, delivery intent, and final lifecycle
+transitions. Command boundaries remain argv-first; request content must never be
+interpolated into shell source.
 
 ## Try it without credentials
 
@@ -286,7 +301,9 @@ the decision provider infers a project from the configured project context.
 The engine creates an isolated worktree on `codex/roundhouse-<job-id>`, executes the
 work there, commits a candidate, and tests that exact commit. Changes made during
 verification invalidate it. Failed candidates are retained locally but not shipped.
-The execution runtime is instructed not to push; delivery belongs to Roundhouse.
+The local and shared-worktree execution runtimes are instructed not to push;
+verification and delivery belong to Roundhouse. Their use of AXI or a fallback tool
+does not change that ownership.
 
 Projects default to `runtime: local`. An opt-in `runtime: herdr` project names an
 existing machine and agent; Roundhouse probes that saved machine and never falls
@@ -299,6 +316,9 @@ must contain the full commit, exact branch, push result, summary, and one passin
 record for every applicable verification ID. Roundhouse exposes the active machine,
 agent, directory, and remote identity, then stores terminal evidence with
 `independently_verified: false` because it cannot inspect the remote filesystem.
+The remote agent performs that configured delivery because the filesystem is not
+locally visible, but Roundhouse defines the permitted action, validates the report,
+and alone records the authoritative Shipped transition.
 
 Implemented delivery policies:
 

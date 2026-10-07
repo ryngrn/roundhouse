@@ -11,8 +11,11 @@ and optionally continues the project's queue.
 The complete vertical slice can run locally or across nodes, with a durable workflow and replaceable
 decision, execution, verification, shipping/deployment, and source adapters. The
 browser control room, JSON API, MCP endpoint, and background worker run in one
-loopback service. Codex and trusted command executors are supported; deployments
-use an explicit fixture or operator-owned command provider.
+loopback service. Codex and trusted command executors are supported. Model-agent
+prompts prefer low-token AXI interfaces for supported GitHub and browser operations,
+with the existing tools as bounded fallbacks; AXI is an execution-tool preference,
+not a control plane or runtime. Deployments use an explicit fixture or
+operator-owned command provider.
 
 The control room is project-first: dense work rows expose operational state at a
 glance, while a large details dialog keeps briefs, evidence, history, and atomic
@@ -96,6 +99,8 @@ Herdr projects can use shared-worktree execution or explicit `machine_local` mod
 for a repository that exists only on the fleet machine. See the
 [shipping and verification contract](docs/autonomous-workflow.md#shipping-and-verification)
 and the iMac example in [the autonomy configuration](config/autonomy.example.yaml).
+Herdr remains the preferred fleet runtime; AXI runs beneath the selected local or
+Herdr executor and requires no per-project manifest setting.
 
 - [Behavior, configuration, approvals, recovery, and test contracts](docs/autonomous-workflow.md)
 - [Architecture and adapter extension guide](docs/architecture.md)
