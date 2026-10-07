@@ -9,7 +9,7 @@ function usage() {
   return `Usage:
   roundhouse dispatch --item <notion-item.json> [--config <projects.yaml>] [--dry-run]
   roundhouse capture --input <idea.json> --manifest <manifest.yaml> --state-dir <directory>
-  roundhouse depot <submit|run|status|outbox|approve|clarify|stop|resume|recover> [...]
+  roundhouse depot <submit|run|status|outbox|approve|clarify|stop|resume|recover|relay|relay-watch|publish-dashboard> [...]
 
 The command writes JSONL lifecycle events to stdout. A bridge such as ChatGPT +
 Remote Desktop Commander applies notion.status_requested events to Notion.`;

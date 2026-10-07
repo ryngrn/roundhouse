@@ -48,6 +48,38 @@ node src/cli.js depot run --state-dir /absolute/path/to/state \
 node src/cli.js depot status --state-dir /absolute/path/to/state
 ```
 
+## Sync the private web dashboard
+
+When `ROUNDHOUSE_RELAY_DATABASE_URL` is configured on the Studio machine, the
+Depot CLI can claim changes made from `roundhouse.ryan.green`, apply them to the
+local workflow state, and publish a fresh dashboard projection:
+
+```sh
+node src/cli.js depot relay --state-dir /absolute/path/to/state \
+  --config /absolute/path/to/autonomy.yaml
+```
+
+For the normal always-on Studio process, set `ROUNDHOUSE_WAKE_SUBSCRIBE_URL` to
+the same private ntfy topic used by the dashboard and run:
+
+```sh
+node src/cli.js depot relay-watch --state-dir /absolute/path/to/state \
+  --config /absolute/path/to/autonomy.yaml
+```
+
+`relay-watch` also runs a reconciliation heartbeat every 60 minutes by default,
+so missed wake messages do not leave remote changes stranded. Adjust it with
+`--heartbeat-minutes`, or set it to `0` to rely only on wake messages.
+
+`depot run` also processes queued relay commands before executing work and
+publishes a fresh projection afterward when the relay database URL is present.
+Use `publish-dashboard` when you only need to refresh the web view:
+
+```sh
+node src/cli.js depot publish-dashboard --state-dir /absolute/path/to/state \
+  --config /absolute/path/to/autonomy.yaml
+```
+
 For Roundhouse itself, [the self-development configuration](config/roundhouse.autonomy.yaml)
 is ready to use after committing local changes. It verifies dependencies, tests,
 syntax, and whitespace, then pushes a job branch and stops after one job. Its paths

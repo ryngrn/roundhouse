@@ -4,6 +4,7 @@ import { Store } from "./store.js";
 import { Engine } from "./engine.js";
 import { loadWorkflowConfig } from "./config.js";
 import { pickup, updates, acknowledge } from "./notion-bridge.js";
+import { processRemoteCommands, publishDashboardProjection, watchRemoteCommands } from "./relay.js";
 
 export function statusView(data) {
   return {
@@ -51,8 +52,11 @@ export async function depotCommand(argv) {
     clarify: ["--state-dir", "--config", "--id", "--text", "--actor", "--project"],
     stop: ["--state-dir", "--project"], resume: ["--state-dir", "--project", "--actor", "--note"],
     recover: ["--state-dir"],
+    relay: ["--state-dir", "--config", "--limit"],
+    "relay-watch": ["--state-dir", "--config", "--heartbeat-minutes"],
+    "publish-dashboard": ["--state-dir", "--config"],
   };
-  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|run|status|outbox|approve|clarify|stop|resume|recover> --state-dir <path> [...]");
+  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|run|status|outbox|approve|clarify|stop|resume|recover|relay|relay-watch|publish-dashboard> --state-dir <path> [...]");
   const options = {};
   for (let i = 0; i < rest.length; i += 2) {
     if (!allowed[command].includes(rest[i]) || !rest[i + 1] || rest[i + 1].startsWith("--") || options[rest[i]]) throw new Error(`Invalid option ${rest[i]}`);
@@ -69,6 +73,21 @@ export async function depotCommand(argv) {
     return { events: data.outbox, current: statusView(data) };
   }
   if (command === "recover") return statusView(store.recover());
+  if (command === "relay") {
+    return processRemoteCommands({ store, config: loadWorkflowConfig(path.resolve(required("--config"))), limit: Number(options["--limit"] ?? 25) });
+  }
+  if (command === "relay-watch") {
+    const heartbeatMinutes = Number(options["--heartbeat-minutes"] ?? 60);
+    return watchRemoteCommands({
+      store,
+      config: loadWorkflowConfig(path.resolve(required("--config"))),
+      heartbeatMs: heartbeatMinutes > 0 ? heartbeatMinutes * 60 * 1000 : 0,
+      onSync: (result) => process.stdout.write(`${JSON.stringify(result)}\n`),
+    });
+  }
+  if (command === "publish-dashboard") {
+    return publishDashboardProjection({ store, config: loadWorkflowConfig(path.resolve(required("--config"))) });
+  }
   if (["stop", "resume"].includes(command)) {
     const id = required("--project");
     return store.change((data) => {
@@ -95,6 +114,12 @@ export async function depotCommand(argv) {
   const engine = new Engine({ store, config: loadWorkflowConfig(path.resolve(required("--config"))) });
   if (command === "approve") return engine.approve(required("--id"), Number(required("--revision")), required("--actor"));
   if (command === "clarify") return engine.clarify(required("--id"), required("--text"), required("--actor"), options["--project"]);
+  if (command === "run" && (process.env.ROUNDHOUSE_RELAY_DATABASE_URL || process.env.DATABASE_URL)) {
+    await processRemoteCommands({ store, config: engine.config });
+  }
   const result = await engine.run({ projectId: options["--project"] });
+  if (command === "run" && (process.env.ROUNDHOUSE_RELAY_DATABASE_URL || process.env.DATABASE_URL)) {
+    await publishDashboardProjection({ store, config: engine.config });
+  }
   return { executed: result.executed, limit_reached: result.limit_reached, ...statusView(result) };
 }
