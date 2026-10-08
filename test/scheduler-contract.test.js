@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { Store } from "../src/workflow/store.js";
-import { dispatchConsiderations, eligibleProjectHead, executionReservation, projectExecutionEligible, projectQueueHead, recordAllocation, recordDispatchRound, reservationAssessment, reservationFits, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
+import { compareDispatchCandidates, dispatchConsiderations, eligibleProjectHead, executionReservation, projectExecutionEligible, projectQueueHead, recordAllocation, recordDispatchRound, reservationAssessment, reservationFits, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
 import { statusView } from "../src/workflow/views.js";
 
 function manifest(repository, changes = {}) {
@@ -85,12 +85,18 @@ test("scheduler contract: allocation explanations persist every eligibility and 
   const alpha = view.allocations.latest.alpha;
   assert.equal(alpha.eligible, true);
   assert.deepEqual(alpha.queue, { position: 1, length: 1, slice_position: 0 });
-  assert.deepEqual(alpha.fairness, { weight: 3, allocations_before: 0, weighted_allocation: 0, rank: 1 });
+  assert.deepEqual(alpha.fairness, { weight: 3, allocations_before: 0, weighted_allocation: 0, rank: 1, recovery_precedence: false });
   assert.deepEqual(alpha.constraints.capability, { required: ["cpu"], available: ["cpu"], missing: [], fits: true });
   assert.equal(alpha.constraints.capacity.limit, 2);
   assert.equal(alpha.constraints.resources[0].resource, "browser");
   assert.match(view.allocations.latest.beta.reason.message, /weighted allocation/);
   assert.equal(view.items[0].jobs[0].allocation.job_id, "alpha-job");
+});
+
+test("scheduler contract: fresh recovery takes precedence over ordinary fairness", () => {
+  const ordinary = { project: { id: "alpha" }, job: { id: "ordinary" }, fairness: { weighted_allocation: 0 } };
+  const recovery = { project: { id: "beta" }, job: { id: "repair", recovery_for: "blocked-job" }, fairness: { weighted_allocation: 9 } };
+  assert.deepEqual([ordinary, recovery].sort(compareDispatchCandidates).map((entry) => entry.job.id), ["repair", "ordinary"]);
 });
 
 test("scheduler contract: an isolated blocked prerequisite does not hide independent Ready work", () => {

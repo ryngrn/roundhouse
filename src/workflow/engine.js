@@ -10,7 +10,7 @@ import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 import { Unblocker } from "./unblocker.js";
-import { dispatchConsiderations, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
+import { compareDispatchCandidates, dispatchConsiderations, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -240,7 +240,13 @@ export class Engine {
         } else {
           this.store.move(data, current, route.state, route.reason);
           current.execution_eligible = route.state === "Ready";
-          if (route.state === "Ready") this.createJobs(data, current);
+          if (route.state === "Ready") {
+            if (current.blocker_followup?.original_id || current.input?.context?.blocker_entity_id) {
+              current.priority_rank = Math.min(priorityRank(current), -1);
+            }
+            this.createJobs(data, current);
+            this.supersedeBlockerWithRecovery(data, current);
+          }
         }
         if (["Needs Clarification", "Review"].includes(current.state)) {
           for (const question of current.questions) {
@@ -324,6 +330,64 @@ export class Engine {
         attempts: [], processes: [], priority_rank: priorityRank(item), position: Object.keys(data.jobs).length });
       return id;
     });
+  }
+  supersedeBlockerWithRecovery(data, recovery) {
+    const originalId = recovery.blocker_followup?.original_id ?? recovery.input?.context?.blocker_entity_id;
+    if (!originalId || !(recovery.job_ids?.length)) return;
+    const originalJob = data.jobs[originalId];
+    const originalItem = data.items[originalId];
+    const original = originalJob ?? originalItem;
+    if (!original || original.state !== "Blocked") return;
+
+    const at = new Date(this.clock()).toISOString();
+    const replacementIds = [...recovery.job_ids];
+    const replacementTail = replacementIds.at(-1);
+    const projectId = original.project_id ?? recovery.project_id ?? null;
+    recovery.supersedes = originalId;
+    recovery.recovery_for = originalId;
+    recovery.priority_rank = Math.min(priorityRank(recovery), -1);
+
+    const existingPositions = Object.values(data.jobs)
+      .filter((job) => job.project_id === projectId && !replacementIds.includes(job.id) && job.id !== originalId
+        && !["Shipped", "Superseded"].includes(job.state))
+      .map((job) => Number.isFinite(job.position) ? job.position : 0);
+    const firstPosition = (existingPositions.length ? Math.min(...existingPositions) : 0) - replacementIds.length;
+    for (const [index, id] of replacementIds.entries()) {
+      const job = data.jobs[id];
+      job.priority_rank = -1;
+      job.position = firstPosition + index;
+      job.supersedes = originalId;
+      job.recovery_for = originalId;
+      job.dependencies = (job.dependencies ?? []).filter((dependency) => dependency !== originalId);
+    }
+
+    if (originalJob) {
+      for (const candidate of Object.values(data.jobs)) {
+        if (candidate.id === originalId || replacementIds.includes(candidate.id) || !(candidate.dependencies ?? []).includes(originalId)) continue;
+        candidate.dependencies = candidate.dependencies.map((dependency) => dependency === originalId ? replacementTail : dependency);
+        candidate.revision += 1;
+        candidate.updated_at = at;
+        candidate.history.push({ from: candidate.state, to: candidate.state,
+          reason: `Superseded prerequisite ${originalId} was replaced by recovery ${replacementTail}.`, at });
+      }
+      originalJob.superseded_by = recovery.id;
+      originalJob.replacement_job_ids = replacementIds;
+      this.store.move(data, originalJob, "Superseded", `Fresh recovery plan ${recovery.id} superseded this blocked attempt.`);
+    } else {
+      originalItem.superseded_by = recovery.id;
+      originalItem.replacement_job_ids = replacementIds;
+      this.store.move(data, originalItem, "Superseded", `Fresh recovery plan ${recovery.id} superseded this blocked intake.`);
+    }
+
+    if (projectId) {
+      const stillBlocked = Object.values(data.jobs).some((job) => job.project_id === projectId && job.state === "Blocked")
+        || Object.values(data.items).some((item) => item.id !== recovery.id && item.project_id === projectId
+          && item.state === "Blocked" && !(item.job_ids?.length));
+      if (!stillBlocked) {
+        data.projects[projectId] = { ...data.projects[projectId], blocked: false, active: false,
+          supersession: { original_id: originalId, recovery_item_id: recovery.id, replacement_job_ids: replacementIds, at } };
+      }
+    }
   }
   approve(id, revision, actor) {
     if (!actor?.trim()) throw new Error("Approval requires an actor.");
@@ -1030,7 +1094,7 @@ export class Engine {
         // Weighted turns across projects; each project contributes its earliest
         // dependency-satisfied Ready slice, so an isolated hold cannot freeze it.
         const selected = considerations.filter((entry) => entry.eligible)
-          .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id))[0];
+          .sort(compareDispatchCandidates)[0];
         const at = new Date(this.clock()).toISOString();
         if (!selected) {
           if (considerations.length) await this.store.change((data) => recordDispatchRound(data, considerations, null, this.config.execution.capacity, at));
@@ -1122,7 +1186,7 @@ export class Engine {
         canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
       });
       const candidates = considerations.filter((entry) => entry.eligible)
-        .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id));
+        .sort(compareDispatchCandidates);
       const at = new Date(this.clock()).toISOString();
       if (!candidates.length) {
         if (considerations.length) await this.store.change((data) => recordDispatchRound(data, considerations, null, this.config.execution.capacity, at));

@@ -23,6 +23,45 @@ test("cleanup agent permanently deletes low-value blocked work and keeps a conci
   assert.equal(tombstone.original_request, undefined);
 });
 
+test("fresh recovery supersedes the blocked card, inherits urgency, and never replays the old attempt", async () => {
+  const h = harness();
+  const original = h.submit("Implement tested UI update", "blocked-original");
+  await h.engine.runTriage();
+  const originalJobId = h.store.read().items[original.id].job_ids[0];
+  h.store.change((data) => {
+    const job = data.jobs[originalJobId];
+    job.attempts = [{ number: 1, execution: { passed: false, exit_code: 1 } }];
+    h.store.move(data, job, "Blocked", "Fixture execution failed without completion evidence.");
+    data.projects.example = { ...(data.projects.example ?? {}), blocked: true };
+  });
+
+  const ordinary = h.submit("Ordinary queued work", "ordinary-work");
+  await h.engine.runTriage();
+  const ordinaryJobId = h.store.read().items[ordinary.id].job_ids[0];
+  h.store.change((data) => { data.jobs[ordinaryJobId].dependencies = [originalJobId]; });
+
+  const recovery = h.submit("Fresh isolated repair for the failed UI update", "recovery-work");
+  h.store.change((data) => {
+    const item = data.items[recovery.id];
+    item.blocker_followup = { original_id: originalJobId, kind: "job", category: "unverified_failure" };
+    item.input.context = { blocker_entity_id: originalJobId, blocker_entity_type: "job" };
+  });
+  await h.engine.runTriage();
+
+  const state = h.store.read();
+  const replacement = state.items[recovery.id];
+  const replacementId = replacement.job_ids[0];
+  assert.equal(replacement.state, "Ready");
+  assert.equal(state.jobs[originalJobId].state, "Superseded");
+  assert.equal(state.jobs[originalJobId].superseded_by, recovery.id);
+  assert.equal(state.jobs[originalJobId].attempts.length, 1);
+  assert.equal(state.jobs[replacementId].recovery_for, originalJobId);
+  assert.equal(state.jobs[replacementId].priority_rank, -1);
+  assert.ok(state.jobs[replacementId].position < state.jobs[ordinaryJobId].position);
+  assert.deepEqual(state.jobs[ordinaryJobId].dependencies, [replacementId]);
+  assert.equal(state.projects.example.blocked, false);
+});
+
 test("deleting a blocked prerequisite preserves dependent identity and records crossed-out scope", async () => {
   const h = harness();
   const first = h.submit("cleanup delete obsolete prerequisite", "cleanup-prerequisite");

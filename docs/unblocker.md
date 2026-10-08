@@ -32,6 +32,8 @@ Operator stops, approval gates, and execution safety policies still outrank clea
 
 Worker status exposes the last run, result, error, and cleanup metrics. Metrics cover decisions by action, downstream work released, operator answers and proposed-option acceptance, invalidated concurrent decisions, deleted identities later recreated, repurposed jobs later shipped, calibrated/model confidence, blocker category, dependency impact, and decision latency. A keep records its evidence fingerprint and reconsideration condition, so it is revisited only after meaningful evidence changes. Cleanup remains bounded to one candidate per wake so each mutation is durable and auditable before another candidate is considered.
 
+When an answered recovery decision produces a fresh executable plan, Roundhouse atomically marks the original blocked record `Superseded`, links both records for audit, rewires existing dependents to the replacement tail, and releases the project quarantine only when no other blocker remains. The replacement is placed at the front of its project queue and its recovery slices take precedence over ordinary cross-project fairness. The failed attempt is never replayed or treated as successful.
+
 Run one local pass with:
 
 ```sh

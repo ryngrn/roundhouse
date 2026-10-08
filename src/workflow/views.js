@@ -7,7 +7,9 @@ const completedStates = new Set(["Shipped", "Imported History", "Archived", "Rec
 
 function aggregateState(item, jobs) {
   if (!jobs.length) return item.state;
-  if (jobs.every((job) => job.state === "Shipped")) return "Shipped";
+  if (jobs.every((job) => ["Shipped", "Superseded"].includes(job.state))) {
+    return jobs.some((job) => job.state === "Shipped") ? "Shipped" : "Superseded";
+  }
   return ["Blocked", "Review", "Rework", "Verification", "Executing", "Ready"].find((state) =>
     jobs.some((job) => job.state === state),
   );
@@ -110,6 +112,8 @@ export function itemView(data, item) {
     verification_status: checks.length ? (checks.every((check) => check.passed) ? "Passed" : "Failed") : (state === "Verification" ? "Running" : "Not run"),
     shipping_status: deliveries.length ? (deliveries.every((delivery) => delivery.deployment?.status === "succeeded" || delivery.pushed || delivery.commit) ? "Delivered" : "Pending") : (state === "Shipped" ? "Shipped" : "Not shipped"),
     prior_decisions: answeredQuestions,
+    supersedes: item.supersedes ?? null,
+    superseded_by: item.superseded_by ?? null,
     history: (item.history ?? []).map((event) => ({ from: event.from ?? null, to: event.to, reason: event.reason, at: event.at })),
     evidence: { checks, deliveries, completion_reports: completionReports, completion_results: completionResults, outputs },
     jobs: jobs.map((job) => ({
@@ -224,6 +228,8 @@ function projectedJob(data, job, config) {
     issue_resolution: job.issue_resolution ?? null,
     scope_revision: job.scope_revision ?? null,
     cleanup_intent: job.cleanup_intent ?? null,
+    supersedes: job.supersedes ?? parentView.supersedes ?? null,
+    superseded_by: job.superseded_by ?? null,
     allocation: allocationDecisions.at(-1) ?? null,
     allocation_history: allocationDecisions,
     dispatch_hold: dispatchHold,

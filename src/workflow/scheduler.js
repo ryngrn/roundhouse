@@ -37,10 +37,18 @@ export function weightedAllocation(scheduler, project) {
   return (scheduler.projects?.[project.id]?.allocations ?? 0) / project.weight;
 }
 
+export function compareDispatchCandidates(left, right) {
+  const leftRecovery = left.job?.recovery_for ? 0 : 1;
+  const rightRecovery = right.job?.recovery_for ? 0 : 1;
+  return leftRecovery - rightRecovery
+    || left.fairness.weighted_allocation - right.fairness.weighted_allocation
+    || left.project.id.localeCompare(right.project.id);
+}
+
 /** Return the earliest unfinished slice for status and hold explanations. */
 export function projectQueueHead(data, projectId) {
   return Object.values(data.jobs ?? {})
-    .filter((job) => job.project_id === projectId && job.state !== "Shipped")
+    .filter((job) => job.project_id === projectId && !["Shipped", "Superseded"].includes(job.state))
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id))[0] ?? null;
 }
 
@@ -145,7 +153,7 @@ export function dispatchConsiderations(data, projects, execution, {
     .filter((project) => !projectId || project.id === projectId)
     .map((project) => {
       const queue = Object.values(data.jobs ?? {})
-        .filter((job) => job.project_id === project.id && job.state !== "Shipped")
+        .filter((job) => job.project_id === project.id && !["Shipped", "Superseded"].includes(job.state))
         .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id));
       const job = eligibleProjectHead(data, project.id) ?? queue[0];
       if (!job) return null;
@@ -201,13 +209,15 @@ export function dispatchConsiderations(data, projects, execution, {
 export function recordDispatchRound(data, considerations, selectedJobId, capacity = 1, at = new Date().toISOString(), fallbackReason = null) {
   const scheduler = schedulerState(data, capacity);
   const ranked = considerations.filter((entry) => entry.eligible)
-    .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id));
+    .sort(compareDispatchCandidates);
   const rank = new Map(ranked.map((entry, index) => [entry.job.id, index + 1]));
   const records = considerations.map((entry) => {
     scheduler.decision_sequence += 1;
     const allocated = entry.job.id === selectedJobId;
     const reason = allocated
-      ? { code: "allocated", message: "Selected by durable weighted allocation and all capacity, capability, resource, and lock constraints fit." }
+      ? entry.job.recovery_for
+        ? { code: "recovery_precedence", message: "Selected because a fresh recovery plan takes precedence and all capacity, capability, resource, and lock constraints fit." }
+        : { code: "allocated", message: "Selected by durable weighted allocation and all capacity, capability, resource, and lock constraints fit." }
       : entry.reason ?? (!entry.reservation.fits ? deferralReason(entry.checks, entry.reservation) : null)
         ?? fallbackReason ?? { code: "fairness_order", message: "Another eligible slice ranked first by durable weighted allocation." };
     const record = {
@@ -220,7 +230,8 @@ export function recordDispatchRound(data, considerations, selectedJobId, capacit
       result: allocated ? "allocated" : "deferred",
       reason,
       queue: entry.queue,
-      fairness: { ...entry.fairness, rank: rank.get(entry.job.id) ?? null },
+      fairness: { ...entry.fairness, rank: rank.get(entry.job.id) ?? null,
+        recovery_precedence: Boolean(entry.job.recovery_for) },
       constraints: entry.reservation.constraints,
       checks: entry.checks,
     };

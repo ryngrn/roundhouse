@@ -14,5 +14,6 @@ export function displayState(state, { needsYou = false } = {}) {
   if (["Executing", "Verification", "Rework"].includes(state)) return presentationLanguage.active;
   if (state === "Blocked") return presentationLanguage.blocked;
   if (["Shipped", "Imported History", "Archived", "Reconciled"].includes(state)) return presentationLanguage.completed;
+  if (state === "Superseded") return "Superseded";
   return state;
 }
