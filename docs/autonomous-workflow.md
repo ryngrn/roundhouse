@@ -35,6 +35,8 @@ A text planning session is a read-only projection of the authoritative durable
 `planningSessionView` in
 `src/workflow/planning-session.js` implements the contract; it does not use dashboard
 labels, legacy Notion status fields, or process observations as authority.
+This slice supports only the text CLI surface (serialized as JSON). It does not
+add a dashboard workflow, mutate planning state, start execution, or perform delivery.
 
 An item is a planning candidate before it has jobs when its durable state is
 `Imported Pending`, `Depot`, `Needs Clarification`, `Review`, or `Blocked`, and it
@@ -69,6 +71,11 @@ the projection may use them to plan replacement work but cannot replay, transiti
 reconcile, rewrite, or describe them as delivered. Delivery remains owned by the
 configured shipping policy after independent verification.
 
+The repair preserves failed job `notion-eb625048c60c41b628a73c55-1` as the
+provenance anchor for the original unsuccessful work. Its attempts remain source
+evidence; the planning projection marks replay and mutation as prohibited and does
+not manufacture delivery evidence. Replacement work must receive a new job identity.
+
 The contract is mapped to project checks as follows:
 
 | Acceptance behavior | Machine-verifiable check |
@@ -78,10 +85,19 @@ The contract is mapped to project checks as follows:
 | Read-only text entry point over configured authoritative storage | `unit: depot plan starts a read-only text session from authoritative storage` under `npm test` |
 | Failed-job attempts remain deeply unchanged, non-replayable, and not delivered | `acceptance: failed job remains immutable planning provenance and is never represented as replayed or delivered` under both `npm test` and `npm run acceptance` |
 | JavaScript syntax and repository formatting | `npm run check` and `git diff --check` |
+| Exact candidate identity and review-only delivery | Roundhouse's verifier records the candidate commit before the configured checks, rejects a changed commit, and permits only the configured `push_branch` job branch |
 
 These checks only establish the read contract. They do not grant shipping authority;
 Roundhouse still performs independent configured verification and applies the
 project's delivery policy.
+
+For this repository the complete independent gate is `npm test`, `npm run
+acceptance`, `npm run check`, and `git diff --check`, all against one unchanged
+candidate commit. Record the full commit before verification and confirm the same
+commit afterward; any mutation requires a new candidate and a complete rerun. The
+self-development policy is `push_branch` with `stop_after_job`, so the only permitted
+delivery is the verified commit on `codex/roundhouse-<job-id>` for review. A branch
+push is not a merge, deployment, production release, or evidence that one occurred.
 
 Scheduled work remains `Ready` but carries a separate durable eligibility gate.
 A time gate stores its absolute, timezone-qualified `eligible_at` timestamp; the
