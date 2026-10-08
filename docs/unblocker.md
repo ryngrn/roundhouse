@@ -2,11 +2,13 @@
 
 Unblocker is a control-plane agent that keeps useful work moving without inventing intent. It evaluates only work in **Blocked** or **Needs Clarification**. Ready, executing, verification, review, rework, and shipped work are outside cleanup scope.
 
-At each worker wake, Unblocker reads the preserved request, immutable conversation snapshot, optional live conversation reference, decisions, history, attempt evidence, project policy, and dependency graph. It selects one cleanup candidate and returns one of four structured actions: delete, repurpose, ask, or keep.
+At each worker wake, Unblocker reads the preserved request, immutable conversation snapshot, optional live conversation reference, decisions, history, attempt evidence, project policy, and dependency graph. Candidates are ranked by transitive queue impact, ready descendants, age, available conversation evidence, and new operator guidance. It handles the highest-value bottleneck first instead of relying on storage order.
+
+Cleanup has two model stages. The first persists a compact intent brief containing the desired outcome, non-goals, constraints, superseded scope, unresolved assumptions, blocker category, and cited evidence. The second receives that brief plus a deterministic transitive dependency-impact simulation and returns delete, repurpose, ask, or keep. This keeps transcript interpretation separate from queue mutation.
 
 ## Confidence gate
 
-Delete and repurpose require confidence of at least 0.70. Below that threshold Unblocker pauses the item and asks one concise contextual question. The dashboard presents exactly two proposed answers plus a third **Take my own path** choice with free-form input. The answer is revision-guarded and returned to the worker as an `issue_resolution` command.
+Delete and repurpose require calibrated confidence of at least 0.70. Effective confidence combines the model estimate with cited-evidence completeness, dependency-plan coverage, historical operator agreement, and an irreversibility penalty. Below the threshold Unblocker pauses the item and asks one concise contextual question. The dashboard presents exactly two consequence-oriented answers, including their queue effects, plus a third **Take my own path** choice with free-form input. The answer is revision-guarded and returned to the worker as an `issue_resolution` command.
 
 ## Delete and dependency handling
 
@@ -26,9 +28,9 @@ The snapshot persists even when the live link becomes unavailable. Roundhouse st
 
 ## Safety and operation
 
-Operator stops, approval gates, and execution safety policies still outrank cleanup. Unblocker never marks a job Shipped, fabricates evidence, grants approval, or replays side effects. Its delete/repurpose authority is limited to Blocked and Needs Clarification records.
+Operator stops, approval gates, and execution safety policies still outrank cleanup. Unblocker never marks a job Shipped, fabricates evidence, grants approval, or replays side effects. Its delete/repurpose authority is limited to Blocked and Needs Clarification records. Every proposed mutation is compare-and-swap guarded by the entity revision, semantic evidence fingerprint, affected dependency-subgraph fingerprint, and project-policy fingerprint. Any concurrent change invalidates the proposal and requires reevaluation.
 
-Worker status exposes the last run, result, and error. Cleanup is intentionally bounded to one candidate per wake so each mutation is durable and auditable before another candidate is considered. Repeated worker wakes can drain eligible backlog without releasing the whole queue at once.
+Worker status exposes the last run, result, error, and cleanup metrics. Metrics cover decisions by action, downstream work released, operator answers and proposed-option acceptance, invalidated concurrent decisions, deleted identities later recreated, repurposed jobs later shipped, calibrated/model confidence, blocker category, dependency impact, and decision latency. A keep records its evidence fingerprint and reconsideration condition, so it is revisited only after meaningful evidence changes. Cleanup remains bounded to one candidate per wake so each mutation is durable and auditable before another candidate is considered.
 
 Run one local pass with:
 

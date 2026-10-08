@@ -152,6 +152,12 @@ export class RoundhouseService {
       if (entity.revision !== expected_revision) throw new Error("Stale issue revision; review the latest state before answering.");
       const prior = entity.issue_resolution;
       entity.issue_resolution = { ...(prior ?? {}), status: "answered", response: { action, message, actor, at: new Date().toISOString() } };
+      data.system_metadata ??= {};
+      data.system_metadata.cleanup_metrics ??= { decisions: 0, deleted: 0, repurposed: 0, asked: 0, kept: 0,
+        work_released: 0, operator_answers: 0, operator_accepted: 0, invalidated: 0, deleted_recreated: 0,
+        repurposed_shipped: 0, decision_latency_ms: 0, decision_log: [] };
+      data.system_metadata.cleanup_metrics.operator_answers += 1;
+      if (action === "option") data.system_metadata.cleanup_metrics.operator_accepted += 1;
       entity.revision += 1;
       entity.updated_at = entity.issue_resolution.response.at;
       entity.history.push({ from: entity.state, to: entity.state, reason: `Cleanup guidance recorded by ${actor}: ${message}`, at: entity.updated_at });

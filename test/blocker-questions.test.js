@@ -53,15 +53,17 @@ test("below 70 percent cleanup asks two contextual choices plus a free-form thir
   const result = await h.engine.runUnblocker();
   assert.equal(result.cleanup.action, "ask");
   const issue = h.store.read().items[id].issue_resolution;
-  assert.equal(issue.confidence, 0.55);
+  assert.ok(issue.confidence < 0.7);
+  assert.equal(issue.model_confidence, 0.55);
   assert.equal(issue.options.length, 3);
-  assert.equal(issue.options[2], "Take my own path");
+  assert.equal(issue.options[2].label, "Take my own path");
   assert.match(issue.question, /preserve|delete/i);
   const service = new RoundhouseService({ store: h.store, engine: h.engine });
   const answer = service.resolveIssue({ issue_id: id, expected_revision: h.store.read().items[id].revision,
     action: "custom", message: "Keep only the reporting outcome.", actor: "ryan" });
   assert.equal(answer.recorded, true);
   assert.equal(h.store.read().items[id].issue_resolution.response.message, "Keep only the reporting outcome.");
+  assert.equal(h.store.read().system_metadata.cleanup_metrics.operator_answers, 1);
 });
 
 test("intake preserves an immutable transcript snapshot and live conversation context", () => {
@@ -99,4 +101,53 @@ test("cleanup never evaluates work outside Blocked or Needs Clarification", asyn
   const after = h.store.read();
   assert.ok(after.items[item.id]);
   assert.equal(after.jobs[jobId].state, "Ready");
+});
+
+test("cleanup ranks a bottleneck ahead of an unrelated older blocked record", async () => {
+  const h = harness();
+  blockStandalone(h, "cleanup delete unrelated old record");
+  const first = h.submit("cleanup delete high-impact prerequisite", "rank-prerequisite");
+  const second = h.submit("useful dependent", "rank-dependent");
+  await h.engine.runTriage(); await h.engine.runTriage(); await h.engine.runTriage();
+  const before = h.store.read();
+  const prerequisite = before.items[first.id].job_ids[0];
+  const dependent = before.items[second.id].job_ids[0];
+  h.store.change((data) => {
+    data.jobs[dependent].dependencies = [prerequisite];
+    h.store.move(data, data.jobs[prerequisite], "Blocked", "Fixture needs cleanup.");
+  });
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup.action, "delete");
+  assert.equal(result.cleanup.tombstone.id, prerequisite);
+  assert.equal(h.store.read().system_metadata.cleanup_metrics.work_released, 1);
+});
+
+test("cleanup refuses a stale model result when the candidate revision changes", async () => {
+  const h = harness();
+  const id = blockStandalone(h, "cleanup delete concurrent record");
+  const original = h.engine.decision.decideCleanup.bind(h.engine.decision);
+  h.engine.decision.decideCleanup = async (input) => {
+    const decision = await original(input);
+    h.store.change((data) => {
+      data.items[id].revision += 1;
+      data.items[id].history.push({ from: "Blocked", to: "Blocked", reason: "Concurrent evidence arrived.", at: new Date().toISOString() });
+    });
+    return decision;
+  };
+  await assert.rejects(() => h.engine.runUnblocker(), /changed|reevaluation/i);
+  assert.ok(h.store.read().items[id]);
+  assert.equal(h.store.read().system_metadata.cleanup_metrics.invalidated, 1);
+});
+
+test("a kept blocker is reconsidered only after its evidence changes", async () => {
+  const h = harness();
+  const id = blockStandalone(h, "keep this blocked fixture");
+  const first = await h.engine.runUnblocker();
+  assert.equal(first.cleanup.action, "keep");
+  assert.equal((await h.engine.runUnblocker()).cleanup, null);
+  h.store.change((data) => {
+    data.items[id].issue_resolution = { ...data.items[id].issue_resolution,
+      response: { action: "custom", message: "New intent", actor: "test", at: new Date().toISOString() } };
+  });
+  assert.equal((await h.engine.runUnblocker()).cleanup.action, "keep");
 });

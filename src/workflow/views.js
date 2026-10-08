@@ -77,6 +77,7 @@ export function itemView(data, item) {
       snapshot_captured_at: item.input.conversation.snapshot?.captured_at ?? null,
       live_updated_at: item.input.conversation.live_context?.updated_at ?? null } : null,
     scope_revision: item.scope_revision ?? null,
+    cleanup_intent: item.cleanup_intent ?? null,
     issue_resolution: item.issue_resolution ?? null,
     acceptance_criteria: acceptance,
     reason: currentJob?.history.at(-1)?.reason ?? item.history.at(-1)?.reason ?? null,
@@ -125,6 +126,7 @@ export function itemView(data, item) {
       allocation: allocationDecisions.findLast((decision) => decision.job_id === job.id) ?? null,
       allocation_history: allocationDecisions.filter((decision) => decision.job_id === job.id),
       scope_revision: job.scope_revision ?? null,
+      cleanup_intent: job.cleanup_intent ?? null,
       issue_resolution: job.issue_resolution ?? null,
     })),
   };
@@ -221,6 +223,7 @@ function projectedJob(data, job, config) {
     questions: [],
     issue_resolution: job.issue_resolution ?? null,
     scope_revision: job.scope_revision ?? null,
+    cleanup_intent: job.cleanup_intent ?? null,
     allocation: allocationDecisions.at(-1) ?? null,
     allocation_history: allocationDecisions,
     dispatch_hold: dispatchHold,

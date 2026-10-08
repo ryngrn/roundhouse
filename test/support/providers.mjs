@@ -4,6 +4,18 @@ let input = "";
 for await (const chunk of process.stdin) input += chunk;
 const packet = JSON.parse(input);
 if (process.argv[2] === "decide") {
+  if (process.argv[3] === "cleanup-intent") {
+    const text = packet.candidate.original_request ?? packet.candidate.title ?? "";
+    process.stdout.write(JSON.stringify({
+      desired_outcome: text.includes("cleanup repurpose") ? "Deliver the still-useful smaller outcome." : text,
+      non_goals: [], constraints: [],
+      superseded_scope: text.includes("cleanup delete") ? ["The obsolete work."] : [],
+      unresolved_assumptions: text.includes("cleanup ask") ? ["Whether the smaller outcome still has value."] : [],
+      blocker_category: text.includes("cleanup delete") ? "obsolete" : text.includes("cleanup ask") ? "missing_intent" : "technical_failure",
+      evidence: [{ fact: "The request text is the preserved source of intent.", source: "original_request" }],
+    }));
+    process.exit(0);
+  }
   if (process.argv[3] === "cleanup") {
     const text = packet.candidate.original_request ?? packet.candidate.title ?? "";
     const action = text.includes("cleanup delete") ? "delete" : text.includes("cleanup repurpose") ? "repurpose" : text.includes("cleanup ask") ? "ask" : "keep";
@@ -13,7 +25,10 @@ if (process.argv[2] === "decide") {
       active_scope: action === "repurpose" ? "Deliver the still-relevant smaller outcome." : "",
       removed_scope: action === "repurpose" ? ["The obsolete prerequisite and its old implementation path."] : [],
       question: action === "ask" ? "Should I preserve the smaller outcome or delete this work?" : null,
-      options: action === "ask" ? ["Preserve and replan the smaller outcome", "Delete the work"] : [],
+      options: action === "ask" ? [
+        { id: "preserve-smaller", label: "Preserve the smaller outcome", description: "Keep the identity and plan only the useful portion.", effects: ["No work is deleted"] },
+        { id: "delete-work", label: "Delete the work", description: "Remove this blocked work and retain its audit record.", effects: ["The blocked record is permanently deleted"] },
+      ] : [],
       dependent_actions: packet.dependents.map((entry) => ({ id: entry.id, confidence: 0.91, active_scope: entry.outcome ?? entry.title, removed_scope: [`Dependency on ${packet.candidate.id}`] })),
     }));
     process.exit(0);
