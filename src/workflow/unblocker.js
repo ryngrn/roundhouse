@@ -6,6 +6,8 @@
  * evidenced, isolated local failure can relinquish its project-wide hold.
  * The job itself and all dependent jobs retain their existing states.
  */
+import { createBlockerQuestions, pendingBlockerQuestions } from "./blocker-questions.js";
+
 const ISOLATED_VERIFICATION = /^Rework limit reached: Required verification failed\.$/;
 const STALE_PROJECT_CONTEXT = /^Project policy or context changed after decision; resubmit for a new decision\.$/;
 const SAFE_SHIPPING = new Set(["commit_only", "push_branch"]);
@@ -114,6 +116,12 @@ export class Unblocker {
         return changes;
       });
     }
+    // Do not write local storage on idle heartbeats. Human questions are
+    // bounded and idempotent; each root blocker receives at most one.
+    const beforeQuestions = await this.store.read();
+    const questions = pendingBlockerQuestions(beforeQuestions, this.config, diagnoseBlocker).length
+      ? await this.store.change(data => createBlockerQuestions(data, this.config, diagnoseBlocker))
+      : [];
     const current = await this.store.read();
     const unresolved = [
       ...this.config.projects.flatMap(project =>
@@ -126,6 +134,7 @@ export class Unblocker {
           category: "unplanned_blocked_intake", action: "human_review" })),
     ];
     return { role: "Unblocker", refreshed, released_projects: released,
+      questions_created:questions,questions_created_count:questions.length,
       isolated_jobs: unresolved.filter(x => x.action === "isolate_job").length,
       needs_attention: unresolved.filter(x => x.action === "human_review").length,
       findings: unresolved.slice(0, 25) };
