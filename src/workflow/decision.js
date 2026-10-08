@@ -207,6 +207,21 @@ export function routeDecision(decision, projects, explicitProject) {
 
 export class DecisionProvider {
   constructor(config) { this.config = config; }
+  // 255 = SSH connection/auth failure; 75 = Hermes CLI/model transport unavailable;
+  // -1 = command could not be started. Invalid JSON, low-confidence planning,
+  // or a model's explicit Block never switches authority to Codex.
+  unavailable(result) {
+    return Boolean(this.config.fallback && !result.timed_out && [-1, 75, 255].includes(result.exit_code));
+  }
+  async onUnavailable(result, operation, args) {
+    if (!this.unavailable(result)) return null;
+    const fallback = new DecisionProvider(this.config.fallback);
+    const value = await fallback[operation](args);
+    if (operation !== "distillCleanupIntent") {
+      value.reason = `Codex fallback: Hermes unavailable (exit ${result.exit_code}). ${value.reason}`;
+    }
+    return value;
+  }
   async decide({ item, projects, directory, onStart }) {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     const resolved_decisions = (item.questions ?? [])
@@ -225,7 +240,11 @@ export class DecisionProvider {
         assigned_project_id: item.project_id ?? null } : null };
     if (this.config.kind === "command") {
       const result = await runProcess(this.config.command, { cwd: directory, input: JSON.stringify(packet), timeout: 120000, onStart });
-      if (!result.passed) throw new Error(`Decision provider failed (exit ${result.exit_code}).`);
+      if (!result.passed) {
+        const fallback = await this.onUnavailable(result, "decide", { item, projects, directory, onStart });
+        if (fallback) return fallback;
+        throw new Error(`Decision provider failed (exit ${result.exit_code}).`);
+      }
       return validateDecision(JSON.parse(result.stdout));
     }
     const schemaFile = path.join(directory, "decision-schema.json");
@@ -244,6 +263,11 @@ export class DecisionProvider {
     const packet = { candidate, dependents, projects, intent_brief: intentBrief, impact };
     if (this.config.kind === "command") {
       const result = await runProcess([...this.config.command, "cleanup"], { cwd: directory, input: JSON.stringify(packet), timeout: 120000, onStart });
+      if (!result.passed) {
+        const fallback = await this.onUnavailable(result, "decideCleanup",
+          { candidate, dependents, projects, intentBrief, impact, directory, onStart });
+        if (fallback) return fallback;
+      }
       try {
         if (!result.passed) throw new Error(`exit ${result.exit_code}`);
         return validateCleanupDecision(JSON.parse(result.stdout));
@@ -272,7 +296,12 @@ export class DecisionProvider {
     const packet = { candidate, dependents, projects, impact };
     if (this.config.kind === "command") {
       const result = await runProcess([...this.config.command, "cleanup-intent"], { cwd: directory, input: JSON.stringify(packet), timeout: 120000, onStart });
-      if (!result.passed) throw new Error(`Cleanup intent provider failed (exit ${result.exit_code}).`);
+      if (!result.passed) {
+        const fallback = await this.onUnavailable(result, "distillCleanupIntent",
+          { candidate, dependents, projects, impact, directory, onStart });
+        if (fallback) return fallback;
+        throw new Error(`Cleanup intent provider failed (exit ${result.exit_code}).`);
+      }
       return validateCleanupIntent(JSON.parse(result.stdout));
     }
     const schemaFile = path.join(directory, "cleanup-intent-schema.json");
