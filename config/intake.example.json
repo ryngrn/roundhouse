@@ -1,8 +1,0 @@
-{
-  "text": "Help Roundhouse preserve incoming ideas and their original wording.",
-  "actor": "operator",
-  "source": "manual:cli-example",
-  "project_id": "roundhouse",
-  "outcome": "Ideas can be retrieved with their original wording and project context.",
-  "metric_keys": ["slice_ready_rate"]
-}

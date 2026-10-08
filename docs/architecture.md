@@ -1,22 +1,23 @@
 # Autonomous workflow architecture
 
-The executable entry point is `roundhouse depot`. The earlier `capture` command
-remains a lightweight intake prototype. Roundhouse is authoritative; the former
-Notion prototype is available only through the one-time archive importer.
+The executable entry point is `roundhouse depot`. Roundhouse is authoritative; the
+former local `capture` and Notion prototypes are retired, with Notion available only
+through the one-time archive importer.
 
 | Boundary | Current implementation | Replacement contract |
 | --- | --- | --- |
-| Depot source | Roundhouse browser/API, CLI JSON/text, and ChatGPT MCP | Submit immutable normalized input with a stable key |
+| Depot source | Hosted Roundhouse dashboard/API, CLI JSON/text, and ChatGPT MCP | Submit immutable normalized input with a stable key |
 | Project/context store | Private YAML/JSON manifest plus local context files | Validated project policy and context snapshot |
 | Decision provider | Structured Codex response or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
 | Agent-role composer | Role manifest plus bounded Markdown skills and project context | General or Designer execution context and required evidence |
-| Durable workflow | PostgreSQL repository (shared) or explicit local repository, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
+| Durable workflow | Authoritative Mac Studio local repository, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
+| Hosted relay | Aiven dashboard projection and remote-command queue | Mirror canonical job records without becoming workflow authority |
 | Triage control plane | Independent bounded worker pass with durable attempts/backoff | Release imported work safely, classify, reconcile exact identities, slice, question, block, or make Ready |
 | Execution runtime | Per-project local subprocess or opt-in Herdr adapter | `execute({project, job, workspace, previous_failure, onStart, onRemoteStart})` returns operational result |
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | Batched browser decision sessions, CLI approval/clarification, durable questions, and MCP answers | Revision-bound atomic response set, durable audit record, exactly one readiness reevaluation |
-| Status adapters | Explicit/lifecycle browser reads, local cached menu status, MCP status tools, and MCP Events webhooks | Project/item-scoped projection of durable outbox transitions |
+| Status adapters | Hosted projection reads, local cached menu status, MCP status tools, and MCP Events webhooks | Project/item-scoped projection of durable outbox transitions |
 
 The Engine imports no Notion SDK and contains no Codex command-line flags. Runtime state is distinct from product state: a process exiting
 does not decide that work is Shipped or needs Review.
@@ -35,11 +36,13 @@ decision work share one repository transaction. A stale item or question returns
 a structured conflict and zero answers are applied. The legacy MCP
 `answer_question` tool remains available for external single-question clients.
 
-The combined local server owns the browser control room, JSON API, MCP endpoint,
-and event-driven bounded triage and dispatch cycles. HTTP handlers contain no routing,
-approval, execution, or shipping policy. A long execution does not starve triage.
-The loops call the same Engine used by the CLI, so worker locks, item leases, durable
-backoff, and conservative recovery continue to govern both paths.
+The combined local server owns the JSON API, MCP endpoint, and event-driven bounded
+triage and dispatch cycles. The hosted control room reads its job-level projection
+from the Aiven relay; the local server does not ship a second browser application.
+HTTP handlers contain no routing, approval, execution, or shipping policy. A long
+execution does not starve triage. The loops call the same Engine used by the CLI, so
+worker locks, item leases, durable backoff, and conservative recovery continue to
+govern both paths.
 
 MCP Events is an outbound status adapter, not a second workflow. Subscriptions,
 verification records, delivery attempts, stable event IDs, and retry state share
@@ -52,12 +55,17 @@ Events.
 
 ## Durable ownership
 
-The workflow depends on a storage repository, not a JSON file. PostgreSQL is the
-authoritative multi-node implementation. It normalizes items/revisions, decisions,
+The workflow depends on a storage repository boundary. On the Mac Studio, the local
+repository is authoritative and writes a fsynced, atomically renamed `state.json`
+under filesystem locks. Aiven contains only the hosted dashboard projection and
+remote commands; it is not an alternate workflow store and cannot advance jobs.
+
+An optional generic PostgreSQL storage adapter remains for separately planned
+multi-node deployments. It normalizes items/revisions, decisions,
 questions/answers, jobs/dependencies/attempts, agent roles, execution and
 verification evidence, shipping/deployment, transition audit, outbox/MCP delivery,
-nodes, leases, and import provenance. JSONB is limited to variable provider/domain
-payloads on those records; there is no monolithic state blob.
+nodes, leases, and import provenance. It is not enabled by the installed Studio
+service and is never selected implicitly from relay credentials.
 
 PostgreSQL job claims use a transaction and `FOR UPDATE SKIP LOCKED`. One live lease
 owner is recorded with acquisition, heartbeat, and expiry timestamps. Separate
@@ -67,9 +75,9 @@ delivery, and expired ownership blocks uncertain work for reconciliation instead
 replaying it. Advisory locks serialize schema migration and compatibility snapshot
 mutations without becoming the job scheduler.
 
-The local repository writes a fsynced, atomically renamed `state.json` and uses
-filesystem locks. It exists only for single-node development, tests, and bootstrap;
-it is never a fallback when shared PostgreSQL is unavailable.
+Storage selection is explicit. A configured PostgreSQL authority must fail closed
+when unavailable; it must never fall back to a stale local file. Conversely, relay
+failure does not transfer workflow authority away from the Studio's local store.
 
 One-time Notion Depot imports add immutable provenance, legacy metadata,
 non-executable project candidates, and a durable cutover marker. `Imported History`

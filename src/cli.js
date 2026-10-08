@@ -2,7 +2,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { captureCommand } from "./intake.js";
 import { depotCommand } from "./workflow/cli.js";
 import { loadWorkflowConfig } from "./workflow/config.js";
 import { exportFileDigest, importNotionDepot } from "./workflow/notion-depot-migration.js";
@@ -11,7 +10,6 @@ import { importLocalStateToPostgres } from "./storage/import-local-state.js";
 
 function usage() {
   return `Usage:
-  roundhouse capture --input <idea.json> --manifest <manifest.yaml> --state-dir <directory>
   roundhouse depot <submit|triage|unblock|run|status|outbox|approve|clarify|reevaluate-import|retry-triage|reconcile-job|stop|resume|recover> [...]
   roundhouse migrate notion-depot <export.json> [--state-dir <directory>] [--config <projects.yaml>]
   roundhouse migrate state-to-postgres [--state-dir <directory>]`;
@@ -66,8 +64,6 @@ try {
     process.stdout.write(`${JSON.stringify(await depotCommand(process.argv.slice(3)), null, 2)}\n`);
   } else if (process.argv[2] === "migrate") {
     process.stdout.write(`${JSON.stringify(await migrateCommand(process.argv.slice(3)), null, 2)}\n`);
-  } else if (process.argv[2] === "capture") {
-    process.stdout.write(`${JSON.stringify(captureCommand(process.argv.slice(3)))}\n`);
   } else {
     throw new Error(usage());
   }

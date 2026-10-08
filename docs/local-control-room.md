@@ -4,7 +4,9 @@ Roundhouse runs as one loopback-bound Node service containing the JSON API,
 background worker, and Streamable HTTP MCP endpoint. It remains available to local
 clients at `127.0.0.1:8787`. Browser use is hosted at
 `https://roundhouse.ryan.green`; the obsolete port-80 front door and `roundhouse`
-hostname mapping are intentionally retired.
+hostname mapping, bundled local browser UI, and standalone MCP listener are retired.
+Opening the loopback root redirects to the hosted dashboard; API and `/mcp` routes
+remain local.
 
 ## Install and operate
 

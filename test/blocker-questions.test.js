@@ -66,7 +66,7 @@ test("answer from web decision session is evaluated as a new repair; old failed 
   t.after(()=>running.close());
   const post=(route,payload)=>new Promise((resolve,reject)=>{
     const target=new URL(route,running.url);
-    const req=http.request(target,{method:"POST",headers:{host:"roundhouse","content-type":"application/json"}},res=>{
+    const req=http.request(target,{method:"POST",headers:{"content-type":"application/json"}},res=>{
       let body="";res.on("data",x=>body+=x);res.on("end",()=>resolve({status:res.statusCode,body:JSON.parse(body)}));
     });req.on("error",reject);req.end(JSON.stringify(payload));
   });

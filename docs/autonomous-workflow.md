@@ -264,8 +264,8 @@ dedicated `TEST_DATABASE_URL` is supplied and otherwise reports explicit skips.
 The deterministic acceptance harness proves:
 
 - clean server startup using temporary state and configuration
-- browser-facing HTTP/API intake, config save, worker tick, questions, approval,
-  status, evidence, and restart reconstruction
+- HTTP/API intake, config save, worker tick, questions, approval, status,
+  evidence, and restart reconstruction
 - Depot persistence, decision, one meaningful clarification, durable answer
   context, human review, programmatic approval, execution, verification, fixture
   shipping, and completed summary/evidence
@@ -273,11 +273,8 @@ The deterministic acceptance harness proves:
   with `allow_autonomous: true` and `approval_required: false`
 - decision-loop regression protection for the README inspection versus executable
   verification question, including after reconstructing the store from disk
-- actual served browser JavaScript in Chrome on an insecure
-  `http://roundhouse-compatible` origin, including Enter/Shift+Enter/IME behavior,
-  preserved failed submissions, cleared successful submissions, draft preservation
-  across polling/rerendering, button submission, rapid double-submit protection,
-  configuration validation, and bucket movement
+- canonical job-level projection and API behavior used by both the hosted dashboard
+  and native menu, without maintaining a second bundled browser implementation
 
 Coverage also includes autonomous shipping, confidence routing,
 approval/resumption, verification failure/repair, queue continuation,
