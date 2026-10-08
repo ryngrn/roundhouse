@@ -16,6 +16,7 @@ if [[ "$1" == "uninstall" ]]; then
 fi
 mkdir -p "$runtime" "$HOME/Library/LaunchAgents"
 install -m 700 "$(dirname "$0")/dispatch-once.sh" "$runtime/dispatch-once.sh"
+install -m 700 "$(dirname "$0")/triage-once.mjs" "$runtime/triage-once.mjs"
 python3 - "$plist" "$runtime" <<'PY'
 import plistlib,sys
 from pathlib import Path
