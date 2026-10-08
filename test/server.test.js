@@ -90,6 +90,26 @@ test("server startup safely recovers a dead local worker lock before dispatch", 
   assert.match(overview.items[0].reason, /Interrupted attempt/);
 });
 
+test("local server permanently explodes a standalone Needs Clarification idea", async (t) => {
+  const h = harness();
+  const item = h.submit("Delete this unresolved idea", "server-explode-idea");
+  h.store.change((data) => {
+    h.store.move(data, data.items[item.id], "Decision", "Needs a decision.");
+    h.store.move(data, data.items[item.id], "Needs Clarification", "Intent is unclear.");
+  });
+  const revision = h.store.read().items[item.id].revision;
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const running = await startRoundhouseServer({ service, port: 0, autoStartWorker: false });
+  t.after(() => running.close());
+  const exploded = await request(running.url, `/api/items/${item.id}/explode`, {
+    method: "POST", body: { expected_revision: revision, note: "Remove the unresolved idea." },
+  });
+  assert.equal(exploded.status, 200);
+  assert.equal(exploded.json().removed, true);
+  assert.equal(h.store.read().items[item.id], undefined);
+  assert.equal(h.store.read().system_metadata.cleanup_tombstones.at(-1).id, item.id);
+});
+
 test("local snapshot explicitly refreshes external durable changes without waking the worker", async (t) => {
   const h = harness();
   const item = h.submit("Observe an external durable update", "local-snapshot-refresh");

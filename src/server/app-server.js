@@ -296,6 +296,15 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 200, result);
       }
+      const explodeItem = url.pathname.match(/^\/api\/items\/([^/]+)\/explode$/);
+      if (request.method === "POST" && explodeItem) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.explodeItem({ id: decodeURIComponent(explodeItem[1]), expected_revision: input.expected_revision,
+          actor: "local-user", note: input.note ?? "Operator removed an unresolved idea from the dashboard." });
+        loop.wake();
+        return send(response, 200, result);
+      }
       if (request.method === "POST" && url.pathname === "/api/worker/tick") {
         verifyOrigin(request, origins);
         await jsonBody(request);

@@ -170,6 +170,30 @@ test("local worker maps an explode command to the authoritative job removal serv
   assert.equal(finished[0][1].result.removed, true);
 });
 
+test("local worker maps an item explosion to permanent authoritative idea removal", async () => {
+  const commands = [{ id: "command-explode-item", kind: "explode_item", payload: {
+    item_id: "unclear-idea", expected_revision: 4, note: "Operator removed an unclear idea.",
+  } }];
+  const finished = [];
+  const calls = [];
+  const queue = {
+    claimRemoteCommand: async () => commands.shift() ?? null,
+    finishRemoteCommand: async (id, result) => finished.push([id, result]),
+  };
+  const store = { shared: false };
+  const service = {
+    store,
+    explodeItem: async (input) => { calls.push(input); return { removed: true, id: input.id }; },
+    engine: { store, runTriage: async () => ({ triaged: 0 }), runDispatch: async () => ({ executed: 0 }) },
+  };
+  const worker = new WorkerLoop({ service, commandQueue: queue });
+  const result = await worker.tick();
+  assert.equal(result.remote_commands, 1);
+  assert.deepEqual(calls, [{ id: "unclear-idea", expected_revision: 4,
+    note: "Operator removed an unclear idea.", actor: "ryan" }]);
+  assert.equal(finished[0][1].result.removed, true);
+});
+
 test("relay outage never blocks local triage or dispatch", async () => {
   let triage = 0;
   let dispatch = 0;

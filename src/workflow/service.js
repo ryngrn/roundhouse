@@ -281,6 +281,11 @@ export class RoundhouseService {
     return await this.engine.explodeJob(id, { expectedRevision: expected_revision, actor, note });
   }
 
+  async explodeItem({ id, expected_revision, actor = "local-user", note = "Operator removed an unresolved idea." }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to remove unresolved work.");
+    return await this.engine.explodeItem(id, { expectedRevision: expected_revision, actor, note });
+  }
+
   resolveIssue({ issue_id, expected_revision, action, message, actor = "local-user" }) {
     if (!nonempty(issue_id) || !Number.isInteger(expected_revision) || expected_revision < 1) throw new Error("Issue resolution requires an ID and current revision.");
     if (!nonempty(action) || !nonempty(message) || message.length > 20_000) throw new Error("Issue resolution requires an action and concise response.");

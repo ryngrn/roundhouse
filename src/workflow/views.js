@@ -207,6 +207,7 @@ function projectedJob(data, job, config) {
   const { jobs: _jobs, ...base } = parentView;
   return {
     ...base,
+    entity_kind: "job",
     id: job.id,
     revision: job.revision,
     title: job.work?.title ?? parentView.title ?? job.id,
@@ -252,6 +253,7 @@ function projectedStandaloneItem(data, item) {
   const review = reviewFor(item);
   return {
     ...projected,
+    entity_kind: "item",
     needs_you: review.required,
     review_required: review.required,
     review_kind: review.kind,

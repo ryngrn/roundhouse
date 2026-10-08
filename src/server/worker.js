@@ -65,6 +65,9 @@ export class WorkerLoop {
             } else if (command.kind === "explode_job") {
               result = await this.service.explodeJob({ id: command.payload.job_id, expected_revision: command.payload.expected_revision,
                 note: command.payload.note, actor: "ryan" });
+            } else if (command.kind === "explode_item") {
+              result = await this.service.explodeItem({ id: command.payload.item_id, expected_revision: command.payload.expected_revision,
+                note: command.payload.note, actor: "ryan" });
             } else if (command.kind === "issue_resolution") {
               result = await this.service.resolveIssue({ ...command.payload, issue_id: command.payload.issue_id,
                 expected_revision: command.payload.expected_revision, actor: "ryan" });

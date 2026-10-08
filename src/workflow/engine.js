@@ -1100,6 +1100,55 @@ export class Engine {
       });
     } finally { release(); }
   }
+  async explodeItem(id, { expectedRevision, actor, note = "Operator removed an unresolved idea." } = {}) {
+    if (typeof id !== "string" || !id.trim()) throw new Error("An idea ID is required.");
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new Error("Current idea revision is required.");
+    if (typeof actor !== "string" || !actor.trim() || actor.length > 128) throw new Error("Idea removal requires an actor.");
+    if (typeof note !== "string" || !note.trim() || note.length > 2_000) throw new Error("Idea removal requires a concise audit note.");
+    const release = this.store.shared ? () => {} : this.store.acquireWorkerLease();
+    try {
+      return await this.store.change((data) => {
+        data.system_metadata ??= {};
+        data.system_metadata.cleanup_tombstones ??= [];
+        const prior = data.system_metadata.cleanup_tombstones.findLast((entry) => entry.id === id && entry.kind === "item");
+        const item = data.items[id];
+        if (!item) {
+          if (!prior) throw new Error("Idea was not found.");
+          if (prior.prior_revision !== expectedRevision) throw new Error("Stale idea revision; review the latest idea before removing it.");
+          return { removed: true, already_removed: true, id, project_id: prior.project_id, at: prior.deleted_at };
+        }
+        if (!["Blocked", "Needs Clarification"].includes(item.state)) throw new Error("Only Blocked or Needs Clarification ideas can be removed from the queue.");
+        if (item.revision !== expectedRevision) throw new Error("Stale idea revision; review the latest idea before removing it.");
+        if ((item.job_ids ?? []).some((jobId) => data.jobs?.[jobId])) throw new Error("An idea with retained jobs cannot be removed as a standalone idea.");
+        if ((item.processes ?? []).some(({ pid }) => processIsAlive(pid)) || item.owning_node_id) throw new Error("Idea removal refused while execution may still be active.");
+        const at = new Date(this.clock()).toISOString();
+        const title = item.input?.text?.split("\n")[0]?.slice(0, 160) ?? id;
+        data.system_metadata.cleanup_tombstones.push({ id, kind: "item", project_id: item.project_id ?? null,
+          title, prior_state: item.state, prior_revision: item.revision, confidence: 1,
+          reason: note.trim(), blocker_category: "operator_deleted", desired_outcome: "Permanently remove this unresolved idea from the active queue.",
+          evidence: ["operator_action"], deleted_at: at, actor: actor.trim() });
+        const removedRecoveryItems = [];
+        for (const [candidateId, candidate] of Object.entries(data.items)) {
+          if (candidateId === id) continue;
+          const originalId = candidate.blocker_followup?.original_id ?? candidate.input?.context?.blocker_entity_id;
+          if (originalId !== id) continue;
+          data.system_metadata.cleanup_tombstones.push({ id: candidateId, kind: "item", project_id: candidate.project_id ?? null,
+            title: candidate.input?.text?.split("\n")[0]?.slice(0, 160) ?? candidateId,
+            prior_state: candidate.state, prior_revision: candidate.revision, confidence: 1,
+            reason: `Linked recovery card retired with deleted idea ${id}; no delivery or execution success is claimed.`,
+            blocker_category: "linked_recovery", desired_outcome: `Remove obsolete recovery scaffolding for ${id}.`,
+            evidence: [`linked_to:${id}`], related_blocker_id: id, deleted_at: at, actor: actor.trim() });
+          removedRecoveryItems.push(candidateId);
+          delete data.items[candidateId];
+        }
+        delete data.items[id];
+        if (data.system_metadata.cleanup_tombstones.length > 1_000) {
+          data.system_metadata.cleanup_tombstones.splice(0, data.system_metadata.cleanup_tombstones.length - 1_000);
+        }
+        return { removed: true, id, project_id: item.project_id ?? null, removed_recovery_items: removedRecoveryItems, at };
+      });
+    } finally { release(); }
+  }
   async runUnblocker() {
     return new Unblocker({ store: this.store, config: this.config, engine: this }).run();
   }

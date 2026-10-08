@@ -219,6 +219,29 @@ test("e2e: exploding a blocked prerequisite removes only that job and releases i
   assert.equal(result.jobs[dependentId].state, "Shipped");
   await assert.rejects(() => h.engine.explodeJob(dependentId, { expectedRevision: result.jobs[dependentId].revision, actor: "test" }), /Only a Blocked job/);
 });
+test("e2e: exploding a Needs Clarification idea deletes it immediately and preserves an audit tombstone", async () => {
+  const h = harness();
+  const item = h.submit("An unresolved idea to delete", "explode-idea");
+  h.store.change((data) => {
+    h.store.move(data, data.items[item.id], "Decision", "Needs a decision.");
+    h.store.move(data, data.items[item.id], "Needs Clarification", "Intent is unclear.");
+  });
+  const revision = h.store.read().items[item.id].revision;
+  const removal = await h.engine.explodeItem(item.id, { expectedRevision: revision, actor: "test", note: "No longer valuable." });
+  assert.equal(removal.removed, true);
+  const after = h.store.read();
+  assert.equal(after.items[item.id], undefined);
+  assert.deepEqual(after.system_metadata.cleanup_tombstones.at(-1), {
+    id: item.id, kind: "item", project_id: null, title: "An unresolved idea to delete",
+    prior_state: "Needs Clarification", prior_revision: revision, confidence: 1,
+    reason: "No longer valuable.", blocker_category: "operator_deleted",
+    desired_outcome: "Permanently remove this unresolved idea from the active queue.", evidence: ["operator_action"],
+    deleted_at: removal.at, actor: "test",
+  });
+  const repeated = await h.engine.explodeItem(item.id, { expectedRevision: revision, actor: "test", note: "Already gone." });
+  assert.equal(repeated.already_removed, true);
+  await assert.rejects(() => h.engine.explodeItem(item.id, { expectedRevision: revision + 1, actor: "test" }), /Stale idea revision/);
+});
 test("e2e: continue-project ships two jobs exactly once, chains their output and stops", async () => {
   const h = harness(); h.submit("first"); h.submit("second");
   const result = await h.engine.run();
