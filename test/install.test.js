@@ -32,6 +32,12 @@ test("menu bar companion remains a designed native HTTP control room with servic
   assert.match(source, /import SwiftUI/);
   assert.match(source, /struct DashboardView: View/);
   assert.match(source, /NSPopover/);
+  assert.match(source, /NSPanel/);
+  assert.match(source, /arrow\.up\.left\.and\.arrow\.down\.right/);
+  assert.match(source, /isMovableByWindowBackground = true/);
+  assert.match(source, /hidesOnDeactivate = false/);
+  assert.match(source, /setFrameAutosaveName\("RoundhouseFloatingControlRoom"\)/);
+  assert.match(source, /Close floating control room/);
   assert.match(source, /Open dashboard/);
   assert.match(source, /Start local service/);
   assert.match(source, /Stop local service/);

@@ -200,6 +200,9 @@ struct WorkRow: View {
 
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
+    let isPinned: Bool
+    let pin: () -> Void
+    let close: () -> Void
     let serviceAction: (String) -> Void
     let quit: () -> Void
     var body: some View {
@@ -232,6 +235,15 @@ struct DashboardView: View {
                 Circle().fill(model.error == nil && model.snapshot != nil ? Palette.reached : Palette.held).frame(width: 7, height: 7)
                 Text(model.error == nil && model.snapshot != nil ? "Connected" : "Offline").font(.system(size: 9, weight: .medium)).foregroundStyle(Palette.muted)
             }
+            Button(action: isPinned ? close : pin) {
+                Image(systemName: isPinned ? "xmark" : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Palette.muted)
+            .help(isPinned ? "Close floating control room" : "Keep open as a floating control room")
         }.padding(.horizontal, 14).padding(.vertical, 11).background(Palette.surface)
     }
 
@@ -298,10 +310,11 @@ struct DashboardView: View {
     }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSWindowDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let popover = NSPopover()
     private let model = DashboardModel()
+    private var floatingPanel: NSPanel?
     private var timer: Timer?
     private var serviceDomain: String { "gui/\(getuid())" }
     private var serviceLabel: String { "\(serviceDomain)/io.roundhouse.service" }
@@ -319,11 +332,7 @@ struct DashboardView: View {
         popover.behavior = .transient
         popover.animates = true
         popover.contentSize = NSSize(width: 390, height: 530)
-        popover.contentViewController = NSHostingController(rootView: DashboardView(
-            model: model,
-            serviceAction: { [weak self] action in self?.controlService(action) },
-            quit: { NSApp.terminate(nil) }
-        ))
+        popover.contentViewController = dashboardController(isPinned: false)
         UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         model.refresh()
@@ -339,12 +348,68 @@ struct DashboardView: View {
     }
 
     @objc private func togglePopover() {
+        if let floatingPanel {
+            model.refresh()
+            floatingPanel.orderFrontRegardless()
+            floatingPanel.makeKey()
+            return
+        }
         guard let button = statusItem.button else { return }
         if popover.isShown { popover.performClose(nil) }
         else {
             model.refresh(); popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    private func dashboardController(isPinned: Bool) -> NSHostingController<DashboardView> {
+        NSHostingController(rootView: DashboardView(
+            model: model,
+            isPinned: isPinned,
+            pin: { [weak self] in self?.pinControlRoom() },
+            close: { [weak self] in self?.closePinnedControlRoom() },
+            serviceAction: { [weak self] action in self?.controlService(action) },
+            quit: { NSApp.terminate(nil) }
+        ))
+    }
+
+    private func pinControlRoom() {
+        guard floatingPanel == nil else { return }
+        let sourceFrame = popover.contentViewController?.view.window?.frame
+        popover.performClose(nil)
+        let panel = NSPanel(
+            contentRect: NSRect(origin: sourceFrame?.origin ?? .zero, size: NSSize(width: 390, height: 530)),
+            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.delegate = self
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.setFrameAutosaveName("RoundhouseFloatingControlRoom")
+        panel.contentViewController = dashboardController(isPinned: true)
+        floatingPanel = panel
+        model.refresh()
+        panel.orderFrontRegardless()
+        panel.makeKey()
+    }
+
+    private func closePinnedControlRoom() {
+        floatingPanel?.close()
+        floatingPanel = nil
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as? NSPanel === floatingPanel else { return }
+        floatingPanel = nil
     }
 
     private func controlService(_ action: String) {
