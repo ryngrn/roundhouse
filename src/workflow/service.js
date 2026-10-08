@@ -4,7 +4,7 @@ import { Store } from "./store.js";
 import { loadWorkflowConfig, readWorkflowConfig, saveWorkflowConfig } from "./config.js";
 import { normalizeDepotIntake, submitToDepot } from "./intake-contract.js";
 import { dashboardProjection, itemView, needsHumanView, notificationView, statusView } from "./views.js";
-import { mapResult } from "../storage/repository.js";
+import { digest, mapResult } from "../storage/repository.js";
 import { migrateLegacyDecisionQuestions } from "./legacy-decisions.js";
 
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
@@ -15,6 +15,24 @@ function validateFilters(filters) {
   for (const key of Object.keys(filters)) if (!["item_id", "project_id"].includes(key)) throw new Error(`Unknown filter: ${key}`);
   for (const key of ["item_id", "project_id"]) if (filters[key] !== undefined && !nonempty(filters[key])) throw new Error(`${key} must be nonempty.`);
   return filters;
+}
+
+function projectInitiationValue(value, field, { required = false, limit = 10_000 } = {}) {
+  if (value === undefined || value === null || value === "") {
+    if (required) throw new Error(`Project initiation requires ${field}.`);
+    return null;
+  }
+  if (!nonempty(value)) throw new Error(`${field} must be nonempty text.`);
+  const normalized = value.trim();
+  if (normalized.length > limit) throw new Error(`${field} exceeds ${limit.toLocaleString()} characters.`);
+  return normalized;
+}
+
+function inferredProjectName(outcome) {
+  const firstLine = outcome.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "New project";
+  const withoutLead = firstLine.replace(/^(build|create|make|launch|start|develop)\s+/i, "");
+  const candidate = withoutLead.split(/[.!?]/, 1)[0].trim().replace(/\s+/g, " ");
+  return (candidate || "New project").slice(0, 80);
 }
 
 export function normalizeIntake(input, adapter = {}) {
@@ -72,6 +90,52 @@ export class RoundhouseService {
     const key = nonempty(input.idempotency_key) ? `external:${input.idempotency_key}` : `external:${randomUUID()}`;
     return mapResult(submitToDepot(this.store, normalized, key, adapter), (item) =>
       mapResult(this.store.read(), (data) => ({ item: itemView(data, item), durable: true })));
+  }
+
+  async initiateProject(input, adapter = { source: "web", actor: "local-user" }) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Project initiation must be an object.");
+    const outcome = projectInitiationValue(input.outcome, "an outcome", { required: true });
+    const name = projectInitiationValue(input.name, "name", { limit: 200 }) ?? inferredProjectName(outcome);
+    const repository = projectInitiationValue(input.repository, "repository", { limit: 2_000 });
+    const successState = projectInitiationValue(input.success_state, "success state");
+    const boundaries = projectInitiationValue(input.boundaries, "boundaries");
+    if (input.trusted !== undefined && typeof input.trusted !== "boolean") throw new Error("trusted must be boolean.");
+    const trusted = input.trusted === true;
+    if (this.config?.projects?.some((project) => project.id === name || project.name.toLowerCase() === name.toLowerCase())) {
+      throw new Error(`A configured project already uses the name ${name}.`);
+    }
+    const brief = { name, outcome, repository, success_state: successState, boundaries, trusted };
+    const details = [
+      "Initiate a new Roundhouse project.",
+      `Project name: ${name}`,
+      `Desired outcome: ${outcome}`,
+      repository ? `Repository or starting point: ${repository}` : "Repository or starting point: Roundhouse should recommend the safest appropriate starting point.",
+      successState ? `Success looks like: ${successState}` : "Success looks like: Roundhouse should define a concrete, verifiable success state.",
+      boundaries ? `Boundaries: ${boundaries}` : "Boundaries: Preserve existing data and authority; ask before consequential, destructive, financial, or external actions.",
+      trusted
+        ? "Decision mode: I trust Roundhouse to decide the remaining reversible implementation and product details using safe defaults."
+        : "Decision mode: Use these answers as the project brief and ask one concise question at a time for any material unresolved decision.",
+    ];
+    const created = await this.addToDepot({
+      content: details.join("\n\n"), project_hint: name,
+      metadata: { kind: "project_initiation", project_brief: brief },
+      ...(input.idempotency_key ? { idempotency_key: input.idempotency_key } : {}),
+    }, adapter);
+    const candidateId = `native-${digest(name.toLowerCase()).slice(0, 16)}`;
+    await this.store.change((data) => {
+      data.project_candidates ??= {};
+      const at = new Date().toISOString();
+      const existing = data.project_candidates[candidateId];
+      const sourceIds = [...new Set([...(existing?.source_ids ?? []), created.item.id])];
+      data.project_candidates[candidateId] = {
+        id: candidateId, name, status: "candidate", executable: false, source_system: adapter.source,
+        first_seen_at: existing?.first_seen_at ?? at, source_ids: sourceIds, record_count: sourceIds.length, project_brief: brief,
+      };
+      const item = data.items[created.item.id];
+      if (item) item.project_candidate_id = candidateId;
+    });
+    const data = await this.store.read();
+    return { item: itemView(data, data.items[created.item.id]), project_candidate: data.project_candidates[candidateId], durable: true };
   }
 
   getNeedsHuman(filters = {}) {
