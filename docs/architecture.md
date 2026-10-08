@@ -153,6 +153,16 @@ verification, and delivery evidence. A Shipped state by itself is never sufficie
 Jobs without an outcome record are unclassified and excluded from outcome metrics,
 as are jobs explicitly marked as historical imports.
 
+The authoritative status read model exposes `execution_metrics` from those records.
+Its `tasks_completed_without_intervention` denominator contains only measured,
+completed outcomes, so neither a bare `Shipped` state nor imported history can raise
+the KPI. The same projection reports classification counts, recovered-versus-bypassed
+share, exception reasons, expected versus unexpected exceptions, intervention
+averages and medians, daily trends, and exception rates by project,
+executor/provider, machine/runtime, and job type. Every aggregate includes counts or
+denominators alongside rates, and the drill-down retains the contributing job IDs
+and evidence links.
+
 Known isolated execution or verification exhaustion is held at job scope. The
 scheduler may pass that branch for a later Ready job only when no dependency edge
 connects them. Unknown remote outcomes, interrupted ownership, delivery uncertainty,

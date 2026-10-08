@@ -1,5 +1,6 @@
 import { displayState } from "./presentation.js";
 import { assessJobEligibility } from "./scheduling.js";
+import { executionOutcomeMetrics } from "./execution-metrics.js";
 
 const activeJobStates = new Set(["Executing", "Verification", "Rework"]);
 
@@ -263,6 +264,10 @@ export function statusView(data, filters = {}, executionActivity = null) {
     .sort((a, b) => String(a.project_id).localeCompare(String(b.project_id)) || a.job_id.localeCompare(b.job_id));
   return {
     items,
+    execution_metrics: executionOutcomeMetrics(data, { jobIds: Object.values(data.jobs)
+      .filter((job) => visibleItemIds.has(job.parent_id))
+      .filter((job) => !filters.project_id || job.project_id === filters.project_id)
+      .map((job) => job.id) }),
     active_jobs,
     untracked_activity: Object.keys(filters).length ? [] : executionActivity?.activity ?? [],
     activity_inspection: executionActivity ? {
