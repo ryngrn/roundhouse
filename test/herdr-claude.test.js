@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { HerdrRuntime } from "../src/workflow/runtime.js";
+
+function fakeHerdr(root, authenticated = true) {
+  const filename = path.join(root, "herdr-fixture.mjs");
+  const promptLog = path.join(root, "prompt.json");
+  fs.writeFileSync(filename, `#!/usr/bin/env node
+import fs from "node:fs";
+const args = process.argv.slice(2);
+const capability = { installed: true, version: "2.1.9", authenticated: ${authenticated}, quota_available: true, available: true };
+if (args[0] === "machine" && args[1] === "status") console.log(JSON.stringify({ reachable: true, capabilities: { claude: capability } }));
+else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "get") console.log(JSON.stringify({ kind: "claude", status: "idle", capabilities: { claude: capability } }));
+else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "prompt") {
+  fs.writeFileSync(${JSON.stringify(promptLog)}, JSON.stringify(args));
+  console.log(JSON.stringify({ execution_id: "remote-claude-9", status: "completed" }));
+} else process.exit(64);
+`);
+  fs.chmodSync(filename, 0o700);
+  return { filename, promptLog };
+}
+
+function request(root, bin) {
+  return {
+    project: { id: "remote", runtime: "herdr", executor: { kind: "claude" }, timeout_ms: 10_000,
+      herdr: { bin, machine: "iMac", agent: "claude-worker", workspace_mode: "shared_worktree" } },
+    job: { id: "job-1", work: { title: "Bounded work", acceptance_criteria: [] },
+      project_context: { purpose: "Fixture", agent_profile: { id: "general", name: "General", summary: "Implement.", skills: [], required_evidence: [] } } },
+    workspace: root, directory: path.join(root, "evidence"), previous_failure: { failure: "prior failure" },
+    run: { id: "run-1" }, onStart: () => {},
+  };
+}
+
+test("Herdr dispatches Claude only after advertised capability probes and preserves remote identity", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-herdr-claude-"));
+  const fixture = fakeHerdr(root);
+  const result = await new HerdrRuntime().execute(request(root, fixture.filename));
+  assert.equal(result.passed, true);
+  assert.equal(result.remote_execution.executor, "claude");
+  assert.equal(result.remote_execution.execution_id, "remote-claude-9");
+  assert.equal(result.remote_execution.capability_probe.phase, "ready");
+  assert.match(result.remote_execution.dispatch_nonce, /^[0-9a-f-]{36}$/);
+  assert.equal(Object.hasOwn(result.remote_execution, "pid"), false);
+  const prompt = JSON.parse(fs.readFileSync(fixture.promptLog, "utf8"))[5];
+  assert.match(prompt, /Bounded work/);
+  assert.match(prompt, /prior failure/);
+  assert.match(prompt, /npx -y gh-axi/);
+  assert.match(prompt, /Roundhouse owns commits, verification and delivery/);
+});
+
+test("Herdr records Claude authentication failure without dispatching work", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-herdr-claude-auth-"));
+  const fixture = fakeHerdr(root, false);
+  const result = await new HerdrRuntime().execute(request(root, fixture.filename));
+  assert.equal(result.passed, false);
+  assert.equal(result.remote_execution.phase, "claude_authentication_failed");
+  assert.equal(fs.existsSync(fixture.promptLog), false);
+});

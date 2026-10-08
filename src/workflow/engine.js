@@ -4,7 +4,7 @@ import { digest } from "../storage/repository.js";
 import { record } from "./state.js";
 import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
-import { createRuntime, CommandVerifier } from "./runtime.js";
+import { createRuntime, CommandVerifier, executionBranch } from "./runtime.js";
 import { CapabilityRuntime, executionProviderEvidence, requiredExecutionCapabilities } from "./execution-adapters.js";
 import { providerCapabilityEvidence, providerIdentity } from "./provider-contract.js";
 import { DeliveryRouter } from "./delivery.js";
@@ -33,7 +33,7 @@ function machineLocalEvidence(project, job, execution) {
   if (!report || typeof report !== "object" || Array.isArray(report)) throw new Error("Machine-local Herdr execution did not return structured remote evidence.");
   if (report.passed !== true || typeof report.summary !== "string" || !report.summary.trim()) throw new Error("Machine-local Herdr agent did not attest successful completion.");
   if (typeof report.commit !== "string" || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(report.commit)) throw new Error("Machine-local Herdr evidence requires a full lowercase Git commit SHA.");
-  const expectedBranch = `codex/roundhouse-${job.id}`;
+  const expectedBranch = executionBranch(project, job);
   if (report.branch !== expectedBranch) throw new Error(`Machine-local Herdr evidence must report branch ${expectedBranch}.`);
   if (typeof report.pushed !== "boolean") throw new Error("Machine-local Herdr evidence requires an explicit pushed boolean.");
   if (project.policy.shipping === "push_branch" && !report.pushed) throw new Error("Machine-local Herdr evidence did not confirm the required push.");
@@ -771,7 +771,7 @@ export class Engine {
       assertProviderAuthorized(job);
       if (!machineLocal && !this.shipping.supports(project, job)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = machineLocal
-        ? { kind: "machine_local", branch: `codex/roundhouse-${job.id}`, working_directory: project.herdr.working_directory }
+        ? { kind: "machine_local", branch: executionBranch(project, job), working_directory: project.herdr.working_directory }
         : this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
       await this.store.change((data) => { data.jobs[id].prepared = prepared; });
       for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {
@@ -825,7 +825,7 @@ export class Engine {
               const j = data.jobs[id];
               j.attempts.at(-1).execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
               if (machineLocal) j.delivery_intent = { mode: "machine_local", working_directory: project.herdr.working_directory,
-                machine_selector: project.herdr.machine, agent_target: project.herdr.agent, branch: `codex/roundhouse-${id}`,
+                machine_selector: project.herdr.machine, agent_target: project.herdr.agent, branch: executionBranch(project, j),
                 policy: project.policy.shipping, report_token: remote_execution.report_token,
                 recorded_at: new Date().toISOString(), reconciliation: { required_on_interruption: true, status: "remote_execution" } };
             }) });
@@ -920,9 +920,12 @@ export class Engine {
           return true;
         } catch (error) {
           if (machineLocal) {
-            await this.store.change((data) => { data.jobs[id].attempts.at(-1).failure = error.message; });
-            await this.block(id, `Machine-local Herdr outcome requires explicit reconciliation and will not be replayed automatically: ${error.message}`);
-            return true;
+            const latest = (await this.store.read()).jobs[id];
+            if (latest.delivery_intent?.reconciliation?.required_on_interruption) {
+              await this.store.change((data) => { data.jobs[id].attempts.at(-1).failure = error.message; });
+              await this.block(id, `Machine-local Herdr outcome requires explicit reconciliation and will not be replayed automatically: ${error.message}`);
+              return true;
+            }
           }
           if (deliveryAttempted) { await this.block(id, `Delivery outcome requires reconciliation: ${error.message}`); return true; }
           failure = error.message;

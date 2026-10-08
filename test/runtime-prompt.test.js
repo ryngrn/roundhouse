@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   axiCapabilityGuidance,
+  claudeCapabilityProbe,
+  executionBranch,
   localExecutionPrompt,
   machineLocalPrompt,
   sharedWorktreePrompt,
@@ -52,6 +54,26 @@ test("machine-local Herdr prompt carries AXI fallbacks without broadening config
   assertHerdrControlPlane(prompt);
   assert.match(prompt, /Commit the completed work on branch codex\/roundhouse-job-1\. Do not push it\./);
   assert.match(prompt, /Run the configured verification commands in that remote directory/);
+});
+
+test("Claude Herdr routing uses Claude delivery identity and requires each advertised capability gate", () => {
+  const project = { executor: { kind: "claude" }, herdr: { working_directory: "/srv/project" },
+    verification: [{ id: "tests", command: ["npm", "test"] }], policy: { shipping: "push_branch" }, remote: "origin" };
+  assert.equal(executionBranch(project, job), "claude/roundhouse-job-1");
+  assert.match(machineLocalPrompt(project, job, null, "nonce", { id: "run-1" }), /branch claude\/roundhouse-job-1/);
+  const machine = { reachable: true, capabilities: { claude: { installed: true, version: "2.1.0", authenticated: true, quota_available: true, available: true } } };
+  const agent = { kind: "claude", status: "idle", capabilities: { claude: { installed: true, version: "2.1.0", authenticated: true, quota_available: true, available: true } } };
+  assert.deepEqual(claudeCapabilityProbe(machine, agent), { passed: true, phase: "ready", executor: "claude", version: "2.1.0", machine_version: "2.1.0", authenticated: true, quota_available: true, available: true });
+  assert.equal(claudeCapabilityProbe({ reachable: false }, agent).phase, "machine_unavailable");
+  assert.equal(claudeCapabilityProbe(machine, { ...agent, kind: "codex" }).phase, "agent_unavailable");
+  for (const [field, value, phase] of [
+    ["installed", false, "claude_not_installed"], ["version", "", "claude_version_unavailable"],
+    ["authenticated", false, "claude_authentication_failed"], ["quota_available", false, "claude_quota_unavailable"],
+    ["available", false, "claude_unavailable"],
+  ]) {
+    const capability = { ...machine.capabilities.claude, [field]: value };
+    assert.equal(claudeCapabilityProbe({ ...machine, capabilities: { claude: capability } }, agent).phase, phase);
+  }
 });
 
 test("AXI guidance is argv-oriented and contains no shell wrapper examples", () => {

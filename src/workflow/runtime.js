@@ -83,6 +83,10 @@ export async function runProcess(command, { cwd, input = "", timeout = 120000, o
 // rules. Roundhouse still owns verification and delivery after the process exits.
 export const claudeDefaultTools = Object.freeze(["Read", "Edit", "Write", "Glob", "Grep"]);
 
+export function executionBranch(project, job) {
+  return `${project.executor?.kind === "claude" ? "claude" : "codex"}/roundhouse-${job.id}`;
+}
+
 export function claudeExecutorArgs(executor) {
   return [executor.bin ?? "claude", "-p", "--output-format", "json", "--no-session-persistence",
     "--permission-mode", "acceptEdits", "--allowedTools", (executor.allowed_tools ?? claudeDefaultTools).join(",")];
@@ -159,7 +163,7 @@ export function machineLocalPrompt(project, job, previousFailure, reportToken, r
   const packet = { work: job.work, project_context: boundedProjectContext, previous_failure: previousFailure, run };
   const roleInstructions = agentRoleInstructions(agentProfile);
   const checks = project.verification.map((rule) => ({ id: rule.id, command: rule.command, roles: rule.roles, evidence_ids: rule.evidence_ids }));
-  const branch = `codex/roundhouse-${job.id}`;
+  const branch = executionBranch(project, job);
   const delivery = project.policy.shipping === "push_branch"
     ? `Commit the completed work on branch ${branch}, push that exact branch to ${project.remote}, and verify the pushed commit.`
     : `Commit the completed work on branch ${branch}. Do not push it.`;
@@ -190,6 +194,103 @@ function correlation(value, depth = 0) {
   return result;
 }
 
+function objectValues(value, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 5) return [];
+  return [value, ...Object.values(value).flatMap((entry) => objectValues(entry, depth + 1))];
+}
+
+function field(objects, names) {
+  for (const object of objects) {
+    for (const name of names) if (object[name] !== undefined) return object[name];
+  }
+  return undefined;
+}
+
+function truth(value, positive, negative) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value > 0;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.toLowerCase().replace(/[\s_-]+/g, "");
+  if (positive.includes(normalized)) return true;
+  if (negative.includes(normalized)) return false;
+  return undefined;
+}
+
+function claudeObjects(value) {
+  const all = objectValues(value);
+  const explicit = all.filter((object) => {
+    const identity = object.kind ?? object.id ?? object.name ?? object.agent ?? object.provider ?? object.executor;
+    const advertised = Array.isArray(object.capabilities) && object.capabilities.some((entry) =>
+      typeof entry === "string" && /^(?:claude|claude[-_ ]?code)$/i.test(entry));
+    return (typeof identity === "string" && /^(?:claude|claude[-_ ]?code)$/i.test(identity)) || advertised ||
+      object.claude === true || Object.keys(object).some((key) => key.startsWith("claude_"));
+  });
+  const named = all.flatMap((object) => [object.claude, object.claude_code]).filter((value) => value && typeof value === "object");
+  return [...named, ...explicit];
+}
+
+function validateClaudeAdvertisement(capabilityObjects, source) {
+  if (!capabilityObjects.length) return { passed: false, phase: "claude_not_installed", reason: `The selected Herdr ${source} did not advertise an installed Claude capability.` };
+  const installed = truth(field(capabilityObjects, ["installed", "installation", "present", "claude_installed"]),
+    ["true", "installed", "present", "current"], ["false", "missing", "absent", "notinstalled"]);
+  if (installed !== true) return { passed: false, phase: "claude_not_installed", reason: `Claude is not advertised as installed by the selected Herdr ${source}.` };
+  const version = field(capabilityObjects, ["version", "installed_version", "cli_version", "claude_version"]);
+  if (typeof version !== "string" || !version.trim()) return { passed: false, phase: "claude_version_unavailable", reason: `The selected Herdr ${source} did not advertise a usable Claude version.` };
+  const authenticated = truth(field(capabilityObjects, ["authenticated", "authentication", "auth", "logged_in", "claude_authenticated"]),
+    ["true", "authenticated", "valid", "ready", "ok"], ["false", "unauthenticated", "invalid", "expired", "required", "missing"]);
+  if (authenticated !== true) return { passed: false, phase: "claude_authentication_failed", reason: `Claude authentication is unavailable on the selected Herdr ${source}.` };
+  const quota = truth(field(capabilityObjects, ["quota_available", "quota", "has_quota", "remaining", "claude_quota_available"]),
+    ["true", "available", "ok", "remaining"], ["false", "exhausted", "unavailable", "none", "zero"]);
+  if (quota !== true) return { passed: false, phase: "claude_quota_unavailable", reason: `Claude quota is unavailable on the selected Herdr ${source}.` };
+  const available = truth(field(capabilityObjects, ["available", "usable", "ready", "enabled", "claude_available"]),
+    ["true", "available", "usable", "ready", "enabled", "ok"], ["false", "unavailable", "disabled", "blocked", "error", "failed"]);
+  if (available !== true) return { passed: false, phase: "claude_unavailable", reason: `Claude is not currently available on the selected Herdr ${source}.` };
+  return { passed: true, version: version.trim() };
+}
+
+/** Normalize the deliberately small capability advertisement contract exposed by
+ * Herdr machines/agents. Unknown values are not promoted to success: operators can
+ * see exactly which part of the remote Claude preflight is missing or unusable. */
+function claudeMachineCapabilityProbe(machineStatus) {
+  const machineObjects = objectValues(machineStatus);
+  const reachableValue = field(machineObjects, ["reachable", "online", "connected"]);
+  const machineState = field(machineObjects, ["status", "state"]);
+  const reachable = truth(reachableValue ?? machineState,
+    ["true", "online", "ready", "available", "connected", "healthy", "ok"],
+    ["false", "offline", "unavailable", "disconnected", "unreachable", "error", "failed"]);
+  if (reachable === false) return { passed: false, phase: "machine_unavailable", reason: "The selected Herdr machine is unavailable." };
+
+  return validateClaudeAdvertisement(claudeObjects(machineStatus), "machine");
+}
+
+export function claudeCapabilityProbe(machineStatus, agentStatus) {
+  const machineCapability = claudeMachineCapabilityProbe(machineStatus);
+  if (!machineCapability.passed) return machineCapability;
+
+  const agentObjects = objectValues(agentStatus);
+  const agentKind = field(agentObjects, ["kind", "agent_kind", "provider", "executor", "agent"]);
+  if (typeof agentKind !== "string" || !/^(?:claude|claude[-_ ]?code)$/i.test(agentKind)) {
+    return { passed: false, phase: "agent_unavailable", reason: "The selected Herdr agent does not advertise the Claude capability." };
+  }
+  const agentState = field(agentObjects, ["status", "state", "availability"]);
+  if (truth(agentState, ["idle", "done", "ready", "available", "online"], ["blocked", "working", "unknown", "offline", "unavailable", "error", "failed"]) === false) {
+    return { passed: false, phase: "agent_unavailable", reason: `The selected Herdr Claude agent is not available (${String(agentState)}).` };
+  }
+
+  const agentCapability = validateClaudeAdvertisement(claudeObjects(agentStatus), "agent");
+  if (!agentCapability.passed) return agentCapability;
+  return { passed: true, phase: "ready", executor: "claude", version: agentCapability.version,
+    machine_version: machineCapability.version, authenticated: true, quota_available: true, available: true };
+}
+
+function machineProbeFailure(result, machine) {
+  const detail = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  if (/auth|permission denied|publickey|credential/.test(detail)) return { phase: "machine_authentication_failed", reason: `Herdr machine authentication failed for ${machine}.` };
+  if (/version|protocol|incompatible|upgrade/.test(detail)) return { phase: "machine_version_incompatible", reason: `Herdr machine version/protocol is incompatible for ${machine}.` };
+  if (/unavailable|unreachable|offline|connection|timed? ?out|not found/.test(detail)) return { phase: "machine_unavailable", reason: `Herdr machine ${machine} is unavailable.` };
+  return { phase: "machine_probe_failed", reason: `Herdr machine probe failed for ${machine}.` };
+}
+
 export class HerdrRuntime {
   async execute({ project, job, workspace, directory, previous_failure, run, onStart, onRemoteStart = () => {} }) {
     const bin = project.herdr.bin ?? "herdr";
@@ -198,19 +299,45 @@ export class HerdrRuntime {
     const agent = project.herdr.agent;
     const workspaceMode = project.herdr.workspace_mode ?? "shared_worktree";
     const machineLocal = workspaceMode === "machine_local";
-    const reportToken = machineLocal ? randomUUID() : null;
+    const dispatchNonce = randomUUID();
+    const reportToken = machineLocal ? dispatchNonce : null;
     const localCwd = machineLocal ? directory : workspace;
     if (machineLocal) fs.mkdirSync(localCwd, { recursive: true, mode: 0o700 });
     const baseIdentity = { runtime: "herdr", machine_selector: machine, agent_target: agent, workspace_mode: workspaceMode,
+      executor: project.executor.kind, dispatch_nonce: dispatchNonce,
       ...(machineLocal ? { working_directory: project.herdr.working_directory, report_token: reportToken } : {}) };
     const probe = await runProcess([bin, "machine", "status", machine, "--json"], {
       cwd: localCwd, timeout: project.timeout_ms, onStart,
     });
-    if (!probe.passed) return { ...probe, error: `Herdr machine probe failed for ${machine}.`, remote_execution: { ...baseIdentity, phase: "machine_probe_failed" } };
+    if (!probe.passed) {
+      const failure = machineProbeFailure(probe, machine);
+      return { ...probe, error: failure.reason, remote_execution: { ...baseIdentity, phase: failure.phase } };
+    }
     let machineStatus;
     try { machineStatus = parseJsonOutput(probe.stdout, "Herdr machine status"); }
     catch (error) { return { ...probe, passed: false, error: error.message, remote_execution: { ...baseIdentity, phase: "machine_probe_failed" } }; }
-    const remoteExecution = { ...baseIdentity, phase: "prompting", machine_status: correlation(machineStatus) };
+    let capabilityProbe = null;
+    let agentStatus = null;
+    if (project.executor.kind === "claude") {
+      const machineCapability = claudeMachineCapabilityProbe(machineStatus);
+      if (!machineCapability.passed) return { ...probe, passed: false, error: machineCapability.reason,
+        remote_execution: { ...baseIdentity, phase: machineCapability.phase, machine_status: correlation(machineStatus),
+          capability_probe: machineCapability } };
+      const agentProbe = await runProcess([bin, "--machine", machine, "agent", "get", agent], {
+        cwd: localCwd, timeout: project.timeout_ms, onStart,
+      });
+      if (!agentProbe.passed) return { ...agentProbe, error: `Herdr agent probe failed for ${machine}/${agent}.`,
+        remote_execution: { ...baseIdentity, phase: "agent_probe_failed", machine_status: correlation(machineStatus) } };
+      try { agentStatus = parseJsonOutput(agentProbe.stdout, "Herdr agent status"); }
+      catch (error) { return { ...agentProbe, passed: false, error: error.message,
+        remote_execution: { ...baseIdentity, phase: "agent_probe_failed", machine_status: correlation(machineStatus) } }; }
+      capabilityProbe = claudeCapabilityProbe(machineStatus, agentStatus);
+      if (!capabilityProbe.passed) return { ...agentProbe, passed: false, error: capabilityProbe.reason,
+        remote_execution: { ...baseIdentity, phase: capabilityProbe.phase, machine_status: correlation(machineStatus),
+          agent_status: correlation(agentStatus), capability_probe: capabilityProbe } };
+    }
+    const remoteExecution = { ...baseIdentity, phase: "prompting", machine_status: correlation(machineStatus),
+      ...(agentStatus ? { agent_status: correlation(agentStatus), capability_probe: capabilityProbe } : {}) };
     await onRemoteStart(remoteExecution);
     const prompt = machineLocal
       ? machineLocalPrompt(project, job, previous_failure, reportToken, run)

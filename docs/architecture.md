@@ -48,6 +48,9 @@ absent, cannot reach the target, or cannot perform the required inspection. This
 a tool-level fallback within the already selected runtime, not permission to switch
 runtimes or providers. In particular, a Herdr probe, authentication, version, or
 execution failure blocks for reconciliation; it never falls back to local work.
+Herdr-backed Claude selection requires both machine reachability and a matching
+agent advertisement with an installed version, valid authentication, usable quota,
+and current availability before dispatch.
 
 Tool choice does not change authority. AXI and fallback tools cannot approve work,
 alter protected branches, authorize destructive actions, weaken or replace checks,

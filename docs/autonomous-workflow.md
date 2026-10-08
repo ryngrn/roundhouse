@@ -316,11 +316,16 @@ does not change that ownership.
 
 Projects default to `runtime: local`. An opt-in `runtime: herdr` project names an
 existing machine and agent; Roundhouse probes that saved machine and never falls
-back to local execution. Shared-worktree mode preserves local verification and
+back to local execution. A configured Claude executor also requires an advertised
+remote Claude installation, version, authentication, quota, and current
+availability before Roundhouse sends the bounded work. Each failed gate is
+recorded separately and never triggers an implicit local or Codex fallback.
+Shared-worktree mode preserves local verification and
 delivery. In `machine_local` mode, `herdr.working_directory` is an absolute path on
 the fleet machine and a local `repository` may be omitted. The remote agent runs
-the configured checks, commits `codex/roundhouse-<job-id>`, and performs only the
-configured `commit_only` or `push_branch` delivery. Its nonce-correlated report
+the configured checks, commits the executor-specific `claude/roundhouse-<job-id>`
+or `codex/roundhouse-<job-id>` branch, and performs only the configured
+`commit_only` or `push_branch` delivery. Its nonce-correlated report
 must contain the full commit, exact branch, push result, summary, and one passing
 record for every applicable verification ID. Roundhouse exposes the active machine,
 agent, directory, and remote identity, then stores terminal evidence with

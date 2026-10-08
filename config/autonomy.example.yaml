@@ -75,6 +75,10 @@ projects:
   #     agent: roundhouse-imac
   #     workspace_mode: machine_local
   #     working_directory: /home/ryngrn/kmac
+  #   executor:
+  #     # Requires remote Claude installation/version/auth/quota/availability
+  #     # advertisements before Herdr dispatches bounded work.
+  #     kind: claude
   #   policy:
   #     allow_autonomous: true
   #     shipping: push_branch
