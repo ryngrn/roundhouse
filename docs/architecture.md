@@ -196,9 +196,12 @@ evidenced completion records, and only explicit human completion can produce the
 
 Execution providers are registered under `execution.providers` and selected only by
 the union of project and slice capability requirements. A provider must support the
-entire set; Roundhouse never guesses an order for composing partial providers. The
-smallest matching capability set wins, with provider ID as a deterministic tie-break.
-The selected provider and required capabilities are retained with execution evidence.
+entire set; Roundhouse never guesses an order for composing partial providers. Any
+provider with a recorded capability, risk, confidence, context, or latency gap is
+excluded before selection. The lowest configured cost tier wins; capability
+specificity and provider ID are deterministic tie-breakers. Tier 0 supports
+mechanical adapters without recursively asking a model to choose a model. The
+selected provider, requirements, and probe gaps are retained with execution evidence.
 This generic contract covers research, connected-source actions, scheduling,
 artifact persistence, and human-task handling without importing their provider APIs
 or policy into the Engine. A command adapter receives the normalized work packet,

@@ -1,4 +1,4 @@
-import { executionProviderEvidence, requiredExecutionCapabilities, selectExecutionProvider } from "./execution-adapters.js";
+import { executionProviderEvidence, executionRoutingRequirements, requiredExecutionCapabilities, selectExecutionProvider } from "./execution-adapters.js";
 import { assessJobEligibility } from "./scheduling.js";
 
 const emptyScheduler = (capacity) => ({
@@ -79,8 +79,9 @@ export function executionEligibility(project, execution, capabilities = executio
   const missing = required.filter((capability) => !capabilities.includes(capability));
   const reasons = [];
   if (missing.length) reasons.push({ code: "capability_mismatch", message: `Missing capabilities: ${missing.join(", ")}.`, missing });
-  if (!missing.length && execution.providers && !selectExecutionProvider(execution.providers, required)) {
-    reasons.push({ code: "provider_unavailable", message: `No execution provider supports the required capability combination: ${required.length ? required.join(", ") : "(none)"}.`, required });
+  const routing = executionRoutingRequirements(project, job);
+  if (!missing.length && execution.providers && !selectExecutionProvider(execution.providers, required, { requirements: routing })) {
+    reasons.push({ code: "provider_unavailable", message: `No execution provider satisfies the job routing requirements.`, required, routing });
   }
   const machineLocal = project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
   if ((job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository)) && !project.repository && !machineLocal) {
@@ -119,6 +120,7 @@ export function executionReservation(project, job = null) {
     project_limit: project.max_concurrent_runs ?? 1,
     capacity_units: 1,
     required_capabilities: requiredExecutionCapabilities(project, job),
+    routing_requirements: executionRoutingRequirements(project, job),
     repository: { required: repositoryRequired, configured: Boolean(repository) || machineLocal,
       value: repository ?? (machineLocal ? project.herdr.working_directory : null) },
     resources: { ...(project.resource_requirements ?? {}) },
@@ -145,10 +147,13 @@ export function reservationAssessment(active, candidate, execution, capabilities
     capability: { required: [...(candidate.required_capabilities ?? [])], available: [...capabilities], missing: missingCapabilities, fits: !missingCapabilities.length },
     provider: (() => {
       if (!execution.providers || missingCapabilities.length) return { selected: null, fits: !execution.providers || Boolean(missingCapabilities.length) };
-      const selected = selectExecutionProvider(execution.providers, candidate.required_capabilities ?? []);
-      return { selected: selected?.id ?? null, fits: Boolean(selected) };
+      const selected = selectExecutionProvider(execution.providers, candidate.required_capabilities ?? [], { requirements: candidate.routing_requirements });
+      return { selected: selected?.id ?? null, tier: selected?.tier ?? (selected ? 1 : null), fits: Boolean(selected) };
     })(),
-    ...(execution.providers ? { provider_capability_probe: executionProviderEvidence(execution.providers, candidate.required_capabilities ?? []).capability_probe } : {}),
+    ...(execution.providers ? (() => {
+      const evidence = executionProviderEvidence(execution.providers, candidate.required_capabilities ?? [], { requirements: candidate.routing_requirements });
+      return { provider_capability_probe: evidence.capability_probe, provider_routing_probe: evidence.routing };
+    })() : {}),
     capacity: { requested: candidate.capacity_units ?? 1, used: capacityUsed, limit: execution.capacity, fits: capacityUsed + (candidate.capacity_units ?? 1) <= execution.capacity },
     project: { project_id: candidate.project_id, active: projectUsed, limit: candidate.project_limit ?? 1, fits: projectUsed < (candidate.project_limit ?? 1) },
     resources,
@@ -162,7 +167,7 @@ export function reservationAssessment(active, candidate, execution, capabilities
 
 function deferralReason(checks, reservation) {
   if (!reservation.constraints.capability.fits) return { code: "capability_mismatch", message: `Missing capabilities: ${reservation.constraints.capability.missing.join(", ")}.` };
-  if (!reservation.constraints.provider.fits) return { code: "provider_unavailable", message: `No execution provider supports the required capability combination: ${reservation.constraints.capability.required.length ? reservation.constraints.capability.required.join(", ") : "(none)"}.` };
+  if (!reservation.constraints.provider.fits) return { code: "provider_unavailable", message: "No execution provider satisfies the job routing requirements." };
   if (!reservation.constraints.repository.fits) return { code: "repository_unavailable", message: "This slice requires a repository, but the project has none configured." };
   const failed = Object.entries(checks).find(([, value]) => !value.passed);
   if (failed) return { code: failed[1].code ?? failed[0], message: failed[1].reason };

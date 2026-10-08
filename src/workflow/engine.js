@@ -5,7 +5,7 @@ import { record } from "./state.js";
 import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
 import { createRuntime, CommandVerifier, executionBranch } from "./runtime.js";
-import { CapabilityRuntime, executionProviderEvidence, requiredExecutionCapabilities } from "./execution-adapters.js";
+import { CapabilityRuntime, executionProviderEvidence, executionRoutingRequirements, requiredExecutionCapabilities } from "./execution-adapters.js";
 import { externallyUncertain, providerCapabilityEvidence, providerFailureEvidence, providerIdentity } from "./provider-contract.js";
 import { DeliveryRouter } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
@@ -354,10 +354,13 @@ export class Engine {
         approved_at: item.approval.at, scope_digest: approvalScope(work, item.policy_hash) } : null;
       const policy = actionPolicy(work, item.policy_hash, approval);
       const requiredCapabilities = requiredExecutionCapabilities(item.project_context, { work });
-      const providerEvidence = executionProviderEvidence(this.config.execution.providers, requiredCapabilities);
+      const routingRequirements = { confidence: item.decision.execution_confidence,
+        context_bytes: Buffer.byteLength(JSON.stringify({ work, project_context: item.project_context })), max_latency_ms: item.project_context.timeout_ms };
+      const providerEvidence = executionProviderEvidence(this.config.execution.providers, requiredCapabilities,
+        { requirements: executionRoutingRequirements(item.project_context, { work, project_context: item.project_context, routing_requirements: routingRequirements }) });
       data.jobs[id] = record(id, { state: classification === "human_task" ? "Review" : "Ready", parent_id: item.id, project_id: item.project_id,
         work, agent_role: item.agent_role ?? "general", project_context: item.project_context, policy_hash: item.policy_hash,
-        provider_evidence: providerEvidence, provider_transitions: [],
+        provider_evidence: providerEvidence, provider_transitions: [], routing_requirements: routingRequirements,
         action_policy: policy,
         ...(classification === "human_task" ? { human_task: { status: "unassigned", assignment: null, evidence: [], completion: null,
           history: [{ from: null, to: "unassigned", actor: item.approval?.actor ?? null, at: new Date().toISOString(),
@@ -797,12 +800,14 @@ export class Engine {
       for (let attempt = 0; ; attempt++) {
         const current = (await this.store.read()).jobs[id];
         const requiredCapabilities = requiredExecutionCapabilities(project, current);
+        const routingRequirements = executionRoutingRequirements(project, current);
         const previousFailure = current.attempts.at(-1) ?? null;
         const excludedProviderIds = current.attempts
           .filter((entry) => entry.provider_failure?.fallback_eligible)
           .map((entry) => entry.provider_evidence?.selected?.id)
           .filter(Boolean);
-        const providerEvidence = executionProviderEvidence(this.config.execution.providers, requiredCapabilities, { exclude: excludedProviderIds });
+        const providerEvidence = executionProviderEvidence(this.config.execution.providers, requiredCapabilities,
+          { exclude: excludedProviderIds, requirements: routingRequirements });
         if (!providerEvidence.selected) {
           const capability = requiredCapabilities.length ? requiredCapabilities.join(", ") : "execution";
           const compatible = this.config.execution.providers

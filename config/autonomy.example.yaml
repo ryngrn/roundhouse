@@ -13,12 +13,18 @@ execution:
   # Global execution slots default to one when this block is omitted.
   capacity: 1
   capabilities: [local]
-  # Providers are selected solely from each slice's required capabilities. A
-  # project provider preserves the existing Codex/command executor path.
+  # Providers use deterministic cheapest-sufficient routing. Lower tiers are
+  # skipped only for a recorded capability, risk, confidence, context, or
+  # latency gap. A project provider preserves the existing executor path.
   providers:
     - id: local-software
       kind: project
       capabilities: [local]
+      tier: 1
+      max_risk: consequential
+      min_confidence: 0.85
+      context_window: 262144
+      latency_ms: 30000
   resource_limits:
     workspace: 1
 projects:

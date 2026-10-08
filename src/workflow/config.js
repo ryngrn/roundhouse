@@ -199,10 +199,20 @@ export function validateWorkflowConfig(raw, filename) {
   check(suppliedProviders === undefined || Array.isArray(suppliedProviders), "execution.providers must be an array.");
   const providers = (suppliedProviders ?? [{ id: "local-project", kind: "project", capabilities }]).map((provider) => {
     check(plainObject(provider), "Execution provider must be an object.");
-    for (const key of Object.keys(provider)) check(["id", "kind", "capabilities", "command"].includes(key), `Unknown execution provider setting: ${key}`);
+    for (const key of Object.keys(provider)) check(["id", "kind", "capabilities", "command", "tier", "max_risk", "min_confidence", "context_window", "latency_ms"].includes(key), `Unknown execution provider setting: ${key}`);
     check(nonempty(provider.id) && contractKey.test(provider.id), "Execution provider id must be a stable lowercase identifier.");
     check(["project", "command"].includes(provider.kind), `Execution provider ${provider.id} kind must be project or command.`);
     const declared = stringSet(provider.capabilities ?? [], `Execution provider ${provider.id} capabilities`);
+    const tier = provider.tier ?? 1;
+    const max_risk = provider.max_risk ?? "human_task";
+    const min_confidence = provider.min_confidence ?? 0;
+    const context_window = provider.context_window ?? Number.MAX_SAFE_INTEGER;
+    const latency_ms = provider.latency_ms ?? 0;
+    check(Number.isInteger(tier) && tier >= 0 && tier <= 100, `Execution provider ${provider.id} tier must be an integer from 0–100.`);
+    check(["read_only", "consequential", "human_task"].includes(max_risk), `Execution provider ${provider.id} max_risk is invalid.`);
+    check(Number.isFinite(min_confidence) && min_confidence >= 0 && min_confidence <= 1, `Execution provider ${provider.id} min_confidence must be 0–1.`);
+    check(Number.isSafeInteger(context_window) && context_window > 0, `Execution provider ${provider.id} context_window must be a positive integer.`);
+    check(Number.isSafeInteger(latency_ms) && latency_ms >= 0, `Execution provider ${provider.id} latency_ms must be a nonnegative integer.`);
     check(declared.every((capability) => capabilities.includes(capability)), `Execution provider ${provider.id} declares a capability unavailable on this installation.`);
     if (provider.kind === "command") check(commandValid(provider.command), `Execution provider ${provider.id} requires an argv array.`);
     else check(provider.command === undefined, `Project execution provider ${provider.id} cannot define a command.`);

@@ -23,10 +23,11 @@ export function providerIdentity(provider, fallbackId = null) {
     id: provider.id ?? fallbackId ?? provider.kind ?? null,
     kind: provider.kind ?? null,
     capabilities: [...(provider.capabilities ?? contract?.capabilities ?? [])],
+    ...(Number.isInteger(provider.tier) ? { tier: provider.tier } : {}),
   };
 }
 
-export function providerCapabilityEvidence(providers, requiredCapabilities, selected = null) {
+export function providerCapabilityEvidence(providers, requiredCapabilities, selected = null, routing = null) {
   const required = [...new Set(requiredCapabilities ?? [])];
   const configured = (providers ?? []).map((provider) => providerIdentity(provider)).filter(Boolean);
   const probes = configured.map((provider) => {
@@ -39,6 +40,7 @@ export function providerCapabilityEvidence(providers, requiredCapabilities, sele
     selected: selectedIdentity,
     invoked: null,
     capability_probe: { required, results: probes },
+    ...(routing ? { routing } : {}),
   };
 }
 

@@ -7,7 +7,7 @@ import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { Store } from "../src/workflow/store.js";
 import { dispatchConsiderations, eligibleProjectHead, executionEligibility, executionReservation, projectExecutionEligible, projectQueueHead, recordAllocation, recordDispatchRound, reservationAssessment, reservationFits, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
 import { statusView } from "../src/workflow/views.js";
-import { CapabilityRuntime, ExecutionAdapterRegistry, selectExecutionProvider } from "../src/workflow/execution-adapters.js";
+import { CapabilityRuntime, ExecutionAdapterRegistry, executionProviderEvidence, selectExecutionProvider } from "../src/workflow/execution-adapters.js";
 import { REMOTE_DESKTOP_COMMANDER_PERMITTED_USES, isRemoteDesktopCommanderCommand } from "../src/workflow/remote-desktop-policy.js";
 
 function manifest(repository, changes = {}) {
@@ -64,6 +64,32 @@ test("execution providers: registration and selection depend only on complete ca
   assert.equal(registry.select(["research", "unknown"]), null);
   assert.throws(() => registry.require(["research", "unknown"]), /research, unknown/);
   assert.throws(() => registry.register({ id: "alpha", capabilities: [], execute }), /Duplicate/);
+});
+
+test("execution providers: cheapest-sufficient routing is deterministic and explains escalation", () => {
+  const providers = [
+    { id: "tier-0-mechanical", kind: "command", capabilities: [], tier: 0, max_risk: "read_only", min_confidence: 0.95, context_window: 2_000, latency_ms: 25 },
+    { id: "tier-1-local", kind: "project", capabilities: ["research"], tier: 1, max_risk: "consequential", min_confidence: 0.75, context_window: 20_000, latency_ms: 500 },
+    { id: "tier-2-paid", kind: "command", capabilities: ["research", "artifact"], tier: 2, max_risk: "human_task", min_confidence: 0, context_window: 200_000, latency_ms: 2_000 },
+  ];
+  const mechanical = { risk: "read_only", confidence: 0.99, context_bytes: 800, max_latency_ms: 100 };
+  assert.equal(selectExecutionProvider(providers, [], { requirements: mechanical }).id, "tier-0-mechanical");
+
+  const local = { risk: "consequential", confidence: 0.9, context_bytes: 8_000, max_latency_ms: 1_000 };
+  assert.equal(selectExecutionProvider(providers, ["research"], { requirements: local }).id, "tier-1-local");
+  const localEvidence = executionProviderEvidence(providers, ["research"], { requirements: local });
+  assert.equal(localEvidence.routing.selection.escalated, true);
+  assert.deepEqual(localEvidence.routing.results[0].gaps.capability, ["research"]);
+
+  const uncertain = { risk: "consequential", confidence: 0.6, context_bytes: 8_000, max_latency_ms: 3_000 };
+  const paidEvidence = executionProviderEvidence(providers, ["research"], { requirements: uncertain });
+  assert.equal(paidEvidence.selected.id, "tier-2-paid");
+  assert.deepEqual(paidEvidence.routing.results[1].gaps.confidence, { required: 0.6, minimum: 0.75 });
+  assert.equal(paidEvidence.routing.selection.escalated, true);
+
+  const explicit = new CapabilityRuntime(providers.map((provider) => ({ ...provider,
+    command: provider.kind === "command" ? [process.execPath, "-e", ""] : undefined })), { execute: async () => ({ passed: true }) });
+  assert.equal(explicit.registry.get("tier-1-local", ["research"]).id, "tier-1-local", "explicit provider pins remain authoritative");
 });
 
 test("execution providers: capabilities split across providers are an unsupported combination", () => {
