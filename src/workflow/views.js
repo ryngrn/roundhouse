@@ -60,6 +60,7 @@ export function itemView(data, item) {
     id: question.id, decision_key: question.decision_key ?? null, prompt: question.prompt, answer: question.answer?.text ?? "",
     answered_at: question.answer?.at ?? question.updated_at ?? null,
   }));
+  const allocationDecisions = data.system_metadata?.execution_scheduler?.decisions ?? [];
   return {
     id: item.id,
     state,
@@ -116,8 +117,8 @@ export function itemView(data, item) {
       latest_run: job.attempts?.at(-1)?.run ?? null,
       latest_failure: job.attempts?.at(-1)?.failure ?? null,
       reconciliation: job.reconciliation ?? job.attempts?.at(-1)?.run?.reconciliation ?? null,
-      allocation: job.allocation ?? null,
-      allocation_history: job.allocation_history ?? [],
+      allocation: allocationDecisions.findLast((decision) => decision.job_id === job.id) ?? null,
+      allocation_history: allocationDecisions.filter((decision) => decision.job_id === job.id),
     })),
   };
 }
@@ -174,6 +175,8 @@ function projectedJob(data, job, config) {
   const blockedDependents = job.state === "Blocked"
     ? Object.values(data.jobs).filter((candidate) => (candidate.dependencies ?? []).includes(job.id)).length
     : 0;
+  const allocationDecisions = (data.system_metadata?.execution_scheduler?.decisions ?? [])
+    .filter((decision) => decision.job_id === job.id);
   const shippedOutcome = job.state === "Shipped" ? [
     attempt.execution?.report?.summary,
     "1 work item verified and shipped by Roundhouse.",
@@ -210,6 +213,8 @@ function projectedJob(data, job, config) {
     history: (job.history ?? []).map((event) => ({ from: event.from ?? null, to: event.to, reason: event.reason, at: event.at })),
     questions: [],
     issue_resolution: job.issue_resolution ?? null,
+    allocation: allocationDecisions.at(-1) ?? null,
+    allocation_history: allocationDecisions,
     dispatch_hold: dispatchHold,
     bottleneck: blockedDependents > 0,
     blocked_dependents: blockedDependents,
@@ -284,7 +289,26 @@ export function statusView(data, filters = {}) {
     title: nextJob.work?.title ?? nextItem.input?.text?.slice(0, 160) ?? "Untitled work",
     priority: nextItem.priority ?? null,
   } : null;
-  return { items, next_departure, projects: data.projects, project_candidates: data.project_candidates ?? {}, system_metadata: data.system_metadata ?? {} };
+  const scheduler = data.system_metadata?.execution_scheduler;
+  const decisions = (scheduler?.decisions ?? [])
+    .filter((decision) => !filters.project_id || decision.project_id === filters.project_id)
+    .filter((decision) => !filters.item_id || data.jobs[decision.job_id]?.parent_id === filters.item_id);
+  return {
+    items,
+    next_departure,
+    allocations: {
+      capacity: scheduler?.capacity ?? null,
+      allocation_sequence: scheduler?.sequence ?? 0,
+      decision_sequence: scheduler?.decision_sequence ?? 0,
+      latest: Object.fromEntries(Object.entries(scheduler?.latest ?? {})
+        .filter(([projectId]) => !filters.project_id || projectId === filters.project_id)
+        .filter(([, decision]) => !filters.item_id || data.jobs[decision.job_id]?.parent_id === filters.item_id)),
+      decisions,
+    },
+    projects: data.projects,
+    project_candidates: data.project_candidates ?? {},
+    system_metadata: data.system_metadata ?? {},
+  };
 }
 
 export function needsHumanView(data, filters = {}) {

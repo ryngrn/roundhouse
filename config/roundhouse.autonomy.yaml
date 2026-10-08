@@ -3,6 +3,10 @@ decision:
   kind: codex
   bin: codex
 max_jobs_per_run: 10
+execution:
+  capacity: 10
+  capabilities: [local]
+  resource_limits: {}
 triage:
   max_per_tick: 1
   max_concurrent: 1

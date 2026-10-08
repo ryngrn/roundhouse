@@ -173,6 +173,12 @@ test("acceptance: HTTP workflow clarifies once, approves, executes, verifies, fi
   const restartedStatus = restarted.getWorkStatus();
   assert.equal(restartedStatus.items[0].state, "Shipped");
   assert.equal(restartedStatus.items[0].evidence.deliveries[0].deployment.status, "succeeded");
+  assert.equal(restartedStatus.allocations.latest.acceptance.result, "allocated");
+  assert.equal(restartedStatus.allocations.latest.acceptance.eligible, true);
+  assert.equal(restartedStatus.allocations.latest.acceptance.queue.position, 1);
+  assert.equal(restartedStatus.allocations.latest.acceptance.constraints.capacity.limit, 1);
+  assert.deepEqual(restartedStatus.allocations.latest.acceptance.constraints.capability.missing, []);
+  assert.equal(restartedStatus.items[0].jobs[0].allocation.reason.code, "allocated");
 });
 
 test("acceptance: autonomous HTTP workflow reaches Completed without human interaction", async (t) => {

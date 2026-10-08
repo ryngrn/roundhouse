@@ -22,10 +22,13 @@ export function triageFingerprint(item, data, config, store) {
       policy: project.policy,
       verification: project.verification,
       max_concurrent_runs: project.max_concurrent_runs,
+      required_capabilities: project.required_capabilities,
+      resource_requirements: project.resource_requirements,
     } : null,
     project_runtime: selected ? data.projects?.[selected] ?? null : null,
     project_candidate: item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id] ?? null : null,
     dependency_revisions: data.system_metadata?.triage_dependency_revisions ?? {},
+    execution: config.execution,
     storage: { kind: store.kind, shared: store.shared },
   });
 }

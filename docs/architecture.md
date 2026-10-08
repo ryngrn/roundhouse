@@ -67,9 +67,11 @@ verification evidence, shipping/deployment, transition audit, outbox/MCP deliver
 nodes, leases, and import provenance. It is not enabled by the installed Studio
 service and is never selected implicitly from relay credentials.
 
-PostgreSQL job claims use a transaction and `FOR UPDATE SKIP LOCKED`. One live lease
-owner is recorded with acquisition, heartbeat, and expiry timestamps. Separate
-project/resource leases protect Git and remote delivery across nodes. Revision
+PostgreSQL job claims use a transaction and `FOR UPDATE SKIP LOCKED`. The same
+transaction reserves a global slot, project allowance, counted resources, and
+exclusive repository/delivery keys on the job lease. One live lease owner is
+recorded with acquisition, heartbeat, and expiry timestamps. Separate project
+leases add defense in depth around Git and remote delivery across nodes. Revision
 guards reject stale writes. The delivery intent and outbox commit before external
 delivery, and expired ownership blocks uncertain work for reconciliation instead of
 replaying it. Advisory locks serialize schema migration and compatibility snapshot
@@ -100,6 +102,13 @@ interrupted external action did not happen. Recovery is conservative and retains
 artifacts. PostgreSQL-backed nodes heartbeat their stable installation identities
 only while safety-critical work owns a lease. The installed LaunchAgent keeps the
 local server alive; an HTTP wake stream and local mutations trigger worker cycles.
+
+Dispatch decisions are durable evidence too. Each scheduler round records every
+considered project candidate, its eligibility checks, weighted rank, allocation or
+deferral, and the capability, capacity, project, counted-resource, dependency, and
+lock facts used for that result. PostgreSQL workers replace preliminary reservation
+facts with the assessment made inside the atomic claim transaction. The CLI, API,
+and control room project these records after restart instead of interpreting logs.
 
 ## Extending execution
 

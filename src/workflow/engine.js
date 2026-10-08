@@ -10,6 +10,7 @@ import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 import { Unblocker } from "./unblocker.js";
+import { dispatchConsiderations, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -116,6 +117,7 @@ export class Engine {
   constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = createRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery(), clock = () => Date.now() }) {
     const triage = { max_per_tick: 1, max_concurrent: 1, base_backoff_ms: 30_000, max_backoff_ms: 60 * 60_000, ...(config.triage ?? {}) };
     config.triage = triage;
+    config.execution = { capacity: 1, capabilities: [], resource_limits: {}, ...(config.execution ?? {}) };
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
   processRecorder(collection, id) {
@@ -992,35 +994,77 @@ export class Engine {
       const snapshot = await this.store.read();
       if (hasImportedTriageBarrier(snapshot)) return { executed: 0, triage_barrier: true, ...snapshot };
       if (Object.values(snapshot.jobs).some((job) => ["Executing", "Verification", "Rework"].includes(job.state))) throw new Error("Interrupted execution requires recovery, not automatic replay.");
+      await this.store.change((data) => schedulerState(data, this.config.execution.capacity));
       const stopped = new Set();
-      while (executed < this.config.max_jobs_per_run) {
-        const state = await this.store.read();
-        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required
-          && (isMachineLocal(p) || (this.shipping.canDispatch?.(p) ?? true))
-          && Object.values(state.jobs).filter((job) => job.project_id === p.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < p.max_concurrent_runs);
-        // Weighted turns across projects; each project's own order is preserved.
-        candidates.sort((a, b) => ((state.projects[a.id]?.turns ?? 0) / a.weight) - ((state.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
-        let selected;
-        for (const project of candidates) {
-          const job = Object.values(state.jobs).filter((j) => j.project_id === project.id && j.state === "Ready" && j.dependencies.every((id) => state.jobs[id]?.state === "Shipped"))
-            .sort((a, b) => priorityRank(a) - priorityRank(b) || a.position - b.position)[0];
-          if (job) { selected = { project, job }; break; }
+      let started = 0;
+      const running = new Set();
+      const reservations = new Map();
+      const settleOne = async () => {
+        if (running.size) await Promise.race(running);
+      };
+      while (started < this.config.max_jobs_per_run || running.size) {
+        if (started >= this.config.max_jobs_per_run) {
+          await settleOne();
+          continue;
         }
-        if (!selected) break;
+        if (running.size >= this.config.execution.capacity) {
+          const state = await this.store.read();
+          const waiting = dispatchConsiderations(state, this.config.projects, this.config.execution, {
+            projectId,
+            stopped,
+            activeReservations: [...reservations.values()],
+            canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
+          }).filter((entry) => !reservations.has(entry.job.id));
+          if (waiting.length) await this.store.change((data) => recordDispatchRound(data, waiting, null,
+            this.config.execution.capacity, new Date(this.clock()).toISOString()));
+          await settleOne();
+          continue;
+        }
+        const state = await this.store.read();
+        const considerations = dispatchConsiderations(state, this.config.projects, this.config.execution, {
+          projectId,
+          stopped,
+          activeReservations: [...reservations.values()],
+          canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
+        });
+        // Weighted turns across projects; each project contributes its earliest
+        // dependency-satisfied Ready slice, so an isolated hold cannot freeze it.
+        const selected = considerations.filter((entry) => entry.eligible)
+          .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id))[0];
+        const at = new Date(this.clock()).toISOString();
+        if (!selected) {
+          if (considerations.length) await this.store.change((data) => recordDispatchRound(data, considerations, null, this.config.execution.capacity, at));
+          if (running.size) { await settleOne(); continue; }
+          break;
+        }
         const { project, job } = selected;
+        const reservation = executionReservation(project);
         await this.store.change((data) => {
-          data.projects[project.id] = { ...data.projects[project.id], active: true, turns: (data.projects[project.id]?.turns ?? 0) + 1 };
+          recordDispatchRound(data, considerations, job.id, this.config.execution.capacity, at);
+          data.projects[project.id] = { ...data.projects[project.id], active: true };
+          recordAllocation(data, project, this.config.execution.capacity, at);
           data.jobs[job.id].owning_node_id = this.store.node?.id ?? null;
           data.jobs[job.id].owning_node = this.store.node?.name ?? null;
         });
-        await this.execute(job.id, project);
-        await this.store.change((data) => {
-          data.jobs[job.id].owning_node_id = null;
-          data.jobs[job.id].owning_node = null;
-        });
-        executed++;
+        started += 1;
         if (project.policy.continuation === "stop_after_job") stopped.add(project.id);
+        let task;
+        task = (async () => {
+          try {
+            if (await this.execute(job.id, project)) executed += 1;
+          } finally {
+            await this.store.change((data) => {
+              data.jobs[job.id].owning_node_id = null;
+              data.jobs[job.id].owning_node = null;
+            });
+            reservations.delete(job.id);
+            running.delete(task);
+          }
+        })();
+        reservations.set(job.id, reservation);
+        running.add(task);
       }
+      await Promise.all(running);
       return { executed, limit_reached: executed >= this.config.max_jobs_per_run, ...await this.store.read() };
     } finally { release(); }
   }
@@ -1030,34 +1074,103 @@ export class Engine {
     if (projectId && !this.config.projects.some((project) => project.id === projectId)) throw new Error("Unknown project filter.");
     await this.store.heartbeatNode("online");
     await this.store.recoverExpiredClaims();
+    await this.store.change((data) => schedulerState(data, this.config.execution.capacity));
 
     let snapshot;
     const stopped = new Set();
-    while (executed < this.config.max_jobs_per_run) {
+    let started = 0;
+    const running = new Set();
+    const settleOne = async () => {
+      if (!running.size) return;
+      await Promise.race(running);
+    };
+    while (started < this.config.max_jobs_per_run || running.size) {
+      if (started >= this.config.max_jobs_per_run) {
+        await settleOne();
+        continue;
+      }
+      if (running.size >= this.config.execution.capacity) {
+        snapshot = await this.store.read();
+        const activeReservations = Object.values(snapshot.jobs)
+          .filter((job) => job.owning_node_id || ["Executing", "Verification", "Rework"].includes(job.state))
+          .map((job) => this.config.projects.find((project) => project.id === job.project_id))
+          .filter(Boolean)
+          .map(executionReservation);
+        const waiting = dispatchConsiderations(snapshot, this.config.projects, this.config.execution, {
+          projectId,
+          stopped,
+          activeReservations,
+          canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
+        }).filter((entry) => !snapshot.jobs[entry.job.id]?.owning_node_id
+          && !["Executing", "Verification", "Rework"].includes(snapshot.jobs[entry.job.id]?.state));
+        if (waiting.length) await this.store.change((data) => recordDispatchRound(data, waiting, null,
+          this.config.execution.capacity, new Date(this.clock()).toISOString()));
+        await settleOne();
+        continue;
+      }
       snapshot = await this.store.read();
       if (hasImportedTriageBarrier(snapshot)) break;
-      const candidates = this.config.projects.filter((project) => (!projectId || project.id === projectId)
-        && project.status === "active" && !stopped.has(project.id) && !snapshot.projects[project.id]?.blocked
-        && !snapshot.projects[project.id]?.stop && !snapshot.projects[project.id]?.review_required
-        && (isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true))
-        && Object.values(snapshot.jobs).filter((job) => job.project_id === project.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < project.max_concurrent_runs);
-      candidates.sort((a, b) => ((snapshot.projects[a.id]?.turns ?? 0) / a.weight) - ((snapshot.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
-      if (!candidates.length) break;
-      const claim = await this.store.claimJob(candidates.map((project) => project.id));
-      if (!claim) break;
-      const project = candidates.find((candidate) => candidate.id === claim.job.project_id);
-      try {
-        await this.store.change((data) => {
-          data.projects[project.id] = { ...data.projects[project.id], active: true, turns: (data.projects[project.id]?.turns ?? 0) + 1 };
-        });
-        const didExecute = await this.execute(claim.job.id, project, claim.lease);
-        if (!didExecute) break;
-        executed += 1;
-        if (project.policy.continuation === "stop_after_job") stopped.add(project.id);
-      } finally {
-        await this.store.releaseLease(claim.lease).catch(() => {});
+      const activeReservations = Object.values(snapshot.jobs)
+        .filter((job) => job.owning_node_id || ["Executing", "Verification", "Rework"].includes(job.state))
+        .map((job) => this.config.projects.find((project) => project.id === job.project_id))
+        .filter(Boolean)
+        .map(executionReservation);
+      const considerations = dispatchConsiderations(snapshot, this.config.projects, this.config.execution, {
+        projectId,
+        stopped,
+        activeReservations,
+        canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
+      });
+      const candidates = considerations.filter((entry) => entry.eligible)
+        .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id));
+      const at = new Date(this.clock()).toISOString();
+      if (!candidates.length) {
+        if (considerations.length) await this.store.change((data) => recordDispatchRound(data, considerations, null, this.config.execution.capacity, at));
+        if (running.size) { await settleOne(); continue; }
+        break;
       }
+      const reservations = Object.fromEntries(candidates.map(({ project, job }) => [job.id, executionReservation(project)]));
+      const claim = await this.store.claimJob(candidates.map(({ job }) => job.id), {
+        leaseMs: this.store.leaseMs,
+        execution: this.config.execution,
+        reservations,
+        returnEvidence: true,
+      });
+      for (const evidence of claim?.claim_evidence ?? []) {
+        const consideration = considerations.find((entry) => entry.job.id === evidence.job_id);
+        if (!consideration) continue;
+        consideration.reservation = { fits: evidence.fits, constraints: evidence.constraints };
+        consideration.eligible = Object.values(consideration.checks).every((check) => check.passed) && evidence.fits;
+      }
+      if (!claim?.job) {
+        await this.store.change((data) => recordDispatchRound(data, considerations, null, this.config.execution.capacity, at, {
+          code: "atomic_claim_unavailable",
+          message: "Another worker won the atomic claim or consumed a capacity, project, resource, or lock constraint.",
+        }));
+        if (running.size) { await settleOne(); continue; }
+        break;
+      }
+      const project = candidates.find(({ job }) => job.id === claim.job.id)?.project;
+      if (!project) throw new Error("Claimed job was not an eligible project dispatch candidate.");
+      await this.store.change((data) => {
+        recordDispatchRound(data, considerations, claim.job.id, this.config.execution.capacity, at);
+        data.projects[project.id] = { ...data.projects[project.id], active: true };
+        recordAllocation(data, project, this.config.execution.capacity, at);
+      });
+      started += 1;
+      if (project.policy.continuation === "stop_after_job") stopped.add(project.id);
+      let task;
+      task = (async () => {
+        try {
+          if (await this.execute(claim.job.id, project, claim.lease)) executed += 1;
+        } finally {
+          await this.store.releaseLease(claim.lease).catch(() => {});
+          running.delete(task);
+        }
+      })();
+      running.add(task);
     }
+    await Promise.all(running);
     return { executed, limit_reached: executed >= this.config.max_jobs_per_run, ...await this.store.read() };
   }
 }
