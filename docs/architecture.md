@@ -96,7 +96,7 @@ only while safety-critical work owns a lease. The installed LaunchAgent keeps th
 local server alive; an HTTP wake stream and local mutations trigger worker cycles.
 
 Dispatch decisions are durable evidence too. Each scheduler round records every
-considered project queue head, its eligibility checks, weighted rank, allocation or
+considered project candidate, its eligibility checks, weighted rank, allocation or
 deferral, and the capability, capacity, project, counted-resource, dependency, and
 lock facts used for that result. PostgreSQL workers replace preliminary reservation
 facts with the assessment made inside the atomic claim transaction. The CLI, API,

@@ -1027,7 +1027,8 @@ export class Engine {
           activeReservations: [...reservations.values()],
           canDispatch: (project) => isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true),
         });
-        // Weighted turns across projects; only each project's queue head may compete.
+        // Weighted turns across projects; each project contributes its earliest
+        // dependency-satisfied Ready slice, so an isolated hold cannot freeze it.
         const selected = considerations.filter((entry) => entry.eligible)
           .sort((a, b) => a.fairness.weighted_allocation - b.fairness.weighted_allocation || a.project.id.localeCompare(b.project.id))[0];
         const at = new Date(this.clock()).toISOString();
@@ -1150,7 +1151,7 @@ export class Engine {
         break;
       }
       const project = candidates.find(({ job }) => job.id === claim.job.id)?.project;
-      if (!project) throw new Error("Claimed job was not an eligible project queue head.");
+      if (!project) throw new Error("Claimed job was not an eligible project dispatch candidate.");
       await this.store.change((data) => {
         recordDispatchRound(data, considerations, claim.job.id, this.config.execution.capacity, at);
         data.projects[project.id] = { ...data.projects[project.id], active: true };

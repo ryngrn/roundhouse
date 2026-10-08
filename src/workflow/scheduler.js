@@ -37,11 +37,7 @@ export function weightedAllocation(scheduler, project) {
   return (scheduler.projects?.[project.id]?.allocations ?? 0) / project.weight;
 }
 
-/**
- * A project queue is strictly ordered by its durable position. Only its first
- * unfinished slice may be considered for dispatch; priority is an intake
- * concern and must not let later work overtake an existing project slice.
- */
+/** Return the earliest unfinished slice for status and hold explanations. */
 export function projectQueueHead(data, projectId) {
   return Object.values(data.jobs ?? {})
     .filter((job) => job.project_id === projectId && job.state !== "Shipped")
@@ -49,9 +45,10 @@ export function projectQueueHead(data, projectId) {
 }
 
 export function eligibleProjectHead(data, projectId) {
-  const head = projectQueueHead(data, projectId);
-  if (!head || head.state !== "Ready") return null;
-  return (head.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped") ? head : null;
+  return Object.values(data.jobs ?? {})
+    .filter((job) => job.project_id === projectId && job.state === "Ready"
+      && (job.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped"))
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id))[0] ?? null;
 }
 
 export function recordAllocation(data, project, capacity = 1, at = new Date().toISOString()) {
@@ -150,8 +147,9 @@ export function dispatchConsiderations(data, projects, execution, {
       const queue = Object.values(data.jobs ?? {})
         .filter((job) => job.project_id === project.id && job.state !== "Shipped")
         .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id));
-      const job = queue[0];
+      const job = eligibleProjectHead(data, project.id) ?? queue[0];
       if (!job) return null;
+      const queuePosition = queue.findIndex((candidate) => candidate.id === job.id) + 1;
       // An owned or active queue head is already consuming its allocation; it
       // is not a fresh dispatch candidate and must not overwrite that allocation
       // with a later "deferred" explanation while it runs.
@@ -193,7 +191,7 @@ export function dispatchConsiderations(data, projects, execution, {
       };
       return {
         project, job, eligible, checks, reservation, fairness,
-        queue: { position: 1, length: queue.length, slice_position: job.position ?? 0 },
+        queue: { position: queuePosition, length: queue.length, slice_position: job.position ?? 0 },
         reason: eligible ? null : deferralReason(checks, reservation),
       };
     })

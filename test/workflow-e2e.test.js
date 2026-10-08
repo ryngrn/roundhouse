@@ -236,7 +236,7 @@ test("e2e: stop-after-job leaves the second ready job untouched", async () => {
   assert.equal(Object.values(result.jobs)[1].attempts.length, 0);
 });
 
-test("integration: dispatch preserves project order and skips an ineligible head for independent work", async () => {
+test("integration: an ineligible slice does not freeze later independent work", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-dispatch-heads-"));
   const store = new Store(directory);
   const projects = [schedulingProject("alpha"), schedulingProject("beta")];
@@ -253,12 +253,12 @@ test("integration: dispatch preserves project order and skips an ineligible head
   const result = await schedulingEngine(store, projects, selected).runDispatch();
 
   assert.equal(result.executed, 1);
-  assert.deepEqual(selected, ["beta-head"]);
+  assert.deepEqual(selected, ["alpha-later"]);
   assert.equal(result.jobs["alpha-head"].state, "Ready");
-  assert.equal(result.jobs["alpha-later"].state, "Ready");
-  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.reason.code, "dependencies");
-  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.queue.slice_position, 0);
-  assert.equal(result.system_metadata.execution_scheduler.latest.beta.result, "allocated");
+  assert.equal(result.jobs["alpha-later"].state, "Shipped");
+  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.result, "allocated");
+  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.queue.position, 2);
+  assert.equal(result.system_metadata.execution_scheduler.latest.beta.result, "deferred");
 });
 
 test("integration: compatible projects use available execution slots concurrently", async () => {

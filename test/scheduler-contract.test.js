@@ -93,7 +93,7 @@ test("scheduler contract: allocation explanations persist every eligibility and 
   assert.equal(view.items[0].jobs[0].allocation.job_id, "alpha-job");
 });
 
-test("scheduler contract: only the earliest unfinished project slice can be eligible", () => {
+test("scheduler contract: an isolated blocked prerequisite does not hide independent Ready work", () => {
   const data = { jobs: {
     later: { id: "later", project_id: "alpha", state: "Ready", position: 2, priority_rank: 0, dependencies: [] },
     head: { id: "head", project_id: "alpha", state: "Ready", position: 1, priority_rank: 100, dependencies: ["dependency"] },
@@ -101,11 +101,11 @@ test("scheduler contract: only the earliest unfinished project slice can be elig
   } };
 
   assert.equal(projectQueueHead(data, "alpha").id, "head");
-  assert.equal(eligibleProjectHead(data, "alpha"), null);
+  assert.equal(eligibleProjectHead(data, "alpha").id, "later");
   data.jobs.dependency.state = "Shipped";
   assert.equal(eligibleProjectHead(data, "alpha").id, "head");
   data.jobs.head.state = "Executing";
-  assert.equal(eligibleProjectHead(data, "alpha"), null);
+  assert.equal(eligibleProjectHead(data, "alpha").id, "later");
 });
 
 test("scheduler contract: reservations enforce capabilities, capacity, project limits, resources, and locks together", () => {

@@ -400,7 +400,10 @@ async function submitDecisionSession() {
 
 function evidenceView(item) {
   const root = node("div", undefined, "detail-grid");
-  const allocations = item.jobs.flatMap((job) => job.allocation_history || []).map(allocationSummary).filter(Boolean);
+  const allocationHistory = item.allocation_history
+    || item.jobs?.flatMap((job) => job.allocation_history || [])
+    || [];
+  const allocations = allocationHistory.map(allocationSummary).filter(Boolean);
   root.append(detailSection("Allocation decisions", allocations.length ? allocations : ["No dispatch decision recorded yet."]));
   root.append(detailSection("Verification", item.evidence.checks.length ? item.evidence.checks.map((check) => `${check.passed ? "Passed" : "Failed"} · ${check.id}${check.summary ? ` — ${check.summary}` : ""}`) : ["No verification evidence recorded yet."]));
   const delivery = node("section", undefined, "detail-section"); delivery.append(node("h3", "Shipping & previews"));

@@ -199,7 +199,10 @@ policy provides. Local workers reserve inside their exclusive worker lease;
 PostgreSQL workers persist the complete reservation on the job lease and select it
 atomically with the job. Repository and delivery targets are exclusive reservation
 locks, while counted resources can be shared up to their configured limits. Each
-invocation is bounded by `max_jobs_per_run`; rerun the worker to handle additional
+invocation is bounded by `max_jobs_per_run`; compatible jobs run in parallel up to
+`execution.capacity`, and the Mac Studio production profile uses ten slots. Repository,
+delivery, project, capability, and counted-resource reservations can deliberately keep
+the observed concurrency below that ceiling. Rerun the worker to handle additional
 queued or newly submitted requests.
 
 A reservation is released only after the owned attempt and its runtime have stopped.
@@ -209,7 +212,7 @@ the durable `review_required` project gate remains until an operator resumes it.
 Weighted dispatch progress is stored in `system_metadata.execution_scheduler`.
 Its allocation counters, selection sequence, and timestamps survive worker restarts,
 so restarting a worker does not reset a project's place in weighted allocation.
-Every scheduling round also persists the considered project queue heads and their
+Every scheduling round also persists the considered project candidates and their
 allocation or deferral result. Status projections expose each slice's eligibility,
 project queue position, weight and weighted-allocation rank, capability fit, and
 the capacity, project-limit, counted-resource, dependency, or lock constraint that
