@@ -4,7 +4,7 @@ import { digest } from "./store.js";
 import { projectContext } from "./config.js";
 import { Engine } from "./engine.js";
 import { cleanupDownloadedAssets, downloadRemoteAssets, projectedAttachments } from "./assets.js";
-import { respondToIssue, listIssues, dispatchHoldReason } from "./issues.js";
+import { respondToIssue, listIssues, dispatchHoldReason, needsHumanReview } from "./issues.js";
 
 const { Pool } = pg;
 let pool;
@@ -217,13 +217,18 @@ function questionFor(entity) {
 function workItemFromJob(job, data, config) {
   const parent = data.items[job.parent_id];
   const attempt = latestAttempt(job);
+  const dispatchHold = dispatchHoldReason(job, data, config);
+  const review = needsHumanReview(job, { dispatchHold });
   return {
     id: job.id,
     revision: job.revision,
     title: job.work?.title || parent?.input?.context?.title || parent?.input?.text?.slice(0, 80) || job.id,
     state: job.state,
     display_state: job.state,
-    needs_you: ["Needs Clarification", "Review"].includes(job.state),
+    needs_you: review.required,
+    review_required: review.required,
+    review_kind: review.kind,
+    review_reason: review.reason,
     project: job.project_id ?? null,
     goal: job.goal_id ?? parent?.goal_id ?? null,
     priority: parent?.input?.priority || "P2",
@@ -247,19 +252,23 @@ function workItemFromJob(job, data, config) {
     history: job.history,
     questions: questionFor(job),
     issue_resolution: job.issue_resolution ?? null,
-    dispatch_hold: dispatchHoldReason(job, data, config),
+    dispatch_hold: dispatchHold,
     assets: projectedAttachments(parent?.input?.attachments),
   };
 }
 
 function workItemFromItem(item) {
+  const review = needsHumanReview(item);
   return {
     id: item.id,
     revision: item.revision,
     title: item.input?.context?.title || item.input?.text?.slice(0, 80) || item.id,
     state: item.state,
     display_state: item.state,
-    needs_you: ["Needs Clarification", "Review"].includes(item.state),
+    needs_you: review.required,
+    review_required: review.required,
+    review_kind: review.kind,
+    review_reason: review.reason,
     project: item.project_id ?? item.selected_project ?? item.input?.project_id ?? null,
     goal: item.goal_id ?? item.input?.goal_id ?? null,
     priority: item.input?.priority || "P2",
@@ -293,6 +302,7 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
     ...Object.values(data.items).filter((item) => !item.job_ids?.length).map(workItemFromItem),
   ].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
   const counts = {
+    needs_review: items.filter((item) => item.review_required).length,
     needs_you: items.filter((item) => item.needs_you).length,
     active: items.filter((item) => ["Decision", "Executing", "Verification", "Rework"].includes(item.state)).length,
     queued: items.filter((item) => ["Depot", "Ready", "Imported Pending"].includes(item.state) && !item.needs_you).length,
