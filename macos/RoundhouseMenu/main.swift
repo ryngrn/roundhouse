@@ -155,6 +155,18 @@ private enum Palette {
     static let reached = Color(red: 0.39, green: 0.68, blue: 0.53)
 }
 
+private struct WindowDragSurface: NSViewRepresentable {
+    final class DragView: NSView {
+        override func mouseDown(with event: NSEvent) {
+            window?.performDrag(with: event)
+        }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override var mouseDownCanMoveWindow: Bool { true }
+    }
+    func makeNSView(context: Context) -> DragView { DragView(frame: .zero) }
+    func updateNSView(_ nsView: DragView, context: Context) {}
+}
+
 struct MetricTile: View {
     let value: Int
     let label: String
@@ -244,7 +256,19 @@ struct DashboardView: View {
             .buttonStyle(.plain)
             .foregroundStyle(Palette.muted)
             .help(isPinned ? "Close floating control room" : "Keep open as a floating control room")
-        }.padding(.horizontal, 14).padding(.vertical, 11).background(Palette.surface)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .background(Palette.surface)
+        .overlay {
+            if isPinned {
+                HStack(spacing: 0) {
+                    WindowDragSurface()
+                        .contentShape(Rectangle())
+                        .help("Drag the floating control room")
+                    Color.clear.frame(width: 124)
+                }
+            }
+        }
     }
 
     private func metrics(_ counts: QueueCounts) -> some View {

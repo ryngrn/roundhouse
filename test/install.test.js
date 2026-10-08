@@ -35,6 +35,9 @@ test("menu bar companion remains a designed native HTTP control room with servic
   assert.match(source, /NSPanel/);
   assert.match(source, /arrow\.up\.left\.and\.arrow\.down\.right/);
   assert.match(source, /isMovableByWindowBackground = true/);
+  assert.match(source, /window\?\.performDrag\(with: event\)/);
+  assert.match(source, /struct WindowDragSurface: NSViewRepresentable/);
+  assert.match(source, /Drag the floating control room/);
   assert.match(source, /hidesOnDeactivate = false/);
   assert.match(source, /setFrameAutosaveName\("RoundhouseFloatingControlRoom"\)/);
   assert.match(source, /Close floating control room/);
