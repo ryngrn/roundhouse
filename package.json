@@ -15,7 +15,7 @@
     "test:unit": "node --test test/intake.test.js test/codex-executor.test.js test/workflow-unit.test.js test/notion-depot-migration.test.js",
     "test:e2e": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
     "test:postgres": "node --test test/storage-unit.test.js test/postgres-storage.test.js",
-    "acceptance": "node --test test/capture-acceptance.test.js test/workflow-e2e.test.js test/acceptance.test.js test/execution-outcome-acceptance.test.js test/mcp.test.js test/mcp-events.test.js",
+    "acceptance": "node --test test/capture-acceptance.test.js test/workflow-e2e.test.js test/acceptance.test.js test/execution-outcome-acceptance.test.js test/herdr-claude.test.js test/provider-contract.test.js test/mcp.test.js test/mcp-events.test.js",
     "acceptance:live": "node --test test/acceptance-live.test.js",
     "demo": "node scripts/demo.mjs",
     "visual": "node scripts/visual-gates.mjs"

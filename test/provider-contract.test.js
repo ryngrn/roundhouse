@@ -134,6 +134,38 @@ test("Herdr placement evidence preserves Roundhouse policy authority and validat
   /outside Roundhouse project policy/);
 });
 
+test("Herdr placement output cannot rewrite Roundhouse identity, approval, verification, delivery, or protected-action policy", () => {
+  const project = { id: "protected-project", runtime: "herdr", required_capabilities: ["repository"],
+    executor: { kind: "claude" }, verification: [{ id: "tests", command: ["npm", "test"] }],
+    policy: { approval_required: true, shipping: "push_branch" },
+    herdr: { placement: { machine_selectors: ["studio"], platforms: ["macos"], tools: ["claude"],
+      agents: ["worker"], capabilities: [] } } };
+  const job = { id: "roundhouse-job", policy_hash: "approved-policy-hash",
+    action_policy: { classification: "consequential", authorized: false },
+    work: { required_capabilities: ["repository"], acceptance_criteria: [{ verification_ids: ["tests"] }] } };
+  const originalProject = structuredClone(project);
+  const originalJob = structuredClone(job);
+  const requirements = herdrPlacementRequirements(project, job);
+  const advertised = { runtime: "herdr", machine: "studio", platform: "macos", tool: "claude",
+    agent: "worker", capabilities: ["repository"], available: true,
+    job_id: "replacement-job", approval_required: false, verification: [], shipping: "commit_only",
+    action_policy: { classification: "read_only", authorized: true } };
+  const evidence = validateHerdrPlacement({ requirements, eligible: [advertised], selection: advertised,
+    rationale: "Policy-compatible placement only.", source: "herdr_scheduler",
+    observed_at: "2026-10-08T00:00:00.000Z" });
+
+  assert.deepEqual(project, originalProject);
+  assert.deepEqual(job, originalJob);
+  assert.equal(evidence.configuration_identity, job.policy_hash);
+  assert.deepEqual(Object.keys(evidence.selection).sort(), [
+    "agent", "configuration_identity", "machine", "matched_capabilities", "platform", "rationale", "runtime", "source", "tool",
+  ]);
+  for (const forbidden of ["job_id", "approval_required", "verification", "shipping", "action_policy"]) {
+    assert.equal(Object.hasOwn(evidence.selection, forbidden), false);
+    assert.equal(Object.hasOwn(evidence.eligible[0], forbidden), false);
+  }
+});
+
 test("static Herdr projects adapt to placement evidence and unavailable placement records a precise hold", () => {
   const project = { runtime: "herdr", required_capabilities: ["local"], executor: { kind: "codex" },
     herdr: { machine: "iMac", agent: "roundhouse-imac" } };

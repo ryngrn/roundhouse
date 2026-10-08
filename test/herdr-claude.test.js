@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { HerdrRuntime } from "../src/workflow/runtime.js";
 
-function fakeHerdr(root, { authenticated = true, agentProbeError = "", placementResponse = null } = {}) {
+function fakeHerdr(root, { authenticated = true, agentProbeError = "", promptError = "", placementResponse = null } = {}) {
   const filename = path.join(root, "herdr-fixture.mjs");
   const promptLog = path.join(root, "prompt.json");
   const machineProbeLog = path.join(root, "machine-probe.json");
@@ -27,6 +27,7 @@ else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "get") {
 }
 else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "prompt") {
   fs.writeFileSync(${JSON.stringify(promptLog)}, JSON.stringify(args));
+  if (${JSON.stringify(promptError)}) { console.error(${JSON.stringify(promptError)}); process.exit(1); }
   console.log(JSON.stringify({ execution_id: "remote-claude-9", status: "completed" }));
 } else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "read") {
   const prompt = JSON.parse(fs.readFileSync(${JSON.stringify(promptLog)}, "utf8"))[5];
@@ -141,6 +142,31 @@ test("Herdr classifies an unavailable Claude agent before dispatch", async () =>
   assert.equal(result.remote_execution.placement.selection.configuration_identity, "approved-project-configuration");
   assert.equal(result.remote_execution.placement.hold.code, "placement_unavailable");
   assert.equal(fs.existsSync(fixture.promptLog), false);
+});
+
+test("Herdr retains the selected placement when remote launch fails and never falls back", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-herdr-launch-failure-"));
+  const selected = { runtime: "herdr", machine: "Studio-iMac", platform: "macos", tool: "claude",
+    agent: "fleet-worker", capabilities: ["repository"], available: true };
+  const fixture = fakeHerdr(root, { promptError: "remote launch failed",
+    placementResponse: { eligible: [selected], selection: selected,
+      rationale: "Selected the only policy-compatible worker.", source: "herdr_scheduler",
+      observed_at: "2026-10-08T00:00:00.000Z" } });
+  const input = request(root, fixture.filename);
+  delete input.project.herdr.machine;
+  delete input.project.herdr.agent;
+  input.project.required_capabilities = ["repository"];
+  input.project.herdr.placement = { machine_selectors: ["Studio-iMac"], platforms: ["macos"], tools: ["claude"],
+    agents: ["fleet-worker"], capabilities: [] };
+  let persisted;
+  const result = await new HerdrRuntime().execute({ ...input, onPlacement: (placement) => { persisted = placement; } });
+  assert.equal(result.passed, false);
+  assert.equal(result.remote_execution.phase, "failed");
+  assert.equal(result.remote_execution.placement.selection.machine, "Studio-iMac");
+  assert.deepEqual(result.remote_execution.placement, persisted);
+  assert.equal(result.remote_execution.placement.hold, null);
+  assert.match(result.error, /Studio-iMac\/fleet-worker/);
+  assert.equal(fs.existsSync(fixture.promptLog), true);
 });
 
 test("machine-local Claude evidence is correlated to remote identity without a client pid", async () => {

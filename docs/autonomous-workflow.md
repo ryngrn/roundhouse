@@ -520,7 +520,14 @@ selected target, Roundhouse durably records its machine, platform, tool/agent,
 matched capabilities, rationale, source, and approved configuration identity. The
 placement cannot change within that attempt. A retry may select another eligible
 target only through a new attempt, and recovery retains every prior selection while
-blocking an interrupted launch for inspection.
+blocking an interrupted launch for inspection. Herdr placement output is allowlisted:
+it cannot change the item, job, or run identity; satisfy or remove an approval gate;
+replace verification requirements; select delivery intent; or authorize a protected
+action. Those remain Roundhouse policy decisions. A placement-selection failure,
+capability mismatch, unavailable target, or launch failure retains the job and its
+evidence without a silent local/provider fallback. Static machine/agent projects use
+the same evidence shape for compatibility and remain subject to live availability
+probes.
 
 With the local adapter, state writes are atomic fsynced snapshots and recovery
 refuses live/remote filesystem owners. With PostgreSQL, nodes use expiring heartbeat

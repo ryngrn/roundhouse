@@ -252,6 +252,19 @@ filesystem is not locally visible. Herdr failures never fall back to local work.
 
 Roundhouse owns placement requirements and the job lifecycle; Herdr may select a
 machine, platform, and configured tool or agent only inside those requirements.
+The authority boundary is explicit:
+
+| Roundhouse retains | Herdr may return |
+| --- | --- |
+| Job/item/run identity and attempt boundaries | One available target from the bounded candidate set |
+| Approval gates and revision-bound approval evidence | Selection rationale and source |
+| Required verification IDs and commands | Advertised and matched placement capabilities |
+| Delivery intent, shipping policy, and protected-action policy | Current placement availability or a precise hold reason |
+
+Placement responses are allowlisted into this schema. Extra provider fields cannot
+replace identity, approvals, checks, delivery mode, or action authorization, and a
+selection is correlated to the approved project configuration hash. Herdr performs
+placement; it does not become a second workflow control plane or delivery authority.
 When `herdr.placement` is configured, Roundhouse invokes `herdr placement select
 --json` before any machine probe or agent prompt. It sends a versioned JSON request
 on stdin containing the job/run IDs and Roundhouse-owned requirements. Herdr returns
