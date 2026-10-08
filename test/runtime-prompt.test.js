@@ -65,7 +65,10 @@ test("Claude Herdr routing uses Claude delivery identity and requires each adver
   const agent = { kind: "claude", status: "idle", capabilities: { claude: { installed: true, version: "2.1.0", authenticated: true, quota_available: true, available: true } } };
   assert.deepEqual(claudeCapabilityProbe(machine, agent), { passed: true, phase: "ready", executor: "claude", version: "2.1.0", machine_version: "2.1.0", authenticated: true, quota_available: true, available: true });
   assert.equal(claudeCapabilityProbe({ reachable: false }, agent).phase, "machine_unavailable");
-  assert.equal(claudeCapabilityProbe(machine, { ...agent, kind: "codex" }).phase, "agent_unavailable");
+  assert.equal(claudeCapabilityProbe({ capabilities: machine.capabilities }, agent).phase, "machine_unavailable");
+  assert.equal(claudeCapabilityProbe(machine, { ...agent, status: "offline" }).phase, "agent_unavailable");
+  assert.equal(claudeCapabilityProbe(machine, { ...agent, status: undefined }).phase, "agent_unavailable");
+  assert.equal(claudeCapabilityProbe(machine, { ...agent, kind: "general" }).passed, true);
   for (const [field, value, phase] of [
     ["installed", false, "claude_not_installed"], ["version", "", "claude_version_unavailable"],
     ["authenticated", false, "claude_authentication_failed"], ["quota_available", false, "claude_quota_unavailable"],

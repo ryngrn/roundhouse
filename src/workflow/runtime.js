@@ -258,7 +258,7 @@ function claudeMachineCapabilityProbe(machineStatus) {
   const reachable = truth(reachableValue ?? machineState,
     ["true", "online", "ready", "available", "connected", "healthy", "ok"],
     ["false", "offline", "unavailable", "disconnected", "unreachable", "error", "failed"]);
-  if (reachable === false) return { passed: false, phase: "machine_unavailable", reason: "The selected Herdr machine is unavailable." };
+  if (reachable !== true) return { passed: false, phase: "machine_unavailable", reason: "The selected Herdr machine did not advertise current availability." };
 
   return validateClaudeAdvertisement(claudeObjects(machineStatus), "machine");
 }
@@ -268,13 +268,9 @@ export function claudeCapabilityProbe(machineStatus, agentStatus) {
   if (!machineCapability.passed) return machineCapability;
 
   const agentObjects = objectValues(agentStatus);
-  const agentKind = field(agentObjects, ["kind", "agent_kind", "provider", "executor", "agent"]);
-  if (typeof agentKind !== "string" || !/^(?:claude|claude[-_ ]?code)$/i.test(agentKind)) {
-    return { passed: false, phase: "agent_unavailable", reason: "The selected Herdr agent does not advertise the Claude capability." };
-  }
   const agentState = field(agentObjects, ["status", "state", "availability"]);
-  if (truth(agentState, ["idle", "done", "ready", "available", "online"], ["blocked", "working", "unknown", "offline", "unavailable", "error", "failed"]) === false) {
-    return { passed: false, phase: "agent_unavailable", reason: `The selected Herdr Claude agent is not available (${String(agentState)}).` };
+  if (truth(agentState, ["idle", "done", "ready", "available", "online"], ["blocked", "working", "unknown", "offline", "unavailable", "error", "failed"]) !== true) {
+    return { passed: false, phase: "agent_unavailable", reason: `The selected Herdr agent did not advertise current availability (${String(agentState)}).` };
   }
 
   const agentCapability = validateClaudeAdvertisement(claudeObjects(agentStatus), "agent");
@@ -289,6 +285,14 @@ function machineProbeFailure(result, machine) {
   if (/version|protocol|incompatible|upgrade/.test(detail)) return { phase: "machine_version_incompatible", reason: `Herdr machine version/protocol is incompatible for ${machine}.` };
   if (/unavailable|unreachable|offline|connection|timed? ?out|not found/.test(detail)) return { phase: "machine_unavailable", reason: `Herdr machine ${machine} is unavailable.` };
   return { phase: "machine_probe_failed", reason: `Herdr machine probe failed for ${machine}.` };
+}
+
+function agentProbeFailure(result, machine, agent) {
+  const detail = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  if (/auth|permission denied|publickey|credential/.test(detail)) return { phase: "agent_authentication_failed", reason: `Herdr agent authentication failed for ${machine}/${agent}.` };
+  if (/version|protocol|incompatible|upgrade/.test(detail)) return { phase: "agent_version_incompatible", reason: `Herdr agent version/protocol is incompatible for ${machine}/${agent}.` };
+  if (/unavailable|unreachable|offline|connection|timed? ?out|not found/.test(detail)) return { phase: "agent_unavailable", reason: `Herdr agent ${machine}/${agent} is unavailable.` };
+  return { phase: "agent_probe_failed", reason: `Herdr agent probe failed for ${machine}/${agent}.` };
 }
 
 export class HerdrRuntime {
@@ -326,8 +330,11 @@ export class HerdrRuntime {
       const agentProbe = await runProcess([bin, "--machine", machine, "agent", "get", agent], {
         cwd: localCwd, timeout: project.timeout_ms, onStart,
       });
-      if (!agentProbe.passed) return { ...agentProbe, error: `Herdr agent probe failed for ${machine}/${agent}.`,
-        remote_execution: { ...baseIdentity, phase: "agent_probe_failed", machine_status: correlation(machineStatus) } };
+      if (!agentProbe.passed) {
+        const failure = agentProbeFailure(agentProbe, machine, agent);
+        return { ...agentProbe, error: failure.reason,
+          remote_execution: { ...baseIdentity, phase: failure.phase, machine_status: correlation(machineStatus) } };
+      }
       try { agentStatus = parseJsonOutput(agentProbe.stdout, "Herdr agent status"); }
       catch (error) { return { ...agentProbe, passed: false, error: error.message,
         remote_execution: { ...baseIdentity, phase: "agent_probe_failed", machine_status: correlation(machineStatus) } }; }
