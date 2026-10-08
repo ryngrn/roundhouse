@@ -5,6 +5,7 @@ import YAML from "yaml";
 import { agentRoleIds } from "./roles.js";
 import { assertNotRemoteDesktopCommanderCommand } from "./remote-desktop-policy.js";
 import { assertProviderRuntime, validateProviderSelection } from "./provider-contract.js";
+import { DEFAULT_WATCHDOG_CHECK_INTERVAL_MS, DEFAULT_WATCHDOG_STALE_THRESHOLD_MS } from "./local-watchdog.js";
 
 export const shippingModes = ["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy", "durable_output", "artifact"];
 const check = (value, message) => { if (!value) throw new Error(message); };
@@ -277,6 +278,14 @@ export function validateWorkflowConfig(raw, filename) {
   }
   const max_jobs_per_run = raw.max_jobs_per_run ?? 20;
   check(Number.isInteger(max_jobs_per_run) && max_jobs_per_run > 0 && max_jobs_per_run <= 1000, "max_jobs_per_run must be 1–1000.");
+  check(raw.watchdog === undefined || plainObject(raw.watchdog), "watchdog must be an object.");
+  for (const key of Object.keys(raw.watchdog ?? {})) check(["enabled", "check_interval_ms", "stale_threshold_ms"].includes(key), `Unknown watchdog setting: ${key}`);
+  const watchdog = { enabled: true, check_interval_ms: DEFAULT_WATCHDOG_CHECK_INTERVAL_MS,
+    stale_threshold_ms: DEFAULT_WATCHDOG_STALE_THRESHOLD_MS, ...(raw.watchdog ?? {}) };
+  check(typeof watchdog.enabled === "boolean", "watchdog.enabled must be boolean.");
+  check(Number.isInteger(watchdog.check_interval_ms) && watchdog.check_interval_ms >= 60_000, "watchdog.check_interval_ms must be at least one minute.");
+  check(Number.isInteger(watchdog.stale_threshold_ms) && watchdog.stale_threshold_ms >= watchdog.check_interval_ms,
+    "watchdog.stale_threshold_ms must be at least the check interval.");
   check(raw.triage === undefined || (raw.triage && typeof raw.triage === "object" && !Array.isArray(raw.triage)), "triage must be an object.");
   for (const key of Object.keys(raw.triage ?? {})) check(["max_per_tick", "max_concurrent", "base_backoff_ms", "max_backoff_ms"].includes(key), `Unknown triage setting: ${key}`);
   const triage = {
@@ -290,7 +299,7 @@ export function validateWorkflowConfig(raw, filename) {
   check(Number.isInteger(triage.max_concurrent) && triage.max_concurrent > 0 && triage.max_concurrent <= 8, "triage.max_concurrent must be 1–8.");
   check(Number.isInteger(triage.base_backoff_ms) && triage.base_backoff_ms > 0, "triage.base_backoff_ms must be positive.");
   check(Number.isInteger(triage.max_backoff_ms) && triage.max_backoff_ms >= triage.base_backoff_ms, "triage.max_backoff_ms must be at least the base backoff.");
-  return { projects, decision, ...(conversation ? { conversation } : {}), execution, max_jobs_per_run, triage, filename: absolute };
+  return { projects, decision, ...(conversation ? { conversation } : {}), execution, max_jobs_per_run, triage, watchdog, filename: absolute };
 }
 
 export function loadWorkflowConfig(filename) {

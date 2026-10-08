@@ -9,6 +9,10 @@ decision:
 #   kind: claude
 #   bin: claude
 max_jobs_per_run: 20
+watchdog:
+  enabled: true
+  check_interval_ms: 300000
+  stale_threshold_ms: 600000
 execution:
   # Global execution slots default to one when this block is omitted.
   capacity: 1

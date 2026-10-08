@@ -193,6 +193,23 @@ function renderRelayHealth(overview) {
   }
 }
 
+function renderWatchdogHealth(overview) {
+  const health = overview.watchdog;
+  const panel = $("#watchdog-health");
+  panel.hidden = !health;
+  if (!health) return;
+  const stale = health.stale_count ?? 0;
+  panel.className = `watchdog-health ${!health.enabled ? "watchdog-disabled" : stale ? "watchdog-stale" : health.error ? "watchdog-unknown" : "watchdog-healthy"}`;
+  $("#watchdog-health-heading").textContent = !health.enabled ? "Disabled" : stale ? `${stale} stale attempt${stale === 1 ? "" : "s"}` : "Observing";
+  $("#watchdog-last-check").textContent = health.last_check_at ? `Checked ${new Date(health.last_check_at).toLocaleString()}` : "No check recorded.";
+  const active = health.active_item;
+  $("#watchdog-active-item").textContent = active ? `${active.project_id || active.type} · ${active.id} · ${active.state}` : "None";
+  $("#watchdog-last-activity").textContent = health.last_credible_activity_at ? new Date(health.last_credible_activity_at).toLocaleString() : "None";
+  $("#watchdog-threshold").textContent = `${Math.round(health.stale_threshold_ms / 60_000)} minutes`;
+  $("#watchdog-last-action").textContent = health.last_action || "No action recorded.";
+  $("#watchdog-error").textContent = health.error || "None";
+}
+
 function executionPathLabel(path) {
   return (path || []).map((component) => [outcomeLabel(component.kind), component.provider, component.machine]
     .filter(Boolean).join(" · ")).join(" → ");
@@ -264,6 +281,7 @@ function renderActiveJobs(overview) {
     heading.append(node("span", job.display_state, "state state-active-job"), node("strong", `${job.project} · ${job.title}`));
     const details = node("span", undefined, "active-job-details");
     details.append(node("span", activeExecutionSummary(job), "active-job-location"));
+    if (job.liveness) details.append(node("span", `Watchdog · ${outcomeLabel(job.liveness.status)}`, `active-job-fact liveness-${job.liveness.status}`));
     for (const value of [
       job.agent ? `Agent · ${job.agent}` : null,
       job.placement?.selection?.platform ? `Platform · ${job.placement.selection.platform}` : null,
@@ -684,7 +702,7 @@ let pendingLoads = 0;
 async function readAndRender() {
   try {
     const [overview, config] = await Promise.all([api("/api/overview"), api("/api/config")]); currentOverview = overview; configuration = config.configuration;
-    renderConnection(overview); renderRelayHealth(overview); renderExecutionOutcomes(overview); renderActiveJobs(overview); renderUntrackedActivity(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
+    renderConnection(overview); renderRelayHealth(overview); renderWatchdogHealth(overview); renderExecutionOutcomes(overview); renderActiveJobs(overview); renderUntrackedActivity(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
   } catch (error) { $("#connection").textContent = `● App unavailable · ${error.message}`; $("#connection").className = "connection failed"; }
 }
 function load() {

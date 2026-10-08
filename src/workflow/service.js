@@ -7,6 +7,7 @@ import { itemView, needsHumanView, notificationView, statusView } from "./views.
 import { mapResult } from "../storage/repository.js";
 import { migrateLegacyDecisionQuestions } from "./legacy-decisions.js";
 import { inspectExecutionActivity } from "./execution-activity.js";
+import { watchdogStatus } from "./local-watchdog.js";
 
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const jsonSize = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -110,7 +111,8 @@ export class RoundhouseService {
         inspection = { checked_at: new Date().toISOString(), process_inspection: "unavailable", worktree_inspection: "unavailable",
           warnings: [`Execution activity inspection unavailable: ${error.message}`], activity: [] };
       }
-      return statusView(data, validateFilters(filters), inspection);
+      const watchdog = watchdogStatus(data, this.config?.watchdog);
+      return statusView(data, validateFilters(filters), inspection, watchdog);
     });
   }
 

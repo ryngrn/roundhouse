@@ -363,7 +363,7 @@ export function itemView(data, item) {
   };
 }
 
-export function statusView(data, filters = {}, executionActivity = null) {
+export function statusView(data, filters = {}, executionActivity = null, watchdog = null) {
   const items = Object.values(data.items)
     .filter((item) => matchesFilters(item, filters))
     .map((item) => itemView(data, item))
@@ -393,7 +393,11 @@ export function statusView(data, filters = {}, executionActivity = null) {
     .filter((job) => !filters.source && !filters.thread_id && !filters.correlation_id || visibleItemIds.has(job.parent_id))
     .filter((job) => !filters.project_id || job.project_id === filters.project_id)
     .filter((job) => !filters.item_id || job.parent_id === filters.item_id)
-    .map((job) => jobView(job, data))
+    .map((job) => {
+      const projected = jobView(job, data);
+      const liveness = watchdog?.active?.find((entry) => entry.type === "job" && entry.id === job.id) ?? null;
+      return { ...projected, liveness };
+    })
     .sort((a, b) => String(a.project_id).localeCompare(String(b.project_id)) || a.job_id.localeCompare(b.job_id));
   return {
     items,
@@ -402,6 +406,7 @@ export function statusView(data, filters = {}, executionActivity = null) {
       .filter((job) => !filters.project_id || job.project_id === filters.project_id)
       .map((job) => job.id) }),
     active_jobs,
+    watchdog,
     untracked_activity: Object.keys(filters).length ? [] : executionActivity?.activity ?? [],
     activity_inspection: executionActivity ? {
       checked_at: executionActivity.checked_at,

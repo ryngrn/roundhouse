@@ -567,6 +567,31 @@ between waiting and eligible.
 
 ## Failures and restart
 
+### Local liveness watchdog contract
+
+Each installation configuration includes a local watchdog contract. Its default
+check cadence is five minutes (`watchdog.check_interval_ms: 300000`) and its
+default stale threshold is ten minutes (`watchdog.stale_threshold_ms: 600000`).
+The threshold must be at least the cadence. This repository slice records and
+classifies liveness evidence; installation or enablement of a restart-surviving
+LaunchAgent/systemd supervisor is a separate operator-approved task.
+
+An active UI state is not liveness evidence. Credible local evidence is limited
+to a registered execution or verification child that is still alive, a recent
+owned lease heartbeat, or a recent durable progress record. A live child remains
+credible while sleeping or waiting; CPU use is deliberately ignored. Untracked
+processes and worktrees remain diagnostic observations and never become job
+ownership or delivery evidence.
+
+When an entity claims `Decision`, `Executing`, `Verification`, or `Rework` but has
+no registered live child and no recent heartbeat/progress for the threshold, the
+classifier declares it stale. Classification is observational: it does not kill,
+replay, release, or rewrite the attempt. Conservative recovery must preserve the
+workspace, branch, commit, delivery intent, and verification evidence, then use
+the existing reconciliation/recovery path. Exact proven delivery may be reconciled;
+an interrupted side effect is never blindly replayed. The current Studio install
+is not changed by this configuration.
+
 Execution/verification retries are bounded by `max_rework_attempts` (0–10).
 The next attempt receives the previous failure evidence. Exhausting rework places a
 job-scoped hold on that slice and its dependency descendants; independent Ready jobs

@@ -16,6 +16,7 @@ import { assessJobEligibility, ensureNextOccurrence, initializeJobSchedule, next
 import { actionPolicy, approvalScope, assertProviderAuthorized, classifyAction } from "./actions.js";
 import { computeComplexityScore, computeRequestComplexity, recordComplexityOutcome } from "./complexity-score.js";
 import { deriveExecutionOutcome, exceptionCompletionStates, validateExceptionCompletion } from "./execution-outcome.js";
+import { recordWatchdogActivity } from "./local-watchdog.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -131,13 +132,15 @@ export class Engine {
     runtime ??= new CapabilityRuntime(providers, createRuntime());
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
-  processRecorder(collection, id) {
+  processRecorder(collection, id, phase = "execution") {
     return (pid, launch = {}) => {
       const pending = this.store.change((data) => {
         const entity = data[collection][id];
         entity.processes ??= [];
-        entity.processes.push({ pid, at: new Date().toISOString(), command: launch.command ?? null, cwd: launch.cwd ?? null,
-          started_at: launch.started_at ?? null });
+        entity.processes.push({ pid, at: new Date(this.clock()).toISOString(), command: launch.command ?? null, cwd: launch.cwd ?? null,
+          started_at: launch.started_at ?? null, phase });
+        recordWatchdogActivity(entity, { kind: phase === "verification" ? "verification_process" : "executor_process",
+          phase, pid, at: launch.started_at ?? this.clock() });
       });
       return pending;
     };
@@ -840,6 +843,13 @@ export class Engine {
         heartbeatTimer = setInterval(() => {
           Promise.all([this.store.heartbeatLease(projectLease), jobLease ? this.store.heartbeatLease(jobLease) : null,
             this.store.heartbeatNode("online")])
+            .then(() => this.store.change((data) => {
+              const activeJob = data.jobs[id];
+              if (["Executing", "Verification", "Rework"].includes(activeJob?.state)) {
+                recordWatchdogActivity(activeJob, { kind: "lease_heartbeat", phase: activeJob.state.toLowerCase(), at: this.clock(),
+                  node_id: this.store.node?.id ?? null });
+              }
+            }))
             .catch((error) => { heartbeatError = error; });
         }, Math.max(1_000, Math.floor(this.store.leaseMs / 3)));
         heartbeatTimer.unref?.();
@@ -890,6 +900,7 @@ export class Engine {
           const transition = recordProviderTransition(j, previousProviderId, providerEvidence.selected.id, attempt + 1, new Date().toISOString(), previousFailure);
           j.provider_evidence = structuredClone(providerEvidence);
           this.store.move(data, j, "Executing", `Execution attempt ${attempt + 1}.`);
+          recordWatchdogActivity(j, { kind: "durable_progress", phase: "execution_claimed", at: this.clock() });
           j.attempts.push({ number: attempt + 1, run, started_at: new Date().toISOString(), status: "executing",
             node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null,
             provider_evidence: structuredClone(providerEvidence),
@@ -941,7 +952,7 @@ export class Engine {
           };
           execution = await this.runtime.execute({ project, job: providerJob, workspace: prepared.workspace,
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
-            previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id),
+            previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id, "execution"),
             onProviderStart,
             onPlacement: (placement) => this.store.change((data) => { recordPlacement(data, placement); }),
             onRemoteStart: (remote_execution) => this.store.change((data) => {
@@ -1022,9 +1033,10 @@ export class Engine {
             data.jobs[id].attempts.at(-1).status = "verifying";
             data.jobs[id].attempts.at(-1).run.status = "verifying";
             this.store.move(data, data.jobs[id], "Verification", "Verifying committed candidate.");
+            recordWatchdogActivity(data.jobs[id], { kind: "durable_progress", phase: "verification_started", at: this.clock() });
           });
           const verification = await this.verifier.verify({ project, job: providerJob, workspace: prepared.workspace, commit: snapshot.commit, snapshot, execution,
-            directory: path.join(this.store.directory, "evidence", id, String(attempt + 1)), onStart: this.processRecorder("jobs", id) });
+            directory: path.join(this.store.directory, "evidence", id, String(attempt + 1)), onStart: this.processRecorder("jobs", id, "verification") });
           if (!this.shipping.unchanged(prepared, snapshot.version ?? snapshot.commit)) {
             verification.passed = false;
             verification.checks.push({ id: "unchanged-tested-version", passed: false, stderr: "Verification modified the tested version or left uncommitted changes." });
@@ -1049,7 +1061,7 @@ export class Engine {
           }
           let delivered;
           deliveryAttempted = true;
-          try { delivered = await this.shipping.ship({ project, job: providerJob, prepared, snapshot, execution, run, verification, onStart: this.processRecorder("jobs", id) }); }
+          try { delivered = await this.shipping.ship({ project, job: providerJob, prepared, snapshot, execution, run, verification, onStart: this.processRecorder("jobs", id, "delivery") }); }
           catch (error) { await this.block(id, `Delivery failed or uncertain: ${error.message}`); return true; }
           await this.store.change((data) => {
             const j = data.jobs[id];

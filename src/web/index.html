@@ -44,6 +44,21 @@
       <div id="relay-alert" class="relay-alert" role="alert" hidden></div>
     </section>
 
+    <section id="watchdog-health" class="watchdog-health" aria-labelledby="watchdog-health-heading" role="status" hidden>
+      <div class="relay-health-summary">
+        <span class="eyebrow">Local watchdog</span>
+        <h2 id="watchdog-health-heading">Observing</h2>
+        <p id="watchdog-last-check">No check recorded.</p>
+      </div>
+      <dl class="relay-health-facts watchdog-health-facts">
+        <div><dt>Active item</dt><dd id="watchdog-active-item">None</dd></div>
+        <div><dt>Last credible activity</dt><dd id="watchdog-last-activity">None</dd></div>
+        <div><dt>Stale threshold</dt><dd id="watchdog-threshold">10 minutes</dd></div>
+        <div><dt>Last action</dt><dd id="watchdog-last-action">No action required.</dd></div>
+        <div><dt>Error</dt><dd id="watchdog-error">None</dd></div>
+      </dl>
+    </section>
+
     <details id="execution-outcomes-section" class="execution-outcomes" hidden>
       <summary>
         <span class="execution-outcomes-copy"><span class="eyebrow">Execution paths</span><strong>Autonomous completion</strong><small id="execution-outcomes-coverage"></small></span>

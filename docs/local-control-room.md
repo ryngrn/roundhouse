@@ -95,6 +95,13 @@ You, active, queued, shipped, and blocked work. A row carries workflow state,
 priority, agent role, owning node when known, current activity, verification,
 shipping, and subordinate import provenance.
 
+The operational health area also exposes the local watchdog observation: last
+check, active item, last credible activity, configured stale threshold, last
+action, and current error. A red stale signal means the authoritative active state
+has outlived its registered process/heartbeat/progress evidence; it does not mean
+the browser inferred failure from the label or from low CPU use. This signal is
+read-only in the current slice and cannot replay or terminate work.
+
 Opening a row shows its outcome and brief before expandable intake, acceptance,
 prior decisions, evidence, and history. Needs You rows open on Decisions. A
 decision session presents one durable question at a time; Back and Next only move

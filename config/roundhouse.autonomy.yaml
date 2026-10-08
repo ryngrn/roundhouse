@@ -3,6 +3,10 @@ decision:
   kind: codex
   bin: codex
 max_jobs_per_run: 10
+watchdog:
+  enabled: true
+  check_interval_ms: 300000
+  stale_threshold_ms: 600000
 triage:
   max_per_tick: 1
   max_concurrent: 1
