@@ -27,6 +27,24 @@ export class HttpWakeSource {
 
   observe(operation) { Promise.resolve(operation).catch(() => {}); }
 
+  matches(url) {
+    try { return Boolean(this.url && new URL(url).href === this.url.href); }
+    catch { return false; }
+  }
+
+  reconcile(url) {
+    const verified = new URL(url);
+    if (!clients[verified.protocol]) throw new Error("Wake subscribe URL must use HTTP or HTTPS.");
+    if (this.matches(verified)) return false;
+    const wasRunning = !this.stopped;
+    this.stop();
+    this.url = verified;
+    this.backoffMs = this.minimumBackoffMs;
+    this.failureCount = 0;
+    if (wasRunning) this.start();
+    return true;
+  }
+
   start() {
     if (!this.url || !this.stopped) return;
     this.stopped = false;

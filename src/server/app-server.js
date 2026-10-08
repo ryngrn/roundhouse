@@ -11,6 +11,7 @@ import { McpEventBroker, McpEventDrainScheduler } from "../mcp/events.js";
 import { WorkerLoop } from "./worker.js";
 import { HttpWakeSource } from "./wake-source.js";
 import { RelayHealthMonitor } from "./relay-health.js";
+import { WakeChannelVerifier, verifiedWakeConfiguration } from "./wake-channel-verifier.js";
 import { openPostgresRelay, RelayProjectionPublisher } from "../relay/postgres-relay.js";
 import { openStorage } from "../storage/open.js";
 
@@ -115,6 +116,7 @@ export async function startRoundhouseServer({
   autoStartWorker = true,
   wakeSubscribeUrl = process.env.ROUNDHOUSE_WAKE_SUBSCRIBE_URL,
   wakeSource,
+  wakeVerifier,
   remoteRelay,
   relayConnectionString,
 } = {}) {
@@ -186,6 +188,9 @@ export async function startRoundhouseServer({
   projectionPublisher.trigger();
   const wakes = wakeSource ?? new HttpWakeSource({ url: wakeSubscribeUrl, wake: () => loop.wake(), health: relayHealth });
   wakes.health ??= relayHealth;
+  const verifier = wakeVerifier ?? new WakeChannelVerifier({ source: wakes,
+    configuration: verifiedWakeConfiguration(wakeSubscribeUrl), health: relayHealth });
+  loop.wakeChannelVerifier = verifier;
   const allowed = new Set([host, "roundhouse", ...(host === "127.0.0.1" ? ["localhost", "::1"] : []), ...allowedHosts].map((value) => value.toLowerCase()));
   const origins = new Set([
     "http://roundhouse",
@@ -351,12 +356,15 @@ export async function startRoundhouseServer({
   for (const allowedHost of allowedHosts) origins.add(`http://${allowedHost.toLowerCase()}:${address.port}`);
   if (autoStartWorker) loop.start();
   wakes.start();
+  verifier.start().catch((error) => process.stderr.write(`Wake verification: ${error.message}\n`));
   return {
     server: httpServer,
     service: roundhouse,
     worker: loop,
+    wakeVerifier: verifier,
     url: `http://${host}:${address.port}`,
     close: async () => {
+      await verifier.stop();
       wakes.stop();
       eventDrain.stop();
       projectionPublisher.stop();

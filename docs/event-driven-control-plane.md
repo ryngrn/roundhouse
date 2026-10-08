@@ -15,6 +15,15 @@ one live subscription and one pending retry. Lost wakes are recovered by the sta
 cycle, an authenticated dashboard overview read, or the five-minute PostgreSQL
 reconciliation pass; the durable command remains safe to retry.
 
+An independent six-hour channel check probes the operator-owned subscription
+configuration without running a worker cycle. It retries failures three times with
+bounded exponential jitter, then returns to the low-frequency cadence so a bad
+channel cannot create a busy loop. After the configured channel is independently
+verified, a mismatched live subscription is replaced with that exact startup
+configuration. Missing, invalid, user-info-bearing, or otherwise unverified
+configuration disables this reconciliation. Health evidence records only matched,
+mismatched, and reconciled results; it never exposes the URL or topic value.
+
 The worker checks the remote-command relay every five minutes as a bounded safety
 net, independently of the wake subscription. Each check claims at most twenty
 remote commands; any remainder stays durable for a later wake or heartbeat. It also runs at startup, after a local

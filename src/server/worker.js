@@ -49,6 +49,7 @@ export class WorkerLoop {
     this.clearTimeoutFn = clearTimeoutFn;
     this.now = now;
     this.healthScheduler = healthScheduler ?? new ControlPlaneHealthScheduler({ store: service?.store, onError, now, setTimeoutFn, clearTimeoutFn });
+    this.wakeChannelVerifier = null;
   }
 
   handleError(plane, error) {
@@ -269,6 +270,7 @@ export class WorkerLoop {
       wake_pending: this.wakeRequested,
       control_plane_health: this.healthScheduler.status(),
       relay_health: this.relayHealth?.status() ?? null,
+      wake_channel_check: this.wakeChannelVerifier?.status() ?? null,
     };
   }
 }

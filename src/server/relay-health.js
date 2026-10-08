@@ -35,6 +35,9 @@ export function sanitizeRelayHealthEvidence(value = {}, { queryBudget = 500, now
       status,
       checked_at: iso(verification.checked_at),
       failure,
+      configuration: ["unknown", "matched", "mismatched"].includes(verification.configuration)
+        ? verification.configuration : "unknown",
+      reconciled: verification.reconciled === true,
     },
     reconnect: {
       status: connectionStatus,
@@ -136,10 +139,13 @@ export class RelayHealthMonitor {
     });
   }
 
-  recordWakeVerification({ verified, failure = null } = {}) {
+  recordWakeVerification({ verified, failure = null, configurationMatched, reconciled = false } = {}) {
     return this.mutate((evidence) => {
       evidence.wake_verification = { status: verified ? "verified" : "failed",
-        checked_at: new Date(this.now()).toISOString(), failure: verified ? null : failure };
+        checked_at: new Date(this.now()).toISOString(), failure: verified ? null : failure,
+        configuration: configurationMatched === true ? "matched"
+          : configurationMatched === false ? "mismatched" : evidence.wake_verification.configuration,
+        reconciled: reconciled === true };
     });
   }
 
