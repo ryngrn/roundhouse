@@ -30,13 +30,18 @@ for human continuation approval while the delivered job remains Shipped.
 ## Text planning sessions
 
 A text planning session is a read-only projection of the authoritative durable
-`items` and `jobs` records. `planningSessionView` in
+`items` and `jobs` records. Start one with
+`roundhouse depot plan --state-dir STATE --order project` (or `--order priority`).
+`planningSessionView` in
 `src/workflow/planning-session.js` implements the contract; it does not use dashboard
 labels, legacy Notion status fields, or process observations as authority.
 
-An item enters planning before it has jobs when its durable state is `Imported
-Pending`, `Depot`, `Needs Clarification`, `Review`, or `Blocked`. Once jobs exist,
-the jobs are the planning records: only `Review` and `Blocked` jobs enter. `Ready`
+An item is a planning candidate before it has jobs when its durable state is
+`Imported Pending`, `Depot`, `Needs Clarification`, `Review`, or `Blocked`, and it
+enters the session only when current durable data also shows a human need. This
+keeps ordinary Depot intake in continuous triage rather than putting it in a human
+planning queue. Once jobs exist, the jobs are the planning records: only `Review`
+and `Blocked` jobs enter. `Ready`
 is explicitly excluded because it belongs to dispatch. `Decision`, `Executing`,
 `Verification`, and `Rework` are excluded because work is active. `Imported
 History`, `Archived`, `Reconciled`, and `Shipped` are terminal and excluded. The
@@ -47,8 +52,8 @@ Unresolved human need is observed from current durable open questions, incomplet
 human tasks, review holds, reconciliation requirements, and current clarification,
 review, or blocked state. Historical `Decisions Needed` text may be preserved as
 provenance, but it becomes a planning signal only when import created a current
-open question. Every included record exposes both its eligibility reason and these
-human-need signals.
+open question. Legacy `Ready` and `Running` labels never control admission. Every
+included record exposes both its eligibility reason and these human-need signals.
 
 The two order modes use complete deterministic keys:
 
@@ -68,8 +73,9 @@ The contract is mapped to project checks as follows:
 
 | Acceptance behavior | Machine-verifiable check |
 | --- | --- |
-| Durable eligibility, human-need signals, and explicit Ready/active/terminal exclusions | `unit: planning sessions explain durable eligibility, exclusions, and deterministic order` under `npm test` |
+| Durable eligibility, human-need signals, legacy-label independence, and explicit Ready/active/terminal exclusions | The planning-session unit contracts under `npm test` |
 | Project-first and priority-first order, exact position keys, and stable tie-breakers | The same unit contract under `npm test` |
+| Read-only text entry point over configured authoritative storage | `unit: depot plan starts a read-only text session from authoritative storage` under `npm test` |
 | Failed-job attempts remain deeply unchanged, non-replayable, and not delivered | `acceptance: failed job remains immutable planning provenance and is never represented as replayed or delivered` under both `npm test` and `npm run acceptance` |
 | JavaScript syntax and repository formatting | `npm run check` and `git diff --check` |
 

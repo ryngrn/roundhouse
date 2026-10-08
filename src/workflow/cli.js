@@ -4,6 +4,7 @@ import { Engine } from "./engine.js";
 import { loadWorkflowConfig } from "./config.js";
 import { submitToDepot } from "./intake-contract.js";
 import { statusView } from "./views.js";
+import { planningSessionView } from "./planning-session.js";
 import { openStorage } from "../storage/open.js";
 
 export { statusView } from "./views.js";
@@ -14,7 +15,7 @@ export async function depotCommand(argv) {
     submit: ["--state-dir", "--input", "--key", "--text", "--project"],
     run: ["--state-dir", "--config", "--project"],
     triage: ["--state-dir", "--config", "--project", "--limit"],
-    status: ["--state-dir"], outbox: ["--state-dir"],
+    status: ["--state-dir"], outbox: ["--state-dir"], plan: ["--state-dir", "--order"],
     approve: ["--state-dir", "--config", "--id", "--revision", "--actor"],
     "assign-human-task": ["--state-dir", "--config", "--id", "--revision", "--assignee", "--actor"],
     "complete-human-task": ["--state-dir", "--config", "--id", "--revision", "--summary", "--evidence", "--actor"],
@@ -26,7 +27,7 @@ export async function depotCommand(argv) {
     stop: ["--state-dir", "--project"], resume: ["--state-dir", "--project", "--actor", "--note"],
     recover: ["--state-dir"],
   };
-  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|triage|run|status|outbox|approve|assign-human-task|complete-human-task|complete-exception|clarify|reevaluate-import|retry-triage|signal-condition|stop|resume|recover> --state-dir <path> [...]");
+  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|triage|run|plan|status|outbox|approve|assign-human-task|complete-human-task|complete-exception|clarify|reevaluate-import|retry-triage|signal-condition|stop|resume|recover> --state-dir <path> [...]");
   const options = {};
   for (let i = 0; i < rest.length; i += 2) {
     if (!allowed[command].includes(rest[i]) || !rest[i + 1] || rest[i + 1].startsWith("--") || options[rest[i]]) throw new Error(`Invalid option ${rest[i]}`);
@@ -36,6 +37,7 @@ export async function depotCommand(argv) {
   const store = await openStorage({ directory: required("--state-dir") });
   try {
   if (command === "status") return statusView(await store.read());
+  if (command === "plan") return planningSessionView(await store.read(), { mode: options["--order"] ?? "project" });
   if (command === "outbox") {
     const data = await store.read();
     return { events: data.outbox, current: statusView(data) };

@@ -92,8 +92,13 @@ function sourceRecords(data) {
 }
 
 function assess(record) {
-  const eligible = record.entity_type === "item" ? itemPlanningStates.has(record.entity.state) : jobPlanningStates.has(record.entity.state);
-  if (!eligible) return { eligible, ...stateExclusion(record.entity.state) };
+  const stateEligible = record.entity_type === "item" ? itemPlanningStates.has(record.entity.state) : jobPlanningStates.has(record.entity.state);
+  if (!stateEligible) return { eligible: false, ...stateExclusion(record.entity.state) };
+  const humanNeedSignals = humanNeed(record.item, record.job);
+  if (!humanNeedSignals.length) {
+    return { eligible: false, code: "no_human_need",
+      reason: "The durable record has no current open question, human task, review hold, reconciliation requirement, or human-needed state." };
+  }
   if (record.entity_type === "item") {
     const reasons = {
       "Imported Pending": ["imported_pending", "Imported work requires an authoritative Roundhouse planning decision."],
@@ -103,11 +108,11 @@ function assess(record) {
       Blocked: ["blocked_item", "The blocked item may be inspected to plan replacement work; it is not replayable."],
     };
     const [code, reason] = reasons[record.entity.state];
-    return { eligible, code, reason };
+    return { eligible: true, code, reason, human_need: humanNeedSignals };
   }
   return record.entity.state === "Review"
-    ? { eligible, code: "human_required_job", reason: "The job has a durable unresolved human requirement." }
-    : { eligible, code: "blocked_job", reason: "The failed or blocked job is read-only provenance for planning replacement work." };
+    ? { eligible: true, code: "human_required_job", reason: "The job has a durable unresolved human requirement.", human_need: humanNeedSignals }
+    : { eligible: true, code: "blocked_job", reason: "The failed or blocked job is read-only provenance for planning replacement work.", human_need: humanNeedSignals };
 }
 
 function projectedRecord(record, eligibility) {
@@ -126,8 +131,8 @@ function projectedRecord(record, eligibility) {
     priority: item.priority ?? null,
     priority_rank: rank,
     created_at: createdAt === maximumTimestamp ? null : createdAt,
-    title: job?.work?.title ?? item.input?.text?.split("\n").find((line) => line.trim())?.trim().slice(0, 160) ?? "Untitled work",
-    eligibility: { ...eligibility, human_need: humanNeed(item, job) },
+    title: job?.work?.title ?? item.input?.text?.split("\n").find((line) => line.trim())?.trim().slice(0, 160) ?? null,
+    eligibility,
     audit: auditEvidence(job),
     _order: { project: key, priority: rank, created_at: createdAt, item_id: item.id, entity_id: entity.id },
   };
@@ -152,7 +157,8 @@ function ordering(entry, mode, position) {
   const fields = mode === "project"
     ? ["project", "priority", "created_at", "item_id", "entity_id"]
     : ["priority", "project", "created_at", "item_id", "entity_id"];
-  const keys = Object.fromEntries(fields.map((field) => [field, entry._order[field]]));
+  const keys = Object.fromEntries(fields.map((field) => [field,
+    field === "created_at" && entry._order[field] === maximumTimestamp ? null : entry._order[field]]));
   return { mode, position, keys, reason: `Position ${position} follows ${mode}-first order using ${fields.join(", ")} as deterministic keys.` };
 }
 

@@ -9,6 +9,7 @@ import { Store, acquireLock } from "../src/workflow/store.js";
 import { runProcess } from "../src/workflow/runtime.js";
 import { actionPolicy, assertProviderAuthorized, classifyAction } from "../src/workflow/actions.js";
 import { planningSessionView } from "../src/workflow/planning-session.js";
+import { depotCommand } from "../src/workflow/cli.js";
 
 const project = { id: "example", status: "active", executor: { kind: "command" }, runtime: "local",
   verification: [{ id: "tests" }], policy: { project_confidence: 0.8, execution_confidence: 0.9, allow_autonomous: true, shipping: "push_branch" } };
@@ -57,11 +58,12 @@ test("unit: planning sessions explain durable eligibility, exclusions, and deter
   const item = (id, state, projectId, rank, createdAt) => ({ id, state, project_id: projectId, priority_rank: rank,
     created_at: createdAt, input: { text: id }, questions: [], job_ids: [], history: [] });
   const data = { items: {
-    "alpha-low": item("alpha-low", "Depot", "alpha", 2, "2026-01-02T00:00:00Z"),
+    "alpha-low": item("alpha-low", "Blocked", "alpha", 2, "2026-01-02T00:00:00Z"),
     "alpha-high": item("alpha-high", "Needs Clarification", "alpha", 0, "2026-01-03T00:00:00Z"),
     "beta-high": item("beta-high", "Review", "beta", 0, "2026-01-01T00:00:00Z"),
     ready: item("ready", "Ready", "alpha", 0, "2026-01-01T00:00:00Z"),
     active: item("active", "Decision", "alpha", 0, "2026-01-01T00:00:00Z"),
+    depot: item("depot", "Depot", "alpha", 0, "2026-01-01T00:00:00Z"),
     executing: { ...item("executing", "Ready", "beta", 0, "2026-01-01T00:00:00Z"), job_ids: ["executing-job"] },
     shipped: { ...item("shipped", "Ready", "beta", 0, "2026-01-01T00:00:00Z"), job_ids: ["shipped-job"] },
   }, jobs: {
@@ -80,9 +82,50 @@ test("unit: planning sessions explain durable eligibility, exclusions, and deter
   assert.deepEqual(byProject.entries.map((entry) => entry.ordering.position), [1, 2, 3]);
   assert.equal(byProject.entries[0].eligibility.human_need[0].question_id, "question-1");
   assert.deepEqual(Object.fromEntries(byProject.excluded.map((entry) => [entry.entity_id, entry.code])), {
-    ready: "ready_for_dispatch", active: "active_work", "executing-job": "active_work", "shipped-job": "terminal_state",
+    ready: "ready_for_dispatch", active: "active_work", depot: "no_human_need",
+    "executing-job": "active_work", "shipped-job": "terminal_state",
   });
   assert.throws(() => planningSessionView(data, { mode: "recent" }), /project or priority/);
+});
+test("unit: planning eligibility follows durable human need and ignores imported legacy workflow labels", () => {
+  const item = (id, state, legacyStatus, questions = []) => ({ id, state, project_id: "roundhouse", priority: "P1", priority_rank: 1,
+    created_at: "2026-01-01T00:00:00Z", input: { text: id }, questions, job_ids: [], history: [],
+    legacy_depot: { Status: legacyStatus, "Workflow State": legacyStatus } });
+  const data = { items: {
+    imported: item("imported", "Imported Pending", "Running", [{ id: "q1", status: "open", prompt: "Choose the scope." }]),
+    ready: item("ready", "Ready", "Needs Decisions", [{ id: "q2", status: "open", prompt: "Stale question." }]),
+    depot: item("depot", "Depot", "Ready"),
+    review: item("review", "Review", "Running"),
+  }, jobs: {} };
+
+  const session = planningSessionView(data, { mode: "project" });
+
+  assert.deepEqual(session.entries.map((entry) => entry.entity_id), ["imported", "review"]);
+  assert.deepEqual(session.entries.map((entry) => entry.eligibility.human_need[0].code), ["open_question", "review_state"]);
+  assert.deepEqual(Object.fromEntries(session.excluded.map((entry) => [entry.entity_id, entry.code])), {
+    ready: "ready_for_dispatch", depot: "no_human_need",
+  });
+});
+test("unit: depot plan starts a read-only text session from authoritative storage", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-plan-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const store = new Store(directory);
+  store.change((data) => {
+    data.items.review = { id: "review", state: "Review", project_id: "roundhouse", priority: "P2", priority_rank: 2,
+      created_at: "2026-01-01T00:00:00Z", input: { text: "Choose a release window" }, questions: [], job_ids: [], history: [] };
+  });
+  const before = store.read();
+
+  const session = await depotCommand(["plan", "--state-dir", directory, "--order", "priority"]);
+
+  assert.equal(session.authority, "durable_roundhouse_state");
+  assert.equal(session.mode, "priority");
+  assert.equal(session.entries[0].item_id, "review");
+  assert.equal(session.entries[0].project_id, "roundhouse");
+  assert.equal(session.entries[0].priority, "P2");
+  assert.match(session.entries[0].eligibility.human_need[0].reason, /human review/);
+  assert.equal(session.entries[0].ordering.keys.priority, 2);
+  assert.deepEqual(store.read(), before);
 });
 test("unit: trusted action classification can be elevated but not downgraded", () => {
   assert.equal(classifyAction({ action_class: "consequential", required_capabilities: ["research"] }), "consequential");

@@ -15,6 +15,7 @@ import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { correlateExecutionActivity } from "../src/workflow/execution-activity.js";
 import { REMOTE_DESKTOP_COMMANDER_PERMITTED_USES } from "../src/workflow/remote-desktop-policy.js";
 import { planningSessionView } from "../src/workflow/planning-session.js";
+import { depotCommand } from "../src/workflow/cli.js";
 import { harness } from "./support/harness.js";
 
 const provider = fileURLToPath(new URL("./support/acceptance-provider.mjs", import.meta.url));
@@ -147,6 +148,53 @@ test("acceptance: failed job remains immutable planning provenance and is never 
   assert.equal(session.entries[0].audit.mutation_permitted, false);
   assert.equal(session.entries[0].audit.represented_as_delivered, false);
   assert.equal(session.entries[0].audit.delivery_evidence_present, false);
+});
+
+test("acceptance: text planning selects durable human needs and provides stable project or priority order", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-planning-acceptance-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const store = new Store(directory);
+  const item = (id, state, projectId, priority, rank, createdAt, legacyStatus) => ({ id, state, project_id: projectId,
+    priority, priority_rank: rank, created_at: createdAt, input: { text: `${id} title` }, questions: [], job_ids: [], history: [],
+    legacy_depot: { Status: legacyStatus, "Workflow State": legacyStatus } });
+  store.change((data) => {
+    data.items.imported = item("imported", "Imported Pending", "alpha", "P1", 1, "2026-01-01T00:00:00Z", "Running");
+    data.items.imported.questions.push({ id: "scope", revision: 1, status: "open", prompt: "Choose the scope." });
+    data.items.review = item("review", "Review", "alpha", "P2", 2, "2026-01-02T00:00:00Z", "Ready");
+    data.items.blocked = { ...item("blocked", "Ready", "beta", "P0", 0, "2026-01-03T00:00:00Z", "Ready"), job_ids: ["blocked-job"] };
+    data.jobs["blocked-job"] = { id: "blocked-job", parent_id: "blocked", project_id: "beta", state: "Blocked",
+      priority_rank: 0, created_at: "2026-01-03T00:00:01Z", work: { title: "Inspect failed beta work" }, attempts: [],
+      history: [{ from: "Executing", to: "Blocked", at: "2026-01-03T00:01:00Z", reason: "Verification failed." }] };
+    data.items.ready = item("ready", "Ready", "beta", "P0", 0, "2026-01-01T00:00:00Z", "Needs Decisions");
+    data.items.active = item("active", "Decision", "beta", "P0", 0, "2026-01-01T00:00:00Z", "Ready");
+    data.items.shipped = item("shipped", "Shipped", "beta", "P0", 0, "2026-01-01T00:00:00Z", "Running");
+    data.items.missing = { id: "missing", state: "Review", project_id: null, priority: null,
+      input: { text: "" }, questions: [], job_ids: [], history: [] };
+  });
+  const before = store.read();
+
+  const byProject = await depotCommand(["plan", "--state-dir", directory, "--order", "project"]);
+  const byPriority = await depotCommand(["plan", "--state-dir", directory, "--order", "priority"]);
+
+  assert.deepEqual(byProject.entries.map((entry) => entry.entity_id), ["imported", "review", "blocked-job", "missing"]);
+  assert.deepEqual(byPriority.entries.map((entry) => entry.entity_id), ["blocked-job", "imported", "review", "missing"]);
+  assert.deepEqual(Object.fromEntries(byProject.excluded.map((entry) => [entry.entity_id, entry.code])), {
+    ready: "ready_for_dispatch", active: "active_work", shipped: "terminal_state",
+  });
+  for (const entry of byPriority.entries) {
+    assert.ok(entry.item_id);
+    assert.notEqual(entry.project_id, undefined);
+    assert.notEqual(entry.priority, undefined);
+    assert.ok(entry.eligibility.human_need.length);
+    assert.match(entry.ordering.reason, /deterministic keys/);
+  }
+  assert.equal(byProject.entries[0].eligibility.human_need[0].reason, "Choose the scope.");
+  const { project_id, priority, created_at, title } = byPriority.entries.at(-1);
+  assert.deepEqual({ project_id, priority, created_at, title }, {
+    project_id: null, priority: null, created_at: null, title: null,
+  });
+  assert.equal(byPriority.entries.at(-1).ordering.keys.created_at, null);
+  assert.deepEqual(store.read(), before);
 });
 
 function gatedMachineLocalHerdr(root) {
