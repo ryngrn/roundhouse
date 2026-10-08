@@ -14,6 +14,7 @@ export async function depotCommand(argv) {
     submit: ["--state-dir", "--input", "--key", "--text", "--project"],
     run: ["--state-dir", "--config", "--project"],
     triage: ["--state-dir", "--config", "--project", "--limit"],
+    unblock: ["--state-dir", "--config"],
     status: ["--state-dir"], outbox: ["--state-dir"],
     approve: ["--state-dir", "--config", "--id", "--revision", "--actor"],
     clarify: ["--state-dir", "--config", "--id", "--text", "--actor", "--project"],
@@ -24,7 +25,7 @@ export async function depotCommand(argv) {
     stop: ["--state-dir", "--project"], resume: ["--state-dir", "--project", "--actor", "--note"],
     recover: ["--state-dir"],
   };
-  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|triage|run|status|outbox|approve|clarify|reevaluate-import|retry-triage|reconcile-job|refresh-job-context|stop|resume|recover> --state-dir <path> [...]");
+  if (!allowed[command]) throw new Error("Usage: roundhouse depot <submit|triage|unblock|run|status|outbox|approve|clarify|reevaluate-import|retry-triage|reconcile-job|refresh-job-context|stop|resume|recover> --state-dir <path> [...]");
   const options = {};
   for (let i = 0; i < rest.length; i += 2) {
     if (!allowed[command].includes(rest[i]) || !rest[i + 1] || rest[i + 1].startsWith("--") || options[rest[i]]) throw new Error(`Invalid option ${rest[i]}`);
@@ -65,6 +66,7 @@ export async function depotCommand(argv) {
     return { id: item.id, state: item.state, message: "Saved in Depot. Run the worker to interpret and execute eligible work." };
   }
   const engine = new Engine({ store, config: loadWorkflowConfig(path.resolve(required("--config"))) });
+  if (command === "unblock") return await engine.runUnblocker();
   if (command === "approve") return await engine.approve(required("--id"), Number(required("--revision")), required("--actor"));
   if (command === "clarify") return await engine.clarify(required("--id"), required("--text"), required("--actor"), options["--project"]);
   if (command === "reevaluate-import") return engine.reevaluateImported(required("--id"), Number(required("--revision")), required("--actor"));

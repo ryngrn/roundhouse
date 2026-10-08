@@ -9,6 +9,7 @@ import { GitDelivery, git } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
+import { Unblocker } from "./unblocker.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -898,6 +899,9 @@ export class Engine {
       this.store.move(data, job, "Blocked", reason);
       data.projects[job.project_id] = { ...data.projects[job.project_id], blocked: true, active: false };
     });
+  }
+  async runUnblocker() {
+    return new Unblocker({ store: this.store, config: this.config, engine: this }).run();
   }
   async run({ projectId } = {}) {
     const triage = await this.runTriage({ projectId, limit: Infinity });

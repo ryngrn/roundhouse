@@ -6,6 +6,10 @@ export class WorkerLoop {
     this.onCycle = onCycle;
     this.onError = onError;
     this.triageRunning = null;
+    this.unblockerRunning = null;
+    this.lastUnblocker = null;
+    this.unblockerError = null;
+    this.unblockerResult = null;
     this.dispatchRunning = null;
     this.commandRunning = null;
     this.cycleRunning = null;
@@ -75,6 +79,26 @@ export class WorkerLoop {
     finally { this.commandRunning = null; }
   }
 
+  async unblockerTick() {
+    if (this.unblockerRunning) return this.unblockerRunning;
+    if (!this.service.engine?.runUnblocker) return { released_projects: [] };
+    this.unblockerRunning = (async () => {
+      try {
+        const result = await this.service.engine.runUnblocker();
+        this.lastUnblocker = new Date().toISOString();
+        this.unblockerResult = { released_projects: result.released_projects, refreshed: result.refreshed,
+          isolated_jobs: result.isolated_jobs, needs_attention: result.needs_attention };
+        this.unblockerError = null;
+        return result;
+      } catch (error) {
+        this.unblockerError = error.message;
+        this.onError(error);
+        return { released_projects: [], unblocker_error: error.message };
+      } finally { this.unblockerRunning = null; }
+    })();
+    return this.unblockerRunning;
+  }
+
   async triageTick() {
     if (this.triageRunning) return this.triageRunning;
     this.triageRunning = (async () => {
@@ -113,10 +137,13 @@ export class WorkerLoop {
       // Remote commands are an optional relay concern. The local store remains
       // authoritative, so a relay failure must never prevent local triage or dispatch.
       const commands = this.commandQueue ? await this.remoteCommandTick() : { remote_commands: 0 };
+      const unblocker = await this.unblockerTick();
       const triage = await this.triageTick();
       const dispatch = await this.dispatchTick();
+      // An execution failure may have created a new isolated hold in this cycle.
+      if (dispatch.executed) await this.unblockerTick();
       const events = this.eventBroker ? await this.eventBroker.drain() : { attempted: 0 };
-      const result = { ...commands, ...triage, ...dispatch, triaged: triage.triaged ?? 0, executed: dispatch.executed ?? 0,
+      const result = { ...commands, ...unblocker, ...triage, ...dispatch, triaged: triage.triaged ?? 0, executed: dispatch.executed ?? 0,
         event_deliveries_attempted: events.attempted ?? 0,
         error: commands.remote_command_error ?? triage.error ?? dispatch.error };
       await this.onCycle(result);
@@ -162,11 +189,15 @@ export class WorkerLoop {
 
   status() {
     return {
-      running: Boolean(this.commandRunning || this.triageRunning || this.dispatchRunning),
+      running: Boolean(this.commandRunning || this.unblockerRunning || this.triageRunning || this.dispatchRunning),
+      unblocker_running: Boolean(this.unblockerRunning),
+      last_unblocker: this.lastUnblocker,
+      unblocker_error: this.unblockerError,
+      unblocker_result: this.unblockerResult,
       command_running: Boolean(this.commandRunning),
       triage_running: Boolean(this.triageRunning),
       dispatch_running: Boolean(this.dispatchRunning),
-      current_activity: this.commandRunning ? "Routing remote signal" : this.triageRunning ? "Evaluating Depot work" : this.dispatchRunning ? "Dispatching eligible work" : "Idle",
+      current_activity: this.commandRunning ? "Routing remote signal" : this.unblockerRunning ? "Unblocker resolving held work" : this.triageRunning ? "Evaluating Depot work" : this.dispatchRunning ? "Dispatching eligible work" : "Idle",
       last_run: this.lastRun,
       last_triage: this.lastTriage,
       last_dispatch: this.lastDispatch,
