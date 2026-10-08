@@ -15,6 +15,7 @@ import { dispatchConsiderations, executionEligibility, executionReservation, rec
 import { assessJobEligibility, ensureNextOccurrence, initializeJobSchedule, nextScheduledWake, recordConditionSignal } from "./scheduling.js";
 import { actionPolicy, approvalScope, assertProviderAuthorized, classifyAction } from "./actions.js";
 import { computeComplexityScore, computeRequestComplexity, recordComplexityOutcome } from "./complexity-score.js";
+import { deriveExecutionOutcome } from "./execution-outcome.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -474,6 +475,7 @@ export class Engine {
           id: `human-evidence-${index + 1}`, passed: true, source: "human", summary: `${entry.kind}: ${entry.reference}`,
         })) }, timestamp: now };
       this.store.move(data, job, "Shipped", `Human task completed by ${actor.trim()} with durable evidence.`);
+      job.execution_outcome = deriveExecutionOutcome(job, data.items[job.parent_id], { recordedBy: actor.trim() });
       recordComplexityOutcome(data, job, "shipped", "Human completion and its durable evidence were recorded.");
       const parent = data.items[job.parent_id];
       if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = now;
@@ -931,6 +933,7 @@ export class Engine {
               j.delivery_intent.reconciliation = { required_on_interruption: false, status: "confirmed", confirmed_at: shipping.timestamp };
               j.processes = [];
               this.store.move(data, j, "Shipped", "Remote agent reported verified machine-local delivery; Roundhouse did not inspect the remote filesystem.");
+              j.execution_outcome = deriveExecutionOutcome(j, data.items[j.parent_id]);
               recordComplexityOutcome(data, j, "shipped", "Remote agent reported verified machine-local delivery; local filesystem evidence was not claimed.");
               data.projects[project.id] = { ...data.projects[project.id], last_commit: shipping.commit,
                 active: false, review_required: project.policy.review_after_shipping };
@@ -984,6 +987,7 @@ export class Engine {
             j.attempts.at(-1).finished_at = delivered.timestamp;
             j.processes = [];
             this.store.move(data, j, "Shipped", "Verified work delivered under project policy.");
+            j.execution_outcome = deriveExecutionOutcome(j, data.items[j.parent_id]);
             recordComplexityOutcome(data, j, "shipped", "Configured verification passed and delivery was confirmed.");
             data.projects[project.id] = { ...data.projects[project.id], ...(delivered.commit ? { last_commit: delivered.commit } : {}),
               ...(delivered.reference ? { last_output: delivered.reference } : {}),
@@ -1080,6 +1084,7 @@ export class Engine {
       }
       if (attempt?.run && job.reconciliation) attempt.run.reconciliation = job.reconciliation;
       this.store.move(data, job, "Blocked", reason);
+      job.execution_outcome = deriveExecutionOutcome(job, data.items[job.parent_id]);
       recordComplexityOutcome(data, job, "blocked", "Execution ended blocked; inspect the job hold for the bounded reason.");
       const runtime = { ...data.projects[job.project_id], active: false };
       if (scope === "project") {

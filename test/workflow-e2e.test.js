@@ -85,6 +85,10 @@ test("e2e: autonomous Depot request creates actual change, verifies exact commit
   assert.equal(job.provider_evidence.selected.id, "local-project");
   assert.equal(job.attempts[0].provider_evidence.selected.id, "local-project");
   assert.equal(job.attempts[0].provider_evidence.invoked.id, "local-project");
+  assert.equal(job.execution_outcome.classification, "native_success");
+  assert.equal(job.execution_outcome.execution_path[0].kind, "local_command");
+  assert.deepEqual(Object.keys(job.execution_outcome.provenance).sort(),
+    ["delivery", "dispatch", "executor_ownership", "intake", "verification"]);
   assert.deepEqual(job.attempts[0].provider_evidence.capability_probe.required, []);
   assert.equal(result.items[item.id].decision.complexity.score,
     result.items[item.id].decision.complexity.factors.reduce((sum, factor) => sum + factor.contribution, 0));
@@ -369,6 +373,9 @@ test("e2e: human tasks use assignment and evidenced completion without executor 
   assert.equal(job.human_task.status, "completed");
   assert.equal(job.attempts.length, 0);
   assert.equal(job.shipping.provider, "human-task");
+  assert.equal(job.execution_outcome.classification, "exception_success");
+  assert.equal(job.execution_outcome.reason.code, "human_only_action");
+  assert.equal(job.execution_outcome.execution_path[0].kind, "human_task");
   assert.equal(h.calls(), 0);
   const restarted = new Store(h.store.directory).read().jobs[job.id];
   assert.equal(restarted.human_task.assignment.assignee, "field-operator");
@@ -852,4 +859,6 @@ test("integration: interrupted non-code run retains identity, failure, and recon
   assert.equal(job.reconciliation.run_id, "run-1");
   assert.equal(job.reconciliation.intent, null);
   assert.equal(job.attempts[0].run.reconciliation.status, "required");
+  assert.equal(job.execution_outcome.classification, "failed_or_abandoned");
+  assert.equal(job.execution_outcome.reason.code, "stale_worker");
 });

@@ -88,6 +88,7 @@ function jobView(job, data) {
     occurrence_key: job.occurrence_key ?? null,
     action_policy: job.action_policy ?? null,
     human_task: job.human_task ?? null,
+    execution_outcome: job.execution_outcome ?? null,
     complexity: job.work?.complexity ?? null,
   };
 }

@@ -6,7 +6,7 @@ import { record, transition } from "./state.js";
 import { StorageRepository, digest } from "../storage/repository.js";
 import { acquireLock, alive } from "../storage/file-lock.js";
 import { loadNodeIdentity } from "../storage/node-identity.js";
-import { validateExecutionOutcome } from "./execution-outcome.js";
+import { deriveExecutionOutcome, validateExecutionOutcome } from "./execution-outcome.js";
 
 export { acquireLock, alive, digest };
 
@@ -104,6 +104,7 @@ export class Store extends StorageRepository {
                 attempt.run.reconciliation = entity.reconciliation;
               }
             }
+            if (entity.parent_id) entity.execution_outcome = deriveExecutionOutcome(entity, state.items[entity.parent_id]);
           }
         }
         for (const [projectId, project] of Object.entries(state.projects)) if (project.active) {

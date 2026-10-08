@@ -146,3 +146,119 @@ export function executionOutcomeMetricStatus(job) {
   const outcome = validateExecutionOutcome(job.execution_outcome, { job });
   return { eligible: true, reason: null, classification: outcome.classification };
 }
+
+const link = (job, suffix, kind = "state") => ({ kind, uri: `roundhouse://job/${encodeURIComponent(job.id)}/${suffix}` });
+
+function provenanceEvidence(recordedAt, evidenceLink) {
+  return { recorded_at: recordedAt, evidence_links: [evidenceLink] };
+}
+
+function executionPath(job, attempt) {
+  if (job.human_task?.completion) return [{ kind: "human_task", detail: "Authorized human task completion." }];
+  const explicit = job.untracked_path_evidence?.execution_path ?? job.exception_completion?.execution_path;
+  if (Array.isArray(explicit) && explicit.length) return structuredClone(explicit);
+  if (!attempt?.run) return [{ kind: "other", detail: "Roundhouse stopped before executor ownership was established." }];
+  const runtime = attempt?.execution?.remote_execution?.runtime ?? job.project_context?.runtime ?? "local";
+  const executor = job.project_context?.executor?.kind ?? attempt?.provider_evidence?.invoked?.kind
+    ?? attempt?.provider_evidence?.selected?.kind ?? "command";
+  const suffix = executor === "codex" ? "codex" : executor === "claude" ? "claude" : "command";
+  const kind = `${runtime === "herdr" ? "herdr" : "local"}_${suffix}`;
+  const remote = attempt?.execution?.remote_execution;
+  return [{ kind, provider: attempt?.run?.provider_id ?? attempt?.provider_evidence?.invoked?.id
+    ?? attempt?.provider_evidence?.selected?.id ?? "unclaimed", runtime,
+  ...(remote?.machine_selector ?? job.project_context?.herdr?.machine
+    ? { machine: remote?.machine_selector ?? job.project_context.herdr.machine } : {}) }];
+}
+
+function reasonCode(job, attempt) {
+  const text = [job.hold?.code, job.hold?.reason, job.reconciliation?.reason, attempt?.provider_failure?.category,
+    attempt?.failure].filter(Boolean).join(" ").toLowerCase();
+  if (/stale|expired|interrupt/.test(text)) return "stale_worker";
+  if (/repository.*lock|lock.*repository/.test(text)) return "repository_lock";
+  if (/credential|configuration|config gap|authentication|permission denied/.test(text)) return "credential_config_gap";
+  if (/capabilit|unavailable_dependency/.test(text)) return "missing_capability";
+  if (/quota|rate.?limit|provider.?limit|capacity/.test(text)) return "provider_limit";
+  if (/remote.*evidence|reconciliation_required|reconcile.*remote|externally_uncertain/.test(text)) return "remote_completion_evidence_missing";
+  if (/unsupported|not implemented/.test(text)) return "unsupported_action";
+  if (/herdr/.test(text) || (job.project_context?.runtime === "herdr" && attempt?.failure)) return "herdr_failure";
+  if (/control.?plane|transaction|lease ownership/.test(text)) return "control_plane_bug";
+  return "other";
+}
+
+function exceptionEvidence(job) {
+  return job.untracked_path_evidence ?? job.exception_completion ?? null;
+}
+
+/**
+ * Derive a terminal outcome only from durable lifecycle records. Returning null
+ * is intentional: an old or incomplete Shipped record is not evidence of a
+ * native execution path and must remain outside trustworthy success metrics.
+ */
+export function deriveExecutionOutcome(job, item, { recordedBy = "roundhouse" } = {}) {
+  if (!object(job) || !["Shipped", "Blocked", "Archived"].includes(job.state)) return null;
+  if (job.execution_outcome_exclusion === "historical_import") return null;
+  const attempt = job.attempts?.at(-1) ?? null;
+  const shipping = job.shipping ?? null;
+  const exception = exceptionEvidence(job);
+  const humanCompletion = job.human_task?.completion ?? null;
+  const recovered = job.reconciliation?.status === "confirmed"
+    || attempt?.run?.reconciliation?.status === "confirmed"
+    || job.recovery?.status === "confirmed";
+  const successful = job.state === "Shipped";
+  const recordedAt = shipping?.timestamp ?? humanCompletion?.completed_at ?? job.reconciliation?.confirmed_at
+    ?? attempt?.finished_at ?? job.updated_at;
+  if (!validDate(recordedAt)) return null;
+
+  const provenance = {};
+  if (item?.input && validDate(item.created_at)) provenance.intake = provenanceEvidence(item.created_at, link(job, "intake"));
+  const dispatch = job.history?.find((event) => event.to === "Executing");
+  if (dispatch && validDate(dispatch.at) && attempt?.started_at) provenance.dispatch = provenanceEvidence(dispatch.at, link(job, `attempt/${attempt.number}/dispatch`));
+  const invoked = attempt?.provider_evidence?.invoked;
+  if (attempt?.run?.id && invoked?.id && validDate(attempt.provider_evidence.invoked_at ?? attempt.started_at)) {
+    provenance.executor_ownership = provenanceEvidence(attempt.provider_evidence.invoked_at ?? attempt.started_at,
+      link(job, `attempt/${attempt.number}/executor`));
+  }
+  const verification = attempt?.verification ?? shipping?.verification;
+  if (verification?.passed === true && validDate(verification.at ?? recordedAt)) {
+    provenance.verification = provenanceEvidence(verification.at ?? recordedAt, link(job, `attempt/${attempt?.number ?? 1}/verification`, "verification"));
+  }
+  const deliveryConfirmed = shipping && (humanCompletion || exception || recovered
+    || job.delivery_intent?.reconciliation?.status === "confirmed");
+  if (deliveryConfirmed) provenance.delivery = provenanceEvidence(shipping.timestamp ?? recordedAt, link(job, "delivery", "delivery"));
+
+  let classification;
+  let reason = null;
+  let expected = null;
+  let interventions = 0;
+  let humanMinutes = null;
+  let path = executionPath(job, attempt);
+  if (!successful) {
+    classification = "failed_or_abandoned";
+    reason = { code: reasonCode(job, attempt), note: job.hold?.reason ?? attempt?.failure
+      ?? job.history?.at(-1)?.reason ?? "The attempted outcome was not completed." };
+  } else if (humanCompletion || exception) {
+    classification = "exception_success";
+    const suppliedReason = exception?.reason;
+    reason = suppliedReason && executionExceptionReasons.includes(suppliedReason.code) && nonempty(suppliedReason.note)
+      ? structuredClone(suppliedReason)
+      : { code: humanCompletion ? "human_only_action" : reasonCode(job, attempt),
+          note: humanCompletion?.summary ?? exception?.note ?? "Completion used a recorded path outside autonomous Roundhouse execution." };
+    expected = exception?.expected ?? Boolean(humanCompletion);
+    interventions = exception?.human_intervention_count ?? 1;
+    humanMinutes = exception?.human_minutes ?? null;
+  } else if (recovered) {
+    classification = "recovered_success";
+    reason = { code: reasonCode(job, attempt), note: job.reconciliation?.reason ?? job.recovery?.reason
+      ?? "Roundhouse reconciled an interrupted attempt against durable completion evidence." };
+    path = [...path, { kind: "operator_reconciliation", evidence_links: [link(job, "reconciliation")] }];
+    interventions = job.reconciliation?.human_intervention_count ?? job.recovery?.human_intervention_count ?? 1;
+    humanMinutes = job.reconciliation?.human_minutes ?? job.recovery?.human_minutes ?? null;
+  } else if (nativeProvenanceStages.every((stage) => provenance[stage])) {
+    classification = "native_success";
+  } else return null;
+
+  return validateExecutionOutcome({ schema_version: 1, classification, recorded_at: recordedAt, recorded_by: recordedBy,
+    historical_import: false, execution_path: path, provenance, reason, exception_expected: expected,
+    human_intervention_required: interventions > 0, human_intervention_count: interventions, human_minutes: humanMinutes,
+    evidence_links: Object.values(provenance).flatMap((entry) => entry.evidence_links) }, { job });
+}

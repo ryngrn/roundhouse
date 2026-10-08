@@ -22,11 +22,13 @@ test("status exposes durable decision, job, and attempt provider evidence while 
   const item = { id: "item", state: "Ready", revision: 1, project_id: "example", input: { text: "Build" },
     history: [], questions: [], job_ids: ["job"], decision: { work_items: [], provider_evidence: evidence } };
   const job = { id: "job", parent_id: "item", project_id: "example", state: "Executing", history: [],
-    work: { title: "Build" }, attempts: [{ number: 1, provider_evidence: evidence }], provider_evidence: evidence };
+    work: { title: "Build" }, attempts: [{ number: 1, provider_evidence: evidence }], provider_evidence: evidence,
+    execution_outcome: { classification: "native_success" } };
   const view = itemView({ items: { item }, jobs: { job }, projects: {} }, item);
   assert.equal(view.decision_provider.invoked.id, "software");
   assert.equal(view.jobs[0].provider_evidence.selected.id, "software");
   assert.equal(view.jobs[0].latest_attempt_provider.invoked.id, "software");
+  assert.equal(view.jobs[0].execution_outcome.classification, "native_success");
 
   const legacyItem = { ...item, decision: { work_items: [] } };
   const legacyJob = { ...job, attempts: [], provider_evidence: undefined };

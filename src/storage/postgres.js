@@ -6,7 +6,7 @@ import pg from "pg";
 import { StorageRepository, digest } from "./repository.js";
 import { record, transition } from "../workflow/state.js";
 import { reservationAssessment } from "../workflow/scheduler.js";
-import { validateExecutionOutcome } from "../workflow/execution-outcome.js";
+import { deriveExecutionOutcome, validateExecutionOutcome } from "../workflow/execution-outcome.js";
 
 const { Pool } = pg;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -513,6 +513,7 @@ export class PostgresStorageRepository extends StorageRepository {
             attempt.run.reconciliation = job.reconciliation;
           }
         }
+        job.execution_outcome = deriveExecutionOutcome(job, data.items[job.parent_id]);
         data.projects[job.project_id] = { ...data.projects[job.project_id], active: false, blocked: true,
           quarantine: { code: job.hold.code, reason: job.hold.reason, job_id: job.id,
             reconciliation_required: true, recorded_at: recordedAt } };

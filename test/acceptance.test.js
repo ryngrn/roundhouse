@@ -261,7 +261,10 @@ test("acceptance: dispatched machine-local Herdr work is app-visible while a loc
 
   fs.writeFileSync(fixture.release, "release");
   const result = await run;
-  assert.equal(Object.values(result.jobs).find((job) => job.project_id === remote.id).state, "Shipped");
+  const remoteResult = Object.values(result.jobs).find((job) => job.project_id === remote.id);
+  assert.equal(remoteResult.state, "Shipped");
+  assert.equal(remoteResult.execution_outcome.classification, "native_success");
+  assert.equal(remoteResult.execution_outcome.execution_path[0].kind, "herdr_command");
   assert.equal(Object.values(result.jobs).find((job) => job.project_id === local.id).state, "Shipped");
   const terminal = await appOverview(service, loop);
   assert.deepEqual(terminal.counts, { needs_you: 0, active: 0, queued: 0, completed: 2, blocked: 0 });
