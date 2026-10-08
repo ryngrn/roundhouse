@@ -1,4 +1,5 @@
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { digest } from "../storage/repository.js";
 import { record } from "./state.js";
@@ -16,10 +17,22 @@ import { resolveProjectIdentity } from "./project-model.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
-function processIsAlive(pid) {
+// A PID can be reused. Never attribute a later process to an older execution.
+export function processIsAlive(pid, recordedAt) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
+  try { process.kill(pid, 0); }
   catch (error) { return error?.code !== "ESRCH"; }
+  const recorded = Date.parse(recordedAt ?? "");
+  if (!Number.isFinite(recorded)) return true; // Unknown identity: fail closed.
+  try {
+    const value = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", timeout: 2000 }).trim();
+    const started = Date.parse(value);
+    if (!Number.isFinite(started)) return true;
+    // ps reports whole seconds; tolerate timestamp truncation and minor skew.
+    return started <= recorded + 2000;
+  } catch {
+    return true; // Cannot verify identity: fail closed.
+  }
 }
 
 function machineLocalEvidence(project, job, execution) {
@@ -1061,7 +1074,7 @@ export class Engine {
         }
         if (job.state !== "Blocked") throw new Error("Only a Blocked job can be removed from the queue.");
         if (job.revision !== expectedRevision) throw new Error("Stale job revision; review the latest blocker before removing it.");
-        if ((job.processes ?? []).some(({ pid }) => processIsAlive(pid)) || job.owning_node_id || data.projects?.[job.project_id]?.active) {
+        if ((job.processes ?? []).some(({ pid, at }) => processIsAlive(pid, at)) || job.owning_node_id || data.projects?.[job.project_id]?.active) {
           throw new Error("Job removal refused while project execution may still be active.");
         }
         const at = new Date(this.clock()).toISOString();
@@ -1120,7 +1133,7 @@ export class Engine {
         if (!["Blocked", "Needs Clarification"].includes(item.state)) throw new Error("Only Blocked or Needs Clarification ideas can be removed from the queue.");
         if (item.revision !== expectedRevision) throw new Error("Stale idea revision; review the latest idea before removing it.");
         if ((item.job_ids ?? []).some((jobId) => data.jobs?.[jobId])) throw new Error("An idea with retained jobs cannot be removed as a standalone idea.");
-        if ((item.processes ?? []).some(({ pid }) => processIsAlive(pid)) || item.owning_node_id) throw new Error("Idea removal refused while execution may still be active.");
+        if ((item.processes ?? []).some(({ pid, at }) => processIsAlive(pid, at)) || item.owning_node_id) throw new Error("Idea removal refused while execution may still be active.");
         const at = new Date(this.clock()).toISOString();
         const title = item.input?.text?.split("\n")[0]?.slice(0, 160) ?? id;
         data.system_metadata.cleanup_tombstones.push({ id, kind: "item", project_id: item.project_id ?? null,
