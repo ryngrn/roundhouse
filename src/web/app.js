@@ -193,6 +193,7 @@ function renderExecutionOutcomes(overview) {
 
 function activeExecutionSummary(job) {
   if (job.runtime !== "herdr") return job.owning_node ? `Local execution on ${job.owning_node}` : "Local execution";
+  if (!job.machine) return "Herdr execution awaiting placement";
   if (job.workspace_mode === "machine_local") return `Machine-local execution on ${job.machine || "configured machine"}`;
   return `Remote execution on ${job.machine || "configured machine"}`;
 }
@@ -217,7 +218,8 @@ function renderActiveJobs(overview) {
       job.placement?.selection?.tool ? `Tool · ${job.placement.selection.tool}` : null,
       job.placement?.selection?.matched_capabilities?.length ? `Capabilities · ${job.placement.selection.matched_capabilities.join(", ")}` : null,
       job.placement?.selection?.rationale ? `Placement · ${job.placement.selection.rationale}` : null,
-      job.placement?.hold?.reason ? `Placement hold · ${job.placement.hold.reason}` : null,
+      job.placement?.source ? `Source · ${job.placement.source}` : null,
+      job.hold?.kind === "placement" ? `Placement hold · ${job.hold.reason}` : null,
       job.working_directory ? `Directory · ${job.working_directory}` : null,
       job.remote_run_id !== null && job.remote_run_id !== undefined ? `Remote run · ${job.remote_run_id}` : null,
     ].filter(Boolean)) details.append(node("span", value, "active-job-fact"));
@@ -510,6 +512,40 @@ async function submitDecisionSession() {
 
 function evidenceView(item) {
   const root = node("div", undefined, "detail-grid");
+  const placements = node("section", undefined, "detail-section"); placements.append(node("h3", "Herdr placement"));
+  let placementCount = 0;
+  for (const job of item.jobs) {
+    for (const entry of job.placement_history || []) {
+      const placement = entry.placement; const selected = placement?.selection; const hold = placement?.hold;
+      const facts = [
+        selected ? [selected.machine, selected.platform, selected.tool, selected.agent].filter(Boolean).join(" · ") : null,
+        selected?.matched_capabilities?.length ? `Matched capabilities · ${selected.matched_capabilities.join(", ")}` : null,
+        selected?.rationale ? `Rationale · ${selected.rationale}` : null,
+        placement?.source ? `Source · ${placement.source}` : null,
+        hold?.reason ? `Placement hold · ${hold.code || "held"} — ${hold.reason}` : null,
+      ].filter(Boolean);
+      if (!facts.length) continue;
+      placementCount += 1;
+      const record = node("div", undefined, "job-outcome");
+      record.append(node("strong", `${job.title} · attempt ${entry.attempt ?? "unknown"} · ${entry.status || job.state}`));
+      for (const fact of facts) record.append(node("p", fact));
+      placements.append(record);
+    }
+    if (job.provider_failure) {
+      placementCount += 1;
+      const failure = node("div", undefined, "job-outcome");
+      failure.append(node("strong", `${job.title} · provider failure`),
+        node("p", [job.provider_failure.category, job.provider_failure.code, job.provider_failure.message].filter(Boolean).join(" · ")));
+      placements.append(failure);
+    }
+    if (job.hold && job.hold.kind !== "placement") {
+      placementCount += 1;
+      const hold = node("div", undefined, "job-outcome");
+      hold.append(node("strong", `${job.title} · ${outcomeLabel(job.hold.kind)} hold`), node("p", job.hold.reason || job.hold.code));
+      placements.append(hold);
+    }
+  }
+  if (placementCount) root.append(placements);
   const outcomes = node("section", undefined, "detail-section"); outcomes.append(node("h3", "Execution paths"));
   for (const job of item.jobs) {
     const outcome = job.execution_outcome;

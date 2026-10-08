@@ -161,6 +161,11 @@ test("acceptance: desktop and menu consume authoritative active-job details with
   assert.match(web, /overview\.active_jobs/);
   assert.match(web, /Machine-local execution on/);
   assert.match(web, /Remote run ·/);
+  assert.match(web, /Matched capabilities ·/);
+  assert.match(web, /Rationale ·/);
+  assert.match(web, /Source ·/);
+  assert.match(web, /Placement hold ·/);
+  assert.match(web, /provider failure/);
   assert.match(menu, /case activeJobs = "active_jobs"/);
   assert.match(menu, /Machine-local execution on/);
   assert.match(menu, /Remote run:/);

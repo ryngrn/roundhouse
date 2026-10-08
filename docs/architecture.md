@@ -265,6 +265,11 @@ hold before remote work begins. Request labels are not placement policy. Existin
 static `herdr.machine` and `herdr.agent` projects are adapted to this evidence
 contract and still require Herdr availability probes. A placement failure is
 retained as a hold and never silently changes runtime, provider, tool, or agent.
+Status and Control Room reads expose an allowlisted projection of every attempt's
+selection, matched capabilities, rationale, source, and placement hold. They omit
+eligible-target internals, configuration identity, report tokens, and any unknown
+provider fields. Placement, provider, dependency, and project-quarantine holds are
+typed separately so operators do not infer one failure mode from another.
 
 Remote Desktop Commander is not an execution adapter or Herdr substitute. It is
 reserved for transport, inspection, connectivity checks, bootstrap, and emergency

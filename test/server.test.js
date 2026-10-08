@@ -283,7 +283,11 @@ test("served browser client renders local and machine-local active jobs from the
       work: { title: "Run local work" }, dependencies: [], attempts: [], owning_node: "Studio" });
     Object.assign(data.items[remote.id], { state: "Ready", project_id: "kmac", job_ids: [`${remote.id}-1`] });
     data.jobs[`${remote.id}-1`] = record(`${remote.id}-1`, { state: "Verification", parent_id: remote.id, project_id: "kmac",
-      work: { title: "Update Kmac" }, dependencies: [], project_context: { runtime: "herdr" }, attempts: [{ execution: { remote_execution: {
+      work: { title: "Update Kmac" }, dependencies: [], project_context: { runtime: "herdr" }, attempts: [{
+        placement: { authority: { control_plane: "roundhouse", placement: "herdr" }, source: "herdr_scheduler",
+          selection: { runtime: "herdr", machine: "iMac", platform: "macos", tool: "claude", agent: "roundhouse-imac",
+            matched_capabilities: ["repository"], rationale: "Selected the available repository worker.", source: "herdr_scheduler" } },
+        execution: { remote_execution: {
         runtime: "herdr", machine_selector: "iMac", agent_target: "roundhouse-imac", workspace_mode: "machine_local",
         working_directory: "/home/ryngrn/kmac", execution_id: "remote-run-42",
       } } }] });
@@ -311,7 +315,9 @@ test("served browser client renders local and machine-local active jobs from the
   const rendered = elementText(document.querySelector("#active-jobs"));
   assert.match(rendered, /Chugging along…\s+example · Run local work\s+Local execution on Studio/);
   assert.match(rendered, /Chugging along…\s+kmac · Update Kmac\s+Machine-local execution on iMac/);
-  assert.match(rendered, /Agent · roundhouse-imac\s+Directory · \/home\/ryngrn\/kmac\s+Remote run · remote-run-42/);
+  assert.match(rendered, /Agent · roundhouse-imac\s+Platform · macos\s+Tool · claude\s+Capabilities · repository/);
+  assert.match(rendered, /Placement · Selected the available repository worker\.\s+Source · herdr_scheduler/);
+  assert.match(rendered, /Directory · \/home\/ryngrn\/kmac\s+Remote run · remote-run-42/);
   assert.doesNotMatch(rendered, /Herdr queue/i);
   const untracked = elementText(document.querySelector("#untracked-activity"));
   assert.equal(document.querySelector("#untracked-activity-section").hidden, false);
