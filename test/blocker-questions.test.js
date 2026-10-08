@@ -201,17 +201,13 @@ test("cleanup refuses a stale model result when the candidate revision changes",
   assert.equal(h.store.read().system_metadata.cleanup_metrics.invalidated, 1);
 });
 
-test("a kept blocker is reconsidered only after its evidence changes", async () => {
+test("a sole inactive path archives work instead of leaving it blocked", async () => {
   const h = harness();
   const id = blockStandalone(h, "keep this blocked fixture");
   const first = await h.engine.runUnblocker();
-  assert.equal(first.cleanup.action, "keep");
+  assert.equal(first.cleanup.action, "archive");
+  assert.equal(h.store.read().items[id].state, "Archived");
   assert.equal((await h.engine.runUnblocker()).cleanup, null);
-  h.store.change((data) => {
-    data.items[id].issue_resolution = { ...data.items[id].issue_resolution,
-      response: { action: "custom", message: "New intent", actor: "test", at: new Date().toISOString() } };
-  });
-  assert.equal((await h.engine.runUnblocker()).cleanup.action, "keep");
 });
 
 test("repurposing previously attempted work becomes one durable operator decision instead of an error loop", async () => {
@@ -229,5 +225,7 @@ test("repurposing previously attempted work becomes one durable operator decisio
   assert.equal(issue.status, "waiting");
   assert.match(issue.question, /reconciliation|delete/i);
   assert.deepEqual(issue.options.slice(0, 2).map((option) => option.id), ["preserve-for-reconciliation", "delete-unverified-attempt"]);
+  assert.deepEqual(issue.options.slice(0, 2).map((option) => option.resolution), ["reconcile", "delete"]);
+  assert.ok(issue.options.slice(0, 2).every((option) => !option.effects.some((effect) => /remain(?:s)? blocked|remain(?:s)? held/i.test(effect))));
   assert.equal((await h.engine.runUnblocker()).cleanup, null);
 });

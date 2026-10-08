@@ -1053,9 +1053,7 @@ export class Engine {
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new Error("Current job revision is required.");
     if (typeof actor !== "string" || !actor.trim() || actor.length > 128) throw new Error("Job removal requires an actor.");
     if (typeof note !== "string" || !note.trim() || note.length > 2_000) throw new Error("Job removal requires a concise audit note.");
-    const release = this.store.shared ? () => {} : this.store.acquireWorkerLease();
-    try {
-      return await this.store.change((data) => {
+    return await this.store.change((data) => {
         const job = data.jobs[id];
         const removeRecoveryItems = () => {
           const removed = [];
@@ -1114,17 +1112,14 @@ export class Engine {
           resume_approval: { actor: actor.trim(), note: `Removed blocker ${id}: ${note.trim()}`, at } };
         return { removed: true, id, project_id: job.project_id, parent_id: job.parent_id, released_jobs: releasedJobs,
           removed_recovery_items: removedRecoveryItems, at };
-      });
-    } finally { release(); }
+    });
   }
   async explodeItem(id, { expectedRevision, actor, note = "Operator removed an unresolved idea." } = {}) {
     if (typeof id !== "string" || !id.trim()) throw new Error("An idea ID is required.");
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new Error("Current idea revision is required.");
     if (typeof actor !== "string" || !actor.trim() || actor.length > 128) throw new Error("Idea removal requires an actor.");
     if (typeof note !== "string" || !note.trim() || note.length > 2_000) throw new Error("Idea removal requires a concise audit note.");
-    const release = this.store.shared ? () => {} : this.store.acquireWorkerLease();
-    try {
-      return await this.store.change((data) => {
+    return await this.store.change((data) => {
         data.system_metadata ??= {};
         data.system_metadata.cleanup_tombstones ??= [];
         const prior = data.system_metadata.cleanup_tombstones.findLast((entry) => entry.id === id && entry.kind === "item");
@@ -1163,8 +1158,7 @@ export class Engine {
           data.system_metadata.cleanup_tombstones.splice(0, data.system_metadata.cleanup_tombstones.length - 1_000);
         }
         return { removed: true, id, project_id: item.project_id ?? null, removed_recovery_items: removedRecoveryItems, at };
-      });
-    } finally { release(); }
+    });
   }
   async runUnblocker() {
     return new Unblocker({ store: this.store, config: this.config, engine: this }).run();

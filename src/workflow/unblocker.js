@@ -178,7 +178,7 @@ function calibratedConfidence(decision, brief, packet, data) {
 
 function metrics(data) {
   data.system_metadata ??= {};
-  data.system_metadata.cleanup_metrics = { decisions: 0, deleted: 0, repurposed: 0, asked: 0, kept: 0,
+  data.system_metadata.cleanup_metrics = { decisions: 0, deleted: 0, repurposed: 0, asked: 0, archived: 0, kept: 0,
     work_released: 0, operator_answers: 0, operator_accepted: 0, invalidated: 0, deleted_recreated: 0,
     repurposed_shipped: 0, decision_latency_ms: 0, decision_log: [], ...(data.system_metadata.cleanup_metrics ?? {}) };
   return data.system_metadata.cleanup_metrics;
@@ -186,7 +186,7 @@ function metrics(data) {
 
 function recordMetric(data, { action, root, packet, decision, brief, at }) {
   const value = metrics(data);
-  const counter = { delete: "deleted", repurpose: "repurposed", ask: "asked", keep: "kept" }[action];
+  const counter = { delete: "deleted", repurpose: "repurposed", ask: "asked", archive: "archived" }[action];
   value.decisions += 1; value[counter] = (value[counter] ?? 0) + 1;
   value.work_released += action === "delete" || action === "repurpose" ? packet.impact.ready_descendants.length : 0;
   value.decision_latency_ms += decision.latency_ms ?? 0;
@@ -202,20 +202,21 @@ function fallbackOptions(packet) {
   return [
     { id: "delete-and-repurpose", label: "Remove the blocker and keep useful downstream work",
       description: `Delete this record and preserve relevant scope in ${affected} downstream job${affected === 1 ? "" : "s"}.`,
-      effects: ["The blocked record is permanently deleted", `${affected} downstream job${affected === 1 ? "" : "s"} keep their identities`] },
-    { id: "preserve-and-narrow", label: "Preserve it with a smaller plan",
-      description: "Keep this record and narrow its scope before any queue movement.", effects: ["No work is deleted", "The blocker remains held"] },
+      effects: ["The blocked record is permanently deleted", `${affected} downstream job${affected === 1 ? "" : "s"} keep their identities`], resolution: "delete" },
+    { id: "replace-with-smaller-plan", label: "Replace it with a smaller plan",
+      description: "Turn the still-useful outcome into a narrower executable plan.",
+      effects: ["Useful scope returns to planning", "The current blocker does not remain held"], resolution: "repurpose" },
   ];
 }
 
 function startedWorkOptions(packet) {
   return [
-    { id: "preserve-for-reconciliation", label: "Preserve it for reconciliation",
-      description: "Keep the existing attempt and identity so its external outcome can be inspected before any replacement work.",
-      effects: ["No work is deleted", "The existing attempt remains blocked and auditable"] },
+    { id: "preserve-for-reconciliation", label: "Reconcile the existing attempt",
+      description: "Create outcome-reconciliation work for the existing attempt before any replacement work.",
+      effects: ["The existing attempt remains auditable", "A concrete reconciliation path is initiated"], resolution: "reconcile" },
     { id: "delete-unverified-attempt", label: "Delete the unverified work",
       description: "Permanently remove the blocked record without claiming that its attempt succeeded.",
-      effects: ["The blocked record is permanently deleted", `${packet.impact.descendants.length} downstream job${packet.impact.descendants.length === 1 ? "" : "s"} will be reevaluated`] },
+      effects: ["The blocked record is permanently deleted", `${packet.impact.descendants.length} downstream job${packet.impact.descendants.length === 1 ? "" : "s"} will be reevaluated`], resolution: "delete" },
   ];
 }
 
@@ -303,6 +304,22 @@ function repurposeCandidate(data, root, decision, brief, at) {
   entity.revision += 1;
   entity.updated_at = at;
   entity.history.push({ from: root.entity.state, to: entity.state, reason: `Scope repurposed by Unblocker at ${Math.round(decision.confidence * 100)}% confidence: ${decision.reason}`, at });
+  return entity;
+}
+
+function archiveCandidate(data, root, decision, brief, at) {
+  const entity = root.kind === "job" ? data.jobs[root.entity.id] : data.items[root.entity.id];
+  if (!entity || !cleanupEligible(entity)) throw new Error("Cleanup candidate changed before archival.");
+  if (root.kind !== "item" || (entity.job_ids ?? []).some((id) => data.jobs?.[id])) {
+    throw new Error("Only an unstarted standalone item can be archived by cleanup.");
+  }
+  entity.cleanup_intent = { ...brief, distilled_at: at, evidence_fingerprint: evidenceFingerprint(root) };
+  entity.issue_resolution = null;
+  entity.state = "Archived";
+  entity.revision += 1;
+  entity.updated_at = at;
+  entity.history.push({ from: root.entity.state, to: "Archived",
+    reason: `Removed from the active queue by Unblocker at ${Math.round(decision.confidence * 100)}% confidence: ${decision.reason}`, at });
   return entity;
 }
 
@@ -423,15 +440,9 @@ export class Unblocker {
         });
       } else cleanup = await commit(data => {
         const current = assertCleanupGuard(data, root, packet, this.config);
-        const entity = current.entity;
-        entity.cleanup_intent = { ...intentBrief, distilled_at: at, evidence_fingerprint: packet.guard.evidence_fingerprint };
-        entity.issue_resolution = { status: "kept", confidence: effective.calibrated_confidence, model_confidence: effective.confidence,
-          reason: effective.reason, evidence_fingerprint: packet.guard.evidence_fingerprint,
-          reconsider_when: "request, conversation, operator response, failure evidence, dependencies, or blocker state changes", at };
-        entity.revision += 1;
-        entity.updated_at = at;
-        recordMetric(data, { action: "keep", root, packet, decision: effective, brief: intentBrief, at });
-        return { action: "keep", id: root.entity.id, reason: effective.reason };
+        const id = archiveCandidate(data, current, effective, intentBrief, at).id;
+        recordMetric(data, { action: "archive", root, packet, decision: effective, brief: intentBrief, at });
+        return { action: "archive", id, reason: effective.reason };
       });
     }
     const current = await this.store.read();

@@ -33,9 +33,10 @@ export const cleanupIntentSchema = object({
   blocker_category: { type: "string", enum: ["missing_intent", "missing_authority", "missing_dependency", "obsolete", "duplicate", "technical_failure", "external_unavailable", "contradictory_requirements", "unknown_outcome"] },
   evidence: { type: "array", items: cleanupEvidence },
 });
-const cleanupChoice = object({ id: string, label: string, description: string, effects: strings });
+const cleanupChoice = object({ id: string, label: string, description: string, effects: strings,
+  resolution: { type: "string", enum: ["delete", "repurpose", "reconcile", "investigate"] } });
 export const cleanupDecisionSchema = object({
-  action: { type: "string", enum: ["delete", "repurpose", "ask", "keep"] },
+  action: { type: "string", enum: ["delete", "repurpose", "ask", "archive"] },
   confidence: { type: "number" },
   reason: string,
   active_scope: string,
@@ -61,16 +62,18 @@ export function validateCleanupDecision(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cleanup decision.");
   const allowed = new Set(Object.keys(cleanupDecisionSchema.properties));
   if (Object.keys(value).some((key) => !allowed.has(key)) || [...allowed].some((key) => !Object.hasOwn(value, key))) throw new Error("Invalid cleanup decision fields.");
-  if (!["delete", "repurpose", "ask", "keep"].includes(value.action)) throw new Error("Invalid cleanup action.");
+  if (!["delete", "repurpose", "ask", "archive"].includes(value.action)) throw new Error("Invalid cleanup action.");
   if (!Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) throw new Error("Cleanup confidence must be 0–1.");
   if (typeof value.reason !== "string" || !value.reason.trim() || value.reason.length > 2_000) throw new Error("Cleanup requires a concise reason.");
   if (typeof value.active_scope !== "string" || value.active_scope.length > 20_000) throw new Error("Invalid cleanup active scope.");
   if (!Array.isArray(value.removed_scope) || value.removed_scope.some((entry) => typeof entry !== "string" || !entry.trim())) throw new Error("Invalid removed scope.");
   if (value.question !== null && (typeof value.question !== "string" || !value.question.trim())) throw new Error("Invalid cleanup question.");
-  if (!Array.isArray(value.options) || value.options.some((entry) => !entry || typeof entry.id !== "string" || !entry.id.trim() || typeof entry.label !== "string" || !entry.label.trim() || typeof entry.description !== "string" || !entry.description.trim() || !Array.isArray(entry.effects) || entry.effects.some((effect) => typeof effect !== "string" || !effect.trim()))) throw new Error("Invalid cleanup options.");
+  if (!Array.isArray(value.options) || value.options.some((entry) => !entry || typeof entry.id !== "string" || !entry.id.trim() || typeof entry.label !== "string" || !entry.label.trim() || typeof entry.description !== "string" || !entry.description.trim() || !Array.isArray(entry.effects) || entry.effects.some((effect) => typeof effect !== "string" || !effect.trim()) || !cleanupChoice.properties.resolution.enum.includes(entry.resolution))) throw new Error("Invalid cleanup options.");
   if (new Set(value.options.map((entry) => entry.id)).size !== value.options.length) throw new Error("Cleanup option IDs must be unique.");
   if (!Array.isArray(value.dependent_actions) || value.dependent_actions.some((entry) => !entry || typeof entry.id !== "string" || !entry.id.trim() || !Number.isFinite(entry.confidence) || entry.confidence < 0 || entry.confidence > 1 || typeof entry.active_scope !== "string" || !Array.isArray(entry.removed_scope))) throw new Error("Invalid dependent cleanup action.");
-  if (value.confidence < 0.7 && (value.action !== "ask" || !value.question || value.options.length !== 2)) throw new Error("Low-confidence cleanup requires one question and exactly two proposed options.");
+  if (value.action === "ask" && (!value.question || value.options.length < 2)) throw new Error("Cleanup questions require at least two actionable paths.");
+  if (value.action !== "ask" && value.options.length) throw new Error("Only cleanup questions may include options.");
+  if (value.confidence < 0.7 && value.action !== "ask") throw new Error("Low-confidence cleanup requires at least two actionable paths.");
   if (["delete", "repurpose"].includes(value.action) && value.confidence < 0.7) throw new Error("Destructive cleanup requires at least 70% confidence.");
   return value;
 }
@@ -248,15 +251,15 @@ export class DecisionProvider {
         return validateCleanupDecision({ action: "ask", confidence: 0, reason: "The configured cleanup decision provider did not return a valid decision.",
           active_scope: "", removed_scope: [], question: `Should I preserve and replan “${candidate.title}”, or delete it from the queue?`,
           options: [
-            { id: "preserve", label: "Preserve a smaller outcome", description: "Keep the identity and propose a narrower useful plan.", effects: ["No work is deleted"] },
-            { id: "delete", label: "Delete this work", description: "Remove it and retain only the audit record.", effects: ["The blocked record is permanently removed"] },
+            { id: "replan", label: "Replan the useful outcome", description: "Replace the blocker with a narrower executable plan.", effects: ["Useful scope returns to planning", "The blocker does not remain held"], resolution: "repurpose" },
+            { id: "delete", label: "Delete this work", description: "Remove it and retain only the audit record.", effects: ["The blocked record is permanently removed"], resolution: "delete" },
           ], dependent_actions: [] });
       }
     }
     const schemaFile = path.join(directory, "cleanup-schema.json");
     const responseFile = path.join(directory, "cleanup-response.json");
     fs.writeFileSync(schemaFile, JSON.stringify(cleanupDecisionSchema), { mode: 0o600 });
-    const prompt = `Act as Roundhouse's cleanup decision agent. Use the supplied evidence-backed intent brief and dependency-impact simulation. The goal is a smaller useful queue: delete obsolete, superseded, incoherent, duplicate, or valueless work; keep or repurpose work whose outcome remains useful. Never claim uncertain work succeeded. Never act on Ready, executing, verification, shipped, archived, or reconciled work. A delete is permanent but leaves a concise tombstone. Repurposing preserves identity and history: active_scope states what remains; removed_scope contains clauses the UI will strike through. For every direct dependent of deleted work, include one dependent_actions entry, preserve its ID, propose useful active scope, and give that repurposing its own confidence. Choose delete or repurpose only at confidence >= 0.70. Every dependent repurposing must also be at least 0.70; otherwise ask. When asking, provide one concise contextual question and exactly two consequence-oriented options. Each option needs a stable ID, an outcome label, a short description, and explicit effects on deleted, repurposed, or released work. Roundhouse adds the third free-form option. If an operator response is present, treat it as authoritative context. Return only the schema object and concise audit reason, never private reasoning.\n${JSON.stringify(packet)}`;
+    const prompt = `Act as Roundhouse's cleanup decision agent. Use the supplied evidence-backed intent brief and dependency-impact simulation. The goal is a smaller useful queue: delete obsolete, superseded, incoherent, duplicate, or valueless work; archive an unstarted standalone idea that should leave the active queue without being destroyed; repurpose work whose outcome remains useful. Never leave work sitting Blocked as a cleanup outcome. Never claim uncertain work succeeded. Never act on Ready, executing, verification, shipped, archived, or reconciled work. A delete is permanent but leaves a concise tombstone. Archive is only for a standalone item with no jobs or dependents. Repurposing preserves identity and history: active_scope states what remains; removed_scope contains clauses the UI will strike through. For every direct dependent of deleted work, include one dependent_actions entry, preserve its ID, propose useful active scope, and give that repurposing its own confidence. Choose delete, archive, or repurpose only at confidence >= 0.70. Every dependent repurposing must also be at least 0.70; otherwise ask. Ask only when two or more materially different, actionable paths remain. Never present keeping, holding, waiting, doing nothing, or staying blocked as an option. If only one actionable path remains, return that action instead of asking. Each question option needs a stable ID, an outcome label, a short description, explicit effects on deleted, repurposed, reconciled, investigated, or released work, and a matching resolution. Roundhouse adds the free-form path. If an operator response is present, treat it as authoritative context. Return only the schema object and concise audit reason, never private reasoning.\n${JSON.stringify(packet)}`;
     const result = await runProcess([this.config.bin ?? "codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--output-schema", schemaFile, "--output-last-message", responseFile, "-"], { cwd: directory, input: prompt, timeout: 180000, onStart });
     if (!result.passed) throw new Error(`Cleanup decision agent failed (exit ${result.exit_code}, timeout ${result.timed_out}).`);
     const decision = validateCleanupDecision(JSON.parse(fs.readFileSync(responseFile, "utf8")));

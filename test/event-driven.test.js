@@ -61,6 +61,45 @@ test("duplicate wakes coalesce and a wake during an active cycle schedules one f
   worker.stop();
 });
 
+test("a wake during dispatch processes review commands and triage without waiting for execution", async () => {
+  let releaseDispatch;
+  const dispatchGate = new Promise((resolve) => { releaseDispatch = resolve; });
+  const commands = [];
+  const finished = [];
+  let triage = 0;
+  let unblocker = 0;
+  const queue = {
+    claimRemoteCommand: async () => commands.shift() ?? null,
+    finishRemoteCommand: async (id, result) => finished.push([id, result]),
+  };
+  const store = { shared: false };
+  const service = {
+    store,
+    resolveIssue: async (input) => ({ recorded: true, id: input.issue_id }),
+    engine: {
+      store,
+      runUnblocker: async () => { unblocker += 1; return { released_projects: [], refreshed: 0, isolated_jobs: 0, needs_attention: 0 }; },
+      runTriage: async () => { triage += 1; return { triaged: 0 }; },
+      runDispatch: async () => { await dispatchGate; return { executed: 1 }; },
+    },
+  };
+  const worker = new WorkerLoop({ service, commandQueue: queue });
+  const startup = worker.start();
+  await waitFor(() => worker.dispatchRunning);
+  commands.push({ id: "live-resolution", kind: "issue_resolution", payload: {
+    issue_id: "blocked-item", expected_revision: 4, action: "option", message: "Take the actionable path.",
+  } });
+  await worker.wake();
+  assert.equal(finished[0][0], "live-resolution");
+  assert.equal(finished[0][1].result.recorded, true);
+  assert.equal(triage, 2);
+  assert.equal(unblocker, 2);
+  assert.equal(worker.dispatchRunning instanceof Promise, true);
+  releaseDispatch();
+  await startup;
+  await worker.stop();
+});
+
 test("wake stream ignores open/keepalive events and reconnects without creating work", async (t) => {
   let connections = 0;
   let cycles = 0;

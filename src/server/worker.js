@@ -12,6 +12,7 @@ export class WorkerLoop {
     this.unblockerResult = null;
     this.dispatchRunning = null;
     this.commandRunning = null;
+    this.controlPlaneRunning = null;
     this.cycleRunning = null;
     this.started = false;
     this.stopped = false;
@@ -179,13 +180,34 @@ export class WorkerLoop {
   wake() {
     if (this.stopped) return Promise.resolve();
     this.wakeRequested = true;
+    if (this.cycleRunning && this.dispatchRunning) {
+      this.wakeRequested = false;
+      if (!this.controlPlaneRunning) {
+        this.controlPlaneRunning = Promise.resolve().then(async () => {
+          await this.remoteCommandTick();
+          await this.unblockerTick();
+          await this.triageTick();
+        }).catch(this.onError).finally(() => {
+          this.controlPlaneRunning = null;
+          if (this.wakeRequested && !this.stopped) this.wake();
+        });
+      }
+      return this.controlPlaneRunning;
+    }
     if (!this.wakeDrain) {
       this.wakeDrain = Promise.resolve().then(async () => {
         while (this.wakeRequested && !this.stopped) {
           this.wakeRequested = false;
-          // A signal received while any cycle is active must cause a distinct
-          // cycle after that work finishes; awaiting the active promise alone
-          // would otherwise consume and lose the signal.
+          // Execution may last minutes. Keep the control plane live while the
+          // current dispatcher owns its execution lease so remote answers,
+          // cleanup, and new intake can produce Ready work for its open slots.
+          if (this.cycleRunning && this.dispatchRunning) {
+            await this.remoteCommandTick();
+            await this.unblockerTick();
+            await this.triageTick();
+            continue;
+          }
+          // Outside dispatch, preserve the distinct follow-up-cycle guarantee.
           if (this.cycleRunning) await this.cycleRunning;
           await this.tick();
         }
@@ -213,6 +235,7 @@ export class WorkerLoop {
   status() {
     return {
       running: Boolean(this.cycleRunning || this.commandRunning || this.unblockerRunning || this.triageRunning || this.dispatchRunning),
+      control_plane_running: Boolean(this.controlPlaneRunning),
       cycle_running: Boolean(this.cycleRunning),
       cycle_phase: this.cyclePhase,
       wake_requested: this.wakeRequested,

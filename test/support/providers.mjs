@@ -18,16 +18,16 @@ if (process.argv[2] === "decide") {
   }
   if (process.argv[3] === "cleanup") {
     const text = packet.candidate.original_request ?? packet.candidate.title ?? "";
-    const action = text.includes("cleanup delete") ? "delete" : text.includes("cleanup repurpose") ? "repurpose" : text.includes("cleanup ask") ? "ask" : "keep";
+    const action = text.includes("cleanup delete") ? "delete" : text.includes("cleanup repurpose") ? "repurpose" : text.includes("cleanup ask") ? "ask" : "archive";
     process.stdout.write(JSON.stringify({
       action, confidence: action === "ask" ? 0.55 : 0.91,
-      reason: action === "delete" ? "The fixture is obsolete." : action === "repurpose" ? "A smaller useful outcome remains." : action === "ask" ? "Two plausible paths remain." : "The fixture should remain held.",
+      reason: action === "delete" ? "The fixture is obsolete." : action === "repurpose" ? "A smaller useful outcome remains." : action === "ask" ? "Two plausible paths remain." : "The inactive fixture should leave the active queue.",
       active_scope: action === "repurpose" ? "Deliver the still-relevant smaller outcome." : "",
       removed_scope: action === "repurpose" ? ["The obsolete prerequisite and its old implementation path."] : [],
       question: action === "ask" ? "Should I preserve the smaller outcome or delete this work?" : null,
       options: action === "ask" ? [
-        { id: "preserve-smaller", label: "Preserve the smaller outcome", description: "Keep the identity and plan only the useful portion.", effects: ["No work is deleted"] },
-        { id: "delete-work", label: "Delete the work", description: "Remove this blocked work and retain its audit record.", effects: ["The blocked record is permanently deleted"] },
+        { id: "replan-smaller", label: "Replan the smaller outcome", description: "Replace the blocker with a plan for only the useful portion.", effects: ["Useful scope returns to planning", "The blocker does not remain held"], resolution: "repurpose" },
+        { id: "delete-work", label: "Delete the work", description: "Remove this blocked work and retain its audit record.", effects: ["The blocked record is permanently deleted"], resolution: "delete" },
       ] : [],
       dependent_actions: packet.dependents.map((entry) => ({ id: entry.id, confidence: 0.91, active_scope: entry.outcome ?? entry.title, removed_scope: [`Dependency on ${packet.candidate.id}`] })),
     }));

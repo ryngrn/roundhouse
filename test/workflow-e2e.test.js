@@ -242,6 +242,23 @@ test("e2e: exploding a Needs Clarification idea deletes it immediately and prese
   assert.equal(repeated.already_removed, true);
   await assert.rejects(() => h.engine.explodeItem(item.id, { expectedRevision: revision + 1, actor: "test" }), /Stale idea revision/);
 });
+
+test("e2e: queue cleanup remains available while an unrelated dispatch owns the worker lease", async () => {
+  const h = harness();
+  const item = h.submit("Delete this unrelated unresolved idea", "concurrent-explode-idea");
+  h.store.change((data) => {
+    h.store.move(data, data.items[item.id], "Decision", "Needs a decision.");
+    h.store.move(data, data.items[item.id], "Needs Clarification", "Intent is unclear.");
+  });
+  const revision = h.store.read().items[item.id].revision;
+  const release = h.store.acquireWorkerLease();
+  try {
+    const removal = await h.engine.explodeItem(item.id, { expectedRevision: revision, actor: "test",
+      note: "Remove while an unrelated dispatch continues." });
+    assert.equal(removal.removed, true);
+    assert.equal(h.store.read().items[item.id], undefined);
+  } finally { release(); }
+});
 test("e2e: continue-project ships two jobs exactly once, chains their output and stops", async () => {
   const h = harness(); h.submit("first"); h.submit("second");
   const result = await h.engine.run();
