@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
-import http from "node:http";
-import { PassThrough } from "node:stream";
 import test from "node:test";
 import { harness } from "./support/harness.js";
 import { RoundhouseService } from "../src/workflow/service.js";
@@ -18,6 +16,47 @@ const waitFor = async (predicate) => {
   }
   assert.fail("condition did not settle");
 };
+
+const fakeTimers = (initialNow = Date.parse("2026-01-01T00:00:00.000Z")) => {
+  let currentNow = initialNow;
+  const timers = [];
+  const cleared = [];
+  return {
+    timers,
+    cleared,
+    now: () => currentNow,
+    setTimeoutFn(callback, delay) {
+      const timer = { callback, delay, active: true, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutFn(timer) {
+      timer.active = false;
+      cleared.push(timer);
+    },
+    fire(timer) {
+      assert.equal(timer.active, true, "timer must be active before it fires");
+      timer.active = false;
+      currentNow += timer.delay;
+      timer.callback();
+    },
+  };
+};
+
+class FakeResponse extends EventEmitter {
+  constructor(statusCode) {
+    super();
+    this.statusCode = statusCode;
+    this.destroyed = false;
+    this.resumed = false;
+  }
+
+  setEncoding() {}
+  resume() { this.resumed = true; }
+  destroy() { this.destroyed = true; }
+  send(value) { this.emit("data", value); }
+  end() { this.emit("end"); }
+}
 
 test("WorkerLoop startup uses one wake and installs no recurring timer", async () => {
   let intervals = 0;
@@ -133,17 +172,10 @@ test("scheduled one-shot wake is reconstructed from durable eligibility after re
   await restarted.stop();
 });
 
-test("wake stream ignores open/keepalive events and reconnects without creating work", async (t) => {
-  let connections = 0;
+test("wake stream ignores open/keepalive events and reconnects without creating work", async () => {
+  const requests = [];
+  const clock = fakeTimers();
   let cycles = 0;
-  const stream = http.createServer((_request, response) => {
-    connections += 1;
-    response.writeHead(200, { "content-type": "application/x-ndjson" });
-    if (connections === 1) response.end('{"event":"open"}\n{"event":"keepalive"}\n{"event":"message"}\n{"event":"message"}\n');
-    else response.end('{"event":"open"}\n{"event":"keepalive"}\n');
-  });
-  await new Promise((resolve) => stream.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => stream.close(resolve)));
   const store = { shared: true, claimRemoteCommand: async () => null };
   const worker = new WorkerLoop({ service: { store, engine: {
     store,
@@ -151,111 +183,158 @@ test("wake stream ignores open/keepalive events and reconnects without creating 
     runDispatch: async () => ({ executed: 0 }),
   } } });
   const source = new HttpWakeSource({
-    url: `http://127.0.0.1:${stream.address().port}/topic/json`, wake: () => worker.wake(),
-    minimumBackoffMs: 5, maximumBackoffMs: 10,
-  });
-  t.after(() => { source.stop(); worker.stop(); });
-  source.start();
-  await waitFor(() => connections >= 2);
-  await waitFor(() => cycles === 1);
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(cycles, 1);
-});
-
-test("wake stream errors and closures use one bounded exponential retry with jitter", async (t) => {
-  let connections = 0;
-  const timers = [];
-  const source = new HttpWakeSource({
     url: "https://wake.example/topic/json",
-    minimumBackoffMs: 1_000,
-    maximumBackoffMs: 2_000,
-    random: () => 0,
+    wake: () => worker.wake(),
+    minimumBackoffMs: 5, maximumBackoffMs: 10,
     get: () => {
-      connections += 1;
       const request = new EventEmitter();
       request.destroy = () => {};
-      queueMicrotask(() => {
-        if (connections === 1) request.emit("error", new Error("socket closed"));
-        else {
-          const response = new PassThrough();
-          response.statusCode = 200;
-          request.emit("response", response);
-          if (connections === 2) response.end('{"event":"open"}\n');
-        }
-      });
+      requests.push(request);
       return request;
     },
-    setTimeoutFn: (callback, delay) => {
-      const timer = { callback, delay, unref() {} };
-      timers.push(timer);
-      return timer;
-    },
+    setTimeoutFn: clock.setTimeoutFn,
+    clearTimeoutFn: clock.clearTimeoutFn,
   });
-  t.after(() => source.stop());
-
   source.start();
-  await waitFor(() => timers.length === 1);
-  assert.equal(timers[0].delay, 500);
-  source.disconnected();
-  assert.equal(timers.length, 1);
 
-  timers[0].callback();
-  await waitFor(() => timers.length === 2);
-  assert.equal(timers[1].delay, 1_000);
+  const first = new FakeResponse(200);
+  requests[0].emit("response", first);
+  first.send('{"event":"open"}\n{"event":"keepalive"}\n{"event":"message"}\n{"event":"message"}\n');
+  await worker.wakeDrain;
+  assert.equal(cycles, 1);
 
-  timers[1].callback();
-  await waitFor(() => connections === 3);
-  source.connect();
-  assert.equal(connections, 3);
-  assert.equal(source.reconnectTimer, null);
+  first.end();
+  clock.fire(clock.timers[0]);
+  const second = new FakeResponse(200);
+  requests[1].emit("response", second);
+  second.send('{"event":"open"}\n{"event":"keepalive"}\n');
+  await Promise.resolve();
+  assert.equal(cycles, 1);
+
+  source.stop();
+  await worker.stop();
 });
 
-test("five-minute relay reconciliation survives wake failure and worker restart", async () => {
-  const timers = [];
-  const cleared = [];
+test("wake stream deterministically recovers from errors and clean closes with bounded jitter reset", () => {
+  const requests = [];
+  const clock = fakeTimers();
+  let wakes = 0;
+  const source = new HttpWakeSource({
+    url: "https://wake.example/topic/json",
+    wake: () => { wakes += 1; },
+    minimumBackoffMs: 100,
+    maximumBackoffMs: 250,
+    random: () => 0.5,
+    get: (_url, options) => {
+      const request = new EventEmitter();
+      request.destroyed = false;
+      request.destroy = () => { request.destroyed = true; };
+      requests.push({ request, options });
+      return request;
+    },
+    setTimeoutFn: clock.setTimeoutFn,
+    clearTimeoutFn: clock.clearTimeoutFn,
+  });
+
+  source.start();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.headers.accept, "application/x-ndjson, application/json");
+
+  requests[0].request.emit("error", new Error("socket closed"));
+  assert.equal(clock.timers[0].delay, 75);
+  source.disconnected();
+  assert.equal(clock.timers.length, 1, "repeated failure signals share one pending retry");
+
+  clock.fire(clock.timers[0]);
+  const rejected = new FakeResponse(503);
+  requests[1].request.emit("response", rejected);
+  assert.equal(rejected.resumed, true);
+  assert.equal(clock.timers[1].delay, 150);
+
+  clock.fire(clock.timers[1]);
+  const cleanClose = new FakeResponse(200);
+  requests[2].request.emit("response", cleanClose);
+  cleanClose.end();
+  assert.equal(clock.timers[2].delay, 187, "retry delay stays below the 250ms ceiling");
+
+  clock.fire(clock.timers[2]);
+  const recovered = new FakeResponse(200);
+  requests[3].request.emit("response", recovered);
+  recovered.send('{"event":"message"}\n');
+  assert.equal(wakes, 1);
+  recovered.end();
+  assert.equal(clock.timers[3].delay, 75, "a useful message resets the failure streak");
+
+  clock.fire(clock.timers[3]);
+  assert.equal(requests.length, 5, "the source reconnects after recovery closes");
+  source.connect();
+  assert.equal(requests.length, 5, "only one live subscription is allowed");
+  assert.equal(source.reconnectTimer, null);
+  source.stop();
+  assert.equal(requests[4].request.destroyed, true);
+});
+
+test("five-minute relay reconciliation survives wake/database mismatch, outage, recovery, and restart", async () => {
+  const clock = fakeTimers();
   const commands = [];
   const finished = [];
+  let databaseOffline = false;
+  let triage = 0;
+  let dispatch = 0;
   const queue = {
-    claimRemoteCommand: async () => commands.shift() ?? null,
+    claimRemoteCommand: async () => {
+      if (databaseOffline) throw new Error("relay database offline");
+      return commands.shift() ?? null;
+    },
     finishRemoteCommand: async (id, result) => finished.push([id, result]),
   };
   const service = {
     addToDepot: async (payload) => ({ item: { id: payload.id } }),
     engine: {
-      runTriage: async () => ({ triaged: 0 }),
-      runDispatch: async () => ({ executed: 0 }),
+      runTriage: async () => { triage += 1; return { triaged: 0 }; },
+      runDispatch: async () => { dispatch += 1; return { executed: 0 }; },
     },
   };
-  const timerOptions = {
-    setTimeoutFn: (callback, delay) => {
-      const timer = { callback, delay, unref() {} };
-      timers.push(timer);
-      return timer;
-    },
-    clearTimeoutFn: (timer) => cleared.push(timer),
-    now: () => Date.parse("2026-01-01T00:00:00.000Z"),
-  };
+  const timerOptions = { setTimeoutFn: clock.setTimeoutFn, clearTimeoutFn: clock.clearTimeoutFn, now: clock.now };
 
   const first = new WorkerLoop({ service, commandQueue: queue, ...timerOptions });
   await first.start();
-  assert.equal(timers[0].delay, 5 * 60 * 1000);
+  assert.equal(clock.timers[0].delay, 5 * 60 * 1000);
   assert.equal(first.status().next_reconciliation_at, "2026-01-01T00:05:00.000Z");
+  assert.equal(finished.length, 0, "an idle startup does not write a command result");
+
+  await first.wake();
+  assert.equal(finished.length, 0, "a wake that races ahead of its database commit stays idle");
+  assert.equal(triage, 2);
+  assert.equal(dispatch, 2);
 
   commands.push({ id: "during-outage", kind: "intake", payload: { id: "pending-1" } });
-  timers[0].callback();
-  await waitFor(() => finished.length === 1);
+  databaseOffline = true;
+  clock.fire(clock.timers[0]);
+  await first.wakeDrain;
+  assert.equal(finished.length, 0);
+  assert.equal(triage, 3, "relay failure does not block one bounded local agent cycle");
+  assert.equal(dispatch, 3);
+  assert.equal(first.status().next_reconciliation_at, "2026-01-01T00:10:00.000Z");
+
+  databaseOffline = false;
+  clock.fire(clock.timers[1]);
+  await first.wakeDrain;
   assert.equal(finished[0][0], "during-outage");
-  assert.equal(timers[1].delay, 5 * 60 * 1000);
+  assert.equal(triage, 4);
+  assert.equal(dispatch, 4);
+  assert.equal(first.status().next_reconciliation_at, "2026-01-01T00:15:00.000Z");
   await first.stop();
-  assert.ok(cleared.includes(timers[1]));
+  assert.ok(clock.cleared.includes(clock.timers[2]));
 
   commands.push({ id: "after-restart", kind: "intake", payload: { id: "pending-2" } });
   const restarted = new WorkerLoop({ service, commandQueue: queue, ...timerOptions });
   await restarted.start();
   assert.equal(finished[1][0], "after-restart");
-  assert.equal(timers[2].delay, 5 * 60 * 1000);
+  assert.equal(restarted.status().next_reconciliation_at, "2026-01-01T00:15:00.000Z");
+  assert.equal(clock.timers[3].delay, 5 * 60 * 1000);
   await restarted.stop();
-  assert.ok(cleared.includes(timers[2]));
+  assert.ok(clock.cleared.includes(clock.timers[3]));
 });
 
 test("programmatic servers do not inherit the production relay environment", async (t) => {
