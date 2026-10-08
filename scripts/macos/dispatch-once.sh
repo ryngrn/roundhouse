@@ -11,6 +11,32 @@ if [ -f "$runtime/relay.env" ]; then
 fi
 state_dir="$runtime/state"
 config="$runtime/projects.yaml"
+# Unblocker belongs to the installed production app code line, not this CLI
+# checkout. Resolve the currently installed LaunchAgent repo at every tick so a
+# released version replaces the previous one without hardcoded version paths.
+# Fail closed on recovery errors, but keep ordinary verified dispatch available.
+app_plist="$home/Library/LaunchAgents/io.roundhouse.service.plist"
+if [[ -f "$app_plist" ]]; then
+  app_repo="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "$app_plist" 2>/dev/null || true)"
+  if [[ -n "$app_repo" && -f "$app_repo/src/workflow/unblocker.js" ]]; then
+    if unblock_result="$(/opt/homebrew/bin/node "$app_repo/src/cli.js" depot unblock --state-dir "$state_dir" --config "$config" 2>&1)"; then
+      printf '%s' "$unblock_result" | /opt/homebrew/bin/node -e '
+        let data="";process.stdin.on("data",x=>data+=x).on("end",()=>{
+          try {
+            const result=JSON.parse(data);
+            if ((result.refreshed??0)>0 || (result.released_projects??[]).length>0)
+              console.log(new Date().toISOString()+" [unblocker] "+JSON.stringify({
+                refreshed:result.refreshed,released_projects:result.released_projects
+              }));
+          } catch { console.error("[unblocker-error] Invalid recovery report."); }
+        });
+      '
+    else
+      # Unblocker errors cannot authorize any retry or bypass a held job.
+      printf '%s [unblocker-error] recovery pass failed, all holds retained.\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >&2
+    fi
+  fi
+fi
 # Process at most one pending Depot/clarification decision before trying dispatch.
 # Triage acquires the same worker lock as execution, so decisions never race jobs.
 triage_output="$(/opt/homebrew/bin/node "$runtime/triage-once.mjs" 2>&1)" || {
