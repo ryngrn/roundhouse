@@ -144,6 +144,12 @@ artifacts. PostgreSQL-backed nodes heartbeat their stable installation identitie
 only while safety-critical work owns a lease. The installed LaunchAgent keeps the
 local server alive; an HTTP wake stream and local mutations trigger worker cycles.
 
+Known isolated execution or verification exhaustion is held at job scope. The
+scheduler may pass that branch for a later Ready job only when no dependency edge
+connects them. Unknown remote outcomes, interrupted ownership, delivery uncertainty,
+operator stops, and review gates remain project-wide dispatch gates. Both scopes and
+their causes are durable status facts rather than inferred process activity.
+
 Status reads also make a best-effort local observation of configured executor
 processes and configured-repository worktrees. Observations are correlated with
 the durable process-launch and prepared-worktree records. An unmatched observation

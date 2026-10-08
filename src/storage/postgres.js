@@ -480,9 +480,11 @@ export class PostgresStorageRepository extends StorageRepository {
         this.move(data, job, "Blocked", job.delivery_intent
           ? "Expired owner lease after delivery intent; reconcile the remote before replacement work."
           : "Expired owner lease interrupted execution; inspect the workspace before replacement work.");
+        const recordedAt = new Date().toISOString();
+        job.hold = { scope: "project", code: job.delivery_intent ? "delivery_reconciliation_required" : "interrupted_attempt",
+          reason: job.history.at(-1).reason, requires_review: true, recorded_at: recordedAt };
         const attempt = job.attempts?.at(-1);
         if (attempt) {
-          const recordedAt = new Date().toISOString();
           attempt.status = "blocked";
           attempt.failure ??= job.history.at(-1).reason;
           attempt.finished_at ??= recordedAt;
@@ -494,7 +496,9 @@ export class PostgresStorageRepository extends StorageRepository {
             attempt.run.reconciliation = job.reconciliation;
           }
         }
-        data.projects[job.project_id] = { ...data.projects[job.project_id], active: false, blocked: true };
+        data.projects[job.project_id] = { ...data.projects[job.project_id], active: false, blocked: true,
+          quarantine: { code: job.hold.code, reason: job.hold.reason, job_id: job.id,
+            reconciliation_required: true, recorded_at: recordedAt } };
       }
       for (const { id } of expiredItems) {
         const item = data.items[id];

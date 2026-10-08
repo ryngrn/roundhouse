@@ -41,9 +41,9 @@ export function weightedAllocation(scheduler, project) {
 }
 
 /**
- * A project queue is strictly ordered by its durable position. Only its first
- * unfinished slice may be considered for dispatch; priority is an intake
- * concern and must not let later work overtake an existing project slice.
+ * The durable queue head remains useful for presentation. Dispatch may pass a
+ * held branch to reach a later independent slice; dependency edges, rather
+ * than an unrelated earlier failure, preserve required execution order.
  */
 export function projectQueueHead(data, projectId) {
   return Object.values(data.jobs ?? {})
@@ -52,10 +52,11 @@ export function projectQueueHead(data, projectId) {
 }
 
 export function eligibleProjectHead(data, projectId) {
-  const head = projectQueueHead(data, projectId);
-  if (!head || head.state !== "Ready") return null;
-  return (head.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped")
-    && assessJobEligibility(head, data.system_metadata?.condition_signals).eligible ? head : null;
+  return Object.values(data.jobs ?? {})
+    .filter((job) => job.project_id === projectId && job.state === "Ready")
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id))
+    .find((job) => (job.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped")
+      && assessJobEligibility(job, data.system_metadata?.condition_signals).eligible) ?? null;
 }
 
 export function recordAllocation(data, project, capacity = 1, at = new Date().toISOString()) {
@@ -188,7 +189,14 @@ export function dispatchConsiderations(data, projects, execution, {
       const queue = Object.values(data.jobs ?? {})
         .filter((job) => job.project_id === project.id && job.state !== "Shipped")
         .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id));
-      const job = queue[0];
+      // A failed slice holds only itself and its dependency descendants. Select
+      // the earliest independent Ready slice so an isolated failure does not
+      // quarantine otherwise safe work in the same project.
+      const job = queue.find((candidate) => candidate.state === "Ready"
+        && (candidate.dependencies ?? []).every((id) => data.jobs[id]?.state === "Shipped")
+        && assessJobEligibility(candidate, data.system_metadata?.condition_signals ?? {}, { now }).eligible)
+        ?? queue.find((candidate) => candidate.state === "Ready")
+        ?? queue[0];
       if (!job) return null;
       // An owned or active queue head is already consuming its allocation; it
       // is not a fresh dispatch candidate and must not overwrite that allocation
@@ -198,7 +206,8 @@ export function dispatchConsiderations(data, projects, execution, {
       const dependencies = (job.dependencies ?? []).map((id) => ({ id, state: data.jobs[id]?.state ?? "Missing" }));
       const running = Object.values(data.jobs ?? {}).filter((candidate) => candidate.project_id === project.id
         && ["Executing", "Verification", "Rework"].includes(candidate.state)).length;
-      const projectGateReason = runtime.blocked ? "Project is blocked." : runtime.stop ? "Project is stopped."
+      const projectGateReason = runtime.blocked
+        ? `Project is quarantined: ${runtime.quarantine?.reason ?? "operator reconciliation is required"}` : runtime.stop ? "Project is stopped."
         : runtime.review_required ? "Project awaits post-shipping review." : "Project gates are open.";
       const waitingDependencies = dependencies.filter((dependency) => dependency.state !== "Shipped");
       const itemAwaitsReview = Object.values(data.items ?? {}).some((item) => item.project_id === project.id && item.state === "Review");
@@ -239,7 +248,12 @@ export function dispatchConsiderations(data, projects, execution, {
       };
       return {
         project, job, eligible, checks, reservation, fairness,
-        queue: { position: 1, length: queue.length, slice_position: job.position ?? 0 },
+        queue: { position: queue.indexOf(job) + 1, length: queue.length, slice_position: job.position ?? 0,
+          ...(queue.slice(0, queue.indexOf(job)).some((candidate) => candidate.state === "Blocked"
+            || (candidate.dependencies ?? []).some((id) => data.jobs[id]?.state !== "Shipped"))
+            ? { held_before: queue.slice(0, queue.indexOf(job)).filter((candidate) => candidate.state === "Blocked"
+              || (candidate.dependencies ?? []).some((id) => data.jobs[id]?.state !== "Shipped")).map((candidate) => candidate.id) }
+            : {}) },
         reason: eligible ? null : deferralReason(checks, reservation),
       };
     })

@@ -16,7 +16,40 @@ function remoteRunIdentity(remoteExecution) {
   return remoteExecution.execution_id ?? remoteExecution.run_id ?? remoteExecution.remote_run_id ?? null;
 }
 
-function jobView(job) {
+function dependencyHold(data, job, visited = new Set()) {
+  if (job.hold) return job.hold;
+  if (visited.has(job.id)) return null;
+  const nextVisited = new Set(visited).add(job.id);
+  const dependency = (job.dependencies ?? []).map((id) => data?.jobs?.[id] ?? { id, state: "Missing" })
+    .find((candidate) => candidate.state !== "Shipped");
+  if (!dependency) return null;
+  const inherited = dependencyHold(data, dependency, nextVisited);
+  const cause = dependency.hold?.reason ?? inherited?.reason ?? dependency.history?.at(-1)?.reason ?? `Dependency is ${dependency.state}.`;
+  const needsReview = dependency.state === "Blocked" || dependency.hold?.requires_review === true || inherited?.requires_review === true;
+  return {
+    scope: "job",
+    code: needsReview ? "dependency_held" : "dependency_waiting",
+    reason: needsReview
+      ? `Needs Review: dependency ${dependency.id} is held: ${cause}`
+      : `Waiting for dependency ${dependency.id} (${dependency.state}).`,
+    dependency_job_id: dependency.id,
+    requires_review: needsReview,
+    derived: true,
+  };
+}
+
+function projectGate(project = {}) {
+  return {
+    dispatch_allowed: !project.blocked && !project.stop && !project.review_required,
+    cause: project.blocked
+      ? { kind: "quarantine", ...(project.quarantine ?? { code: "legacy_project_block", reason: "Project is blocked." }) }
+      : project.stop ? { kind: "operator_stop", code: "operator_stop", reason: "Operator stopped project dispatch." }
+        : project.review_required ? { kind: "review_gate", code: "post_shipping_review", reason: "Project awaits operator review." }
+          : null,
+  };
+}
+
+function jobView(job, data) {
   const attempt = job.attempts?.at(-1) ?? null;
   const remoteExecution = attempt?.execution?.remote_execution ?? job.remote_execution ?? null;
   const configuredHerdr = job.project_context?.herdr ?? null;
@@ -32,6 +65,7 @@ function jobView(job) {
     active: activeJobStates.has(job.state),
     display_state: displayState(job.state),
     reason: job.history?.at(-1)?.reason ?? null,
+    hold: dependencyHold(data, job),
     attempts: job.attempts?.length ?? 0,
     latest_run: attempt?.run ?? null,
     latest_failure: attempt?.failure ?? null,
@@ -76,6 +110,8 @@ export function itemView(data, item) {
     && !assessJobEligibility(job, data.system_metadata?.condition_signals ?? {}).eligible);
   const completedJobs = jobs.filter((job) => job.state === "Shipped");
   const blockedJob = jobs.find((job) => job.state === "Blocked");
+  const heldJobs = jobs.map((job) => ({ job, hold: dependencyHold(data, job) })).filter(({ hold }) => hold);
+  const reviewHold = heldJobs.find(({ hold }) => hold.requires_review);
   const checks = jobs.flatMap((job) => job.shipping?.verification?.checks ?? job.attempts.at(-1)?.verification?.checks ?? []).map((check) => ({
     id: check.id, passed: check.passed, exit_code: check.exit_code, source: check.source ?? "automated",
     ...(check.summary ? { summary: check.summary } : {}),
@@ -121,6 +157,7 @@ export function itemView(data, item) {
     state,
     revision: item.revision,
     project: item.project_id ?? null,
+    project_gate: projectGate(data.projects?.[item.project_id]),
     project_candidate: item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id] ?? null : null,
     priority: item.priority ?? null,
     title,
@@ -131,8 +168,8 @@ export function itemView(data, item) {
     decision_provider_transitions: item.provider_transitions ?? [],
     context: item.input.context ?? null,
     acceptance_criteria: acceptance,
-    reason: waitingJob ? assessJobEligibility(waitingJob, data.system_metadata?.condition_signals ?? {}).reason
-      : currentJob?.history.at(-1)?.reason ?? item.history.at(-1)?.reason ?? null,
+    reason: reviewHold?.hold.reason ?? (waitingJob ? assessJobEligibility(waitingJob, data.system_metadata?.condition_signals ?? {}).reason
+      : currentJob?.history.at(-1)?.reason ?? item.history.at(-1)?.reason ?? null),
     question: openQuestion?.prompt ?? null,
     question_id: openQuestion?.id ?? null,
     question_revision: openQuestion?.revision ?? null,
@@ -140,8 +177,10 @@ export function itemView(data, item) {
       id: question.id, decision_id: question.decision_id ?? null, decision_key: question.decision_key ?? null,
       revision: question.revision, kind: question.kind, prompt: question.prompt,
     })),
-    needs_you: openQuestions.length > 0 || pendingHumanTasks.length > 0,
-    display_state: displayState(state, { needsYou: openQuestions.length > 0 || pendingHumanTasks.length > 0, waiting: waitingJob?.eligibility.kind ?? false }),
+    needs_you: openQuestions.length > 0 || pendingHumanTasks.length > 0 || Boolean(reviewHold),
+    needs_review: Boolean(reviewHold),
+    review_cause: reviewHold?.hold ?? null,
+    display_state: displayState(state, { needsYou: openQuestions.length > 0 || pendingHumanTasks.length > 0 || Boolean(reviewHold), waiting: waitingJob?.eligibility.kind ?? false }),
     human_tasks: jobs.filter((job) => job.human_task).map((job) => ({ job_id: job.id, revision: job.revision, ...job.human_task })),
     waiting: waitingJob ? {
       kind: waitingJob.eligibility.kind,
@@ -156,7 +195,9 @@ export function itemView(data, item) {
     legacy,
     requires_reevaluation: item.requires_reevaluation === true,
     execution_eligible: item.execution_eligible !== false,
-    dispatch_eligible: !waitingJob && item.execution_eligible !== false,
+    dispatch_eligible: !heldJobs.length && !waitingJob && item.execution_eligible !== false
+      && !data.projects?.[item.project_id]?.blocked && !data.projects?.[item.project_id]?.stop
+      && !data.projects?.[item.project_id]?.review_required,
     execution_ineligibility_reasons: item.execution_ineligibility_reasons ?? [],
     triage: item.triage ? {
       status: item.triage.status ?? null,
@@ -177,7 +218,7 @@ export function itemView(data, item) {
       outputs: deliveries.flatMap((delivery) => delivery.outputs.map((output) => ({ ...output,
         reference: `${delivery.reference}/${encodeURIComponent(output.path)}` }))) },
     jobs: jobs.map((job) => ({
-      ...jobView(job),
+      ...jobView(job, data),
       allocation: allocationDecisions.findLast((decision) => decision.job_id === job.id) ?? null,
       allocation_history: allocationDecisions.filter((decision) => decision.job_id === job.id),
     })),
@@ -214,7 +255,7 @@ export function statusView(data, filters = {}, executionActivity = null) {
     .filter((job) => !filters.source && !filters.thread_id && !filters.correlation_id || visibleItemIds.has(job.parent_id))
     .filter((job) => !filters.project_id || job.project_id === filters.project_id)
     .filter((job) => !filters.item_id || job.parent_id === filters.item_id)
-    .map(jobView)
+    .map((job) => jobView(job, data))
     .sort((a, b) => String(a.project_id).localeCompare(String(b.project_id)) || a.job_id.localeCompare(b.job_id));
   return {
     items,
@@ -237,6 +278,7 @@ export function statusView(data, filters = {}, executionActivity = null) {
       decisions,
     },
     projects: data.projects,
+    project_gates: Object.fromEntries(Object.entries(data.projects ?? {}).map(([id, project]) => [id, projectGate(project)])),
     project_candidates: data.project_candidates ?? {},
     system_metadata: data.system_metadata ?? {},
   };

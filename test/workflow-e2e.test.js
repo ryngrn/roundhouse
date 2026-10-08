@@ -150,8 +150,44 @@ test("e2e: failed verification retains evidence, performs bounded rework and nev
   assert.equal(job.attempts.length, 2);
   assert.match(job.attempts[0].verification.checks[0].stderr, /expected failure/);
   assert.equal(job.shipping, undefined);
-  assert.equal(result.projects.example.blocked, true);
+  assert.equal(result.projects.example.blocked, undefined);
+  assert.equal(job.hold.scope, "job");
+  assert.equal(job.hold.code, "rework_exhausted");
   assert.equal(git(h.remote, ["show-ref", "--heads"]).split("\n").length, 1);
+});
+test("e2e: exhausted verification holds its dependency branch while independent work ships", async () => {
+  const h = harness({ policy: { max_rework_attempts: 0 } });
+  const failedItem = h.submit("isolated failure", "isolated-failure");
+  const independentItem = h.submit("independent success", "independent-success");
+  const descendantItem = h.submit("dependent descendant", "dependent-descendant");
+  await h.engine.runTriage({ limit: Infinity });
+  const initial = h.store.read();
+  const failedJob = initial.items[failedItem.id].job_ids[0];
+  const independentJob = initial.items[independentItem.id].job_ids[0];
+  const descendantJob = initial.items[descendantItem.id].job_ids[0];
+  h.store.change((data) => { data.jobs[descendantJob].dependencies = [failedJob]; });
+  const invoked = [];
+  const runtime = { execute: async ({ job, workspace, run }) => {
+    invoked.push(job.id);
+    fs.appendFileSync(path.join(workspace, "feature.txt"), job.id === failedJob ? "invalid\n" : `implemented: ${job.work.title}\n`);
+    return { passed: true, exit_code: 0, stdout: "done", stderr: "",
+      provider: { id: run.provider_id, capabilities: [], required: [] } };
+  } };
+
+  const result = await new Engine({ store: h.store, config: h.config, runtime }).runDispatch();
+  assert.deepEqual(invoked, [failedJob, independentJob]);
+  assert.equal(result.jobs[failedJob].state, "Blocked");
+  assert.equal(result.jobs[failedJob].hold.code, "rework_exhausted");
+  assert.equal(result.jobs[independentJob].state, "Shipped");
+  assert.equal(result.jobs[descendantJob].state, "Ready");
+  assert.equal(result.projects.example.blocked, undefined);
+  const status = statusView(result);
+  const descendant = status.items.find((item) => item.id === descendantItem.id);
+  assert.equal(descendant.needs_review, true);
+  assert.equal(descendant.jobs[0].hold.code, "dependency_held");
+  assert.match(descendant.review_cause.reason, new RegExp(`Needs Review: dependency ${failedJob} is held`));
+  assert.equal(status.active_jobs.length, 0);
+  assert.equal(status.project_gates.example.dispatch_allowed, true);
 });
 test("e2e: bounded repair can fix failed verification and then ship", async () => {
   const h = harness(); h.submit("repair this change");
@@ -206,6 +242,7 @@ test("e2e: externally uncertain provider failure blocks reconciliation without f
       provider: { id: run.provider_id, capabilities: [], required: [] } };
   } };
   h.submit("uncertain provider action");
+  h.submit("independent work after uncertainty");
   const result = await new Engine({ store: h.store, config: h.config, runtime }).run();
   const job = Object.values(result.jobs)[0];
   assert.equal(job.state, "Blocked");
@@ -213,6 +250,12 @@ test("e2e: externally uncertain provider failure blocks reconciliation without f
   assert.equal(job.attempts.length, 1);
   assert.equal(job.reconciliation.status, "required");
   assert.match(job.history.at(-1).reason, /will not be replayed/);
+  assert.equal(result.projects.example.blocked, true);
+  assert.equal(result.projects.example.quarantine.code, "externally_uncertain");
+  assert.equal(Object.values(result.jobs)[1].state, "Ready");
+  assert.equal(statusView(result).project_gates.example.dispatch_allowed, false);
+  assert.equal((await new Engine({ store: h.store, config: h.config, runtime }).runDispatch()).executed, 0);
+  assert.equal(calls, 1);
 });
 
 test("e2e: exhausted compatible providers record the unavailable dependency", async () => {
@@ -298,7 +341,7 @@ test("e2e: stop-after-job leaves the second ready job untouched", async () => {
   assert.equal(Object.values(result.jobs)[1].attempts.length, 0);
 });
 
-test("integration: dispatch preserves project order and skips an ineligible head for independent work", async () => {
+test("integration: dispatch skips a held dependency branch for independent work", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-dispatch-heads-"));
   const store = new Store(directory);
   const projects = [schedulingProject("alpha"), schedulingProject("beta")];
@@ -315,12 +358,13 @@ test("integration: dispatch preserves project order and skips an ineligible head
   const result = await schedulingEngine(store, projects, selected).runDispatch();
 
   assert.equal(result.executed, 1);
-  assert.deepEqual(selected, ["beta-head"]);
+  assert.deepEqual(selected, ["alpha-later"]);
   assert.equal(result.jobs["alpha-head"].state, "Ready");
-  assert.equal(result.jobs["alpha-later"].state, "Ready");
-  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.reason.code, "dependencies");
-  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.queue.slice_position, 0);
-  assert.equal(result.system_metadata.execution_scheduler.latest.beta.result, "allocated");
+  assert.equal(result.jobs["alpha-later"].state, "Shipped");
+  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.result, "allocated");
+  assert.equal(result.system_metadata.execution_scheduler.latest.alpha.queue.slice_position, 1);
+  assert.deepEqual(result.system_metadata.execution_scheduler.latest.alpha.queue.held_before, ["alpha-head"]);
+  assert.equal(result.system_metadata.execution_scheduler.latest.beta.result, "deferred");
 });
 
 test("integration: compatible projects use available execution slots concurrently", async () => {

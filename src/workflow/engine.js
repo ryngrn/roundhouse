@@ -809,7 +809,8 @@ export class Engine {
             .filter((provider) => requiredCapabilities.every((required) => provider.capabilities.includes(required)))
             .map((provider) => provider.id);
           const dependency = compatible.length ? `configured provider (${compatible.join(", ")})` : `capability (${capability})`;
-          await this.block(id, `Unavailable ${dependency}: no eligible execution provider remains for ${capability}.`, { dependency });
+          await this.block(id, `Unavailable ${dependency}: no eligible execution provider remains for ${capability}.`,
+            { dependency, scope: "job", code: "unavailable_dependency" });
           return true;
         }
         const run = { id: randomUUID(), job_id: id, attempt: attempt + 1, provider_id: providerEvidence.selected.id, status: "executing",
@@ -963,18 +964,24 @@ export class Engine {
               recorded.failure = error.message;
               if (providerFailure) recorded.provider_failure = providerFailure;
             });
-            await this.block(id, `Provider outcome is externally uncertain and requires reconciliation; attempt will not be replayed: ${error.message}`, { reconciliation: true });
+            await this.block(id, `Provider outcome is externally uncertain and requires reconciliation; attempt will not be replayed: ${error.message}`,
+              { reconciliation: true, code: "externally_uncertain" });
             return true;
           }
           if (machineLocal) {
             const latest = (await this.store.read()).jobs[id];
             if (latest.delivery_intent?.reconciliation?.required_on_interruption) {
               await this.store.change((data) => { data.jobs[id].attempts.at(-1).failure = error.message; });
-              await this.block(id, `Machine-local Herdr outcome requires explicit reconciliation and will not be replayed automatically: ${error.message}`);
+              await this.block(id, `Machine-local Herdr outcome requires explicit reconciliation and will not be replayed automatically: ${error.message}`,
+                { reconciliation: true, code: "remote_reconciliation_required" });
               return true;
             }
           }
-          if (deliveryAttempted) { await this.block(id, `Delivery outcome requires reconciliation: ${error.message}`); return true; }
+          if (deliveryAttempted) {
+            await this.block(id, `Delivery outcome requires reconciliation: ${error.message}`,
+              { reconciliation: true, code: "delivery_reconciliation_required" });
+            return true;
+          }
           failure = error.message;
         }
         await this.store.change((data) => {
@@ -992,14 +999,18 @@ export class Engine {
             && requiredCapabilities.every((required) => provider.capabilities.includes(required)));
           if (!remaining) {
             const dependency = providerFailure.dependency ?? `execution provider for ${requiredCapabilities.join(", ") || "execution"}`;
-            await this.block(id, `Unavailable ${dependency}: no eligible configured provider remains after ${providerFailure.category} failure from ${providerEvidence.selected.id}.`, { dependency });
+            await this.block(id, `Unavailable ${dependency}: no eligible configured provider remains after ${providerFailure.category} failure from ${providerEvidence.selected.id}.`,
+              { dependency, scope: "job", code: "unavailable_dependency" });
             return true;
           }
         } else if (reworkAttempts >= project.policy.max_rework_attempts) {
-          await this.block(id, `Rework limit reached: ${failure}`);
+          await this.block(id, `Rework limit reached: ${failure}`, { scope: "job", code: "rework_exhausted" });
           return true;
         } else reworkAttempts += 1;
-        if ((await this.store.read()).projects[project.id]?.stop) { await this.block(id, "Operator stopped the project before automated rework."); return true; }
+        if ((await this.store.read()).projects[project.id]?.stop) {
+          await this.block(id, "Operator stopped the project before automated rework.", { scope: "job", code: "operator_stop" });
+          return true;
+        }
         await this.store.change((data) => this.store.move(data, data.jobs[id], "Rework", failure));
       }
       return true;
@@ -1013,12 +1024,14 @@ export class Engine {
       if (projectLease) await this.store.releaseLease(projectLease).catch(() => {});
     }
   }
-  block(id, reason, { reconciliation = false, dependency = null } = {}) {
+  block(id, reason, { reconciliation = false, dependency = null, scope = "project", code = "unsafe_or_uncertain" } = {}) {
     return this.store.change((data) => {
       const job = data.jobs[id];
+      const recordedAt = new Date().toISOString();
+      job.hold = { scope, code, reason, requires_review: true, recorded_at: recordedAt };
       if (dependency) job.blocked_on = [{ kind: "unavailable_dependency", dependency }];
       if (job.delivery_intent || reconciliation) job.reconciliation = { required: true, status: "required", reason,
-        intent: job.delivery_intent ? structuredClone(job.delivery_intent) : null, recorded_at: new Date().toISOString() };
+        intent: job.delivery_intent ? structuredClone(job.delivery_intent) : null, recorded_at: recordedAt };
       const attempt = job.attempts.at(-1);
       if (attempt && attempt.status !== "completed") {
         attempt.failure ??= reason;
@@ -1028,7 +1041,12 @@ export class Engine {
       }
       if (attempt?.run && job.reconciliation) attempt.run.reconciliation = job.reconciliation;
       this.store.move(data, job, "Blocked", reason);
-      data.projects[job.project_id] = { ...data.projects[job.project_id], blocked: true, active: false };
+      const runtime = { ...data.projects[job.project_id], active: false };
+      if (scope === "project") {
+        runtime.blocked = true;
+        runtime.quarantine = { code, reason, job_id: job.id, reconciliation_required: Boolean(job.reconciliation), recorded_at: recordedAt };
+      }
+      data.projects[job.project_id] = runtime;
     });
   }
   async run({ projectId } = {}) {

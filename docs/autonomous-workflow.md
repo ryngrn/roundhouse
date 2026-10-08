@@ -451,9 +451,13 @@ between waiting and eligible.
 ## Failures and restart
 
 Execution/verification retries are bounded by `max_rework_attempts` (0–10).
-The next attempt receives the previous failure evidence. Shipping errors do not
-trigger automated execution retries: a network failure may hide a successful push.
-Blocked projects stop taking new jobs until reconciled. Other projects can progress.
+The next attempt receives the previous failure evidence. Exhausting rework places a
+job-scoped hold on that slice and its dependency descendants; independent Ready jobs
+in the same project may continue. Shipping errors do not trigger automated execution
+retries: a network failure may hide a successful push. Unknown remote outcomes,
+interrupted attempts, and unreconciled external-side-effect conditions quarantine the
+project until an operator inspects and resumes it. Status reports the specific job
+hold or project quarantine cause and retains the underlying evidence.
 
 Execution-provider fallback is limited to providers explicitly listed in
 `execution.providers` that satisfy the job's required capabilities. A provider may

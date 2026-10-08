@@ -84,6 +84,8 @@ export class Store extends StorageRepository {
         for (const entity of [...Object.values(state.items), ...Object.values(state.jobs)]) {
           if (["Decision", "Executing", "Verification", "Rework"].includes(entity.state)) {
             this.move(state, entity, "Blocked", "Interrupted attempt: inspect workspace and remote delivery before submitting replacement work.");
+            if (entity.parent_id) entity.hold = { scope: "project", code: "interrupted_attempt",
+              reason: entity.history.at(-1).reason, requires_review: true, recorded_at: new Date().toISOString() };
             const attempt = entity.attempts?.at(-1);
             if (attempt) {
               const recordedAt = new Date().toISOString();
@@ -100,7 +102,13 @@ export class Store extends StorageRepository {
             }
           }
         }
-        for (const project of Object.values(state.projects)) if (project.active) { project.blocked = true; project.active = false; }
+        for (const [projectId, project] of Object.entries(state.projects)) if (project.active) {
+          const job = Object.values(state.jobs).find((candidate) => candidate.project_id === projectId && candidate.hold?.code === "interrupted_attempt");
+          project.blocked = true;
+          project.active = false;
+          project.quarantine = { code: "interrupted_attempt", reason: job?.hold.reason ?? "Interrupted work requires inspection.",
+            job_id: job?.id ?? null, reconciliation_required: true, recorded_at: new Date().toISOString() };
+        }
       });
       for (const project of Object.values(this.read().projects)) {
         if (!project.repository_lock || !fs.existsSync(project.repository_lock)) continue;
