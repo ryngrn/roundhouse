@@ -14,6 +14,7 @@ import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, sele
 import { dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 import { assessJobEligibility, ensureNextOccurrence, initializeJobSchedule, nextScheduledWake, recordConditionSignal } from "./scheduling.js";
 import { actionPolicy, approvalScope, assertProviderAuthorized, classifyAction } from "./actions.js";
+import { computeComplexityScore, computeRequestComplexity, recordComplexityOutcome } from "./complexity-score.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -194,7 +195,22 @@ export class Engine {
       const project = configuredProject ? executionProjectContext(configuredProject, role) : null;
       const modeledDecision = project ? inferRoutineAcceptanceCriteria(proposed, project, item, role) : proposed;
       const latest = (await this.store.read()).items[id].triage?.attempts?.at(-1);
-      const decision = modeledDecision;
+      const decision = structuredClone(modeledDecision);
+      if (project && decision.work_items.length) {
+        const packageScores = decision.work_items.map((work, index) => {
+          const required = requiredExecutionCapabilities(project, { work });
+          const routingRequirements = { confidence: decision.execution_confidence,
+            context_bytes: Buffer.byteLength(JSON.stringify({ work, project_context: project })), max_latency_ms: project.timeout_ms };
+          const evidence = executionProviderEvidence(this.config.execution.providers, required,
+            { requirements: executionRoutingRequirements(project, { work, project_context: project, routing_requirements: routingRequirements }) });
+          return computeComplexityScore({ work_items: [work], dependencies: decision.dependencies,
+            execution_confidence: decision.execution_confidence, sufficient_context: decision.sufficient_context,
+            questions: decision.questions, routing_evidence: evidence, internal_dependencies: index ? 1 : 0,
+            resource_requirements: project.resource_requirements });
+        });
+        decision.work_items.forEach((work, index) => { work.complexity = packageScores[index]; });
+        decision.complexity = computeRequestComplexity({ ...decision, resource_requirements: project.resource_requirements }, packageScores);
+      }
       const decisionProviderEvidence = structuredClone(latest?.provider_evidence ?? configuredDecisionProviderEvidence(this.config.decision));
       let route = routeDecision(decision, project ? [project] : projects, selectedProject);
       const executionEligibilityReasons = route.state === "Ready" && project
@@ -458,6 +474,7 @@ export class Engine {
           id: `human-evidence-${index + 1}`, passed: true, source: "human", summary: `${entry.kind}: ${entry.reference}`,
         })) }, timestamp: now };
       this.store.move(data, job, "Shipped", `Human task completed by ${actor.trim()} with durable evidence.`);
+      recordComplexityOutcome(data, job, "shipped", "Human completion and its durable evidence were recorded.");
       const parent = data.items[job.parent_id];
       if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = now;
       return job;
@@ -914,6 +931,7 @@ export class Engine {
               j.delivery_intent.reconciliation = { required_on_interruption: false, status: "confirmed", confirmed_at: shipping.timestamp };
               j.processes = [];
               this.store.move(data, j, "Shipped", "Remote agent reported verified machine-local delivery; Roundhouse did not inspect the remote filesystem.");
+              recordComplexityOutcome(data, j, "shipped", "Remote agent reported verified machine-local delivery; local filesystem evidence was not claimed.");
               data.projects[project.id] = { ...data.projects[project.id], last_commit: shipping.commit,
                 active: false, review_required: project.policy.review_after_shipping };
               const parent = data.items[j.parent_id];
@@ -966,6 +984,7 @@ export class Engine {
             j.attempts.at(-1).finished_at = delivered.timestamp;
             j.processes = [];
             this.store.move(data, j, "Shipped", "Verified work delivered under project policy.");
+            recordComplexityOutcome(data, j, "shipped", "Configured verification passed and delivery was confirmed.");
             data.projects[project.id] = { ...data.projects[project.id], ...(delivered.commit ? { last_commit: delivered.commit } : {}),
               ...(delivered.reference ? { last_output: delivered.reference } : {}),
               active: false, review_required: project.policy.review_after_shipping };
@@ -1061,6 +1080,7 @@ export class Engine {
       }
       if (attempt?.run && job.reconciliation) attempt.run.reconciliation = job.reconciliation;
       this.store.move(data, job, "Blocked", reason);
+      recordComplexityOutcome(data, job, "blocked", "Execution ended blocked; inspect the job hold for the bounded reason.");
       const runtime = { ...data.projects[job.project_id], active: false };
       if (scope === "project") {
         runtime.blocked = true;

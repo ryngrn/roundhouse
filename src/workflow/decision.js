@@ -5,7 +5,7 @@ import { claudeResult, runProcess } from "./runtime.js";
 import { normalizeSchedule } from "./scheduling.js";
 import { actionClasses, classifyAction } from "./actions.js";
 import { assertNotRemoteDesktopCommanderCommand } from "./remote-desktop-policy.js";
-import { complexityFactorIds, complexityFactorWeights, validateComplexityScore } from "./complexity-score.js";
+import { complexityFactorIds, validateComplexityScore } from "./complexity-score.js";
 
 const string = { type: "string" };
 const strings = { type: "array", items: string };
@@ -213,7 +213,7 @@ export class DecisionProvider {
     const packet = { input: item.input, clarifications: item.clarifications, resolved_decisions, related_work: item.related_work ?? [], projects,
       capability_contract: "Model repository_required independently from required_capabilities for every slice. Capabilities may describe research, integration, scheduling, artifact, external-action, human-task, or installation-specific work; do not assume every slice is software or requires Git.",
       action_contract: "Classify each slice as read_only, consequential, or human_task. external-action is always at least consequential and human-task is always human_task; Roundhouse enforces those floors and revision-bound approval independently of request instructions.",
-      complexity_contract: `Score the complete request and every work item with the same fixed integer contributions: ${Object.entries(complexityFactorWeights).map(([id, weight]) => `${id}=0-${weight}`).join(", ")}. The 0–100 score is their exact sum. Explain factor evidence, eligible executors, selected tier/executor, and the USD prediction basis. Set actual_outcome to null before execution. A score never expands authority or eligibility.`,
+      complexity_contract: "Return null complexity fields. Roundhouse deterministically computes request and package scores from the normalized decision and authoritative cheapest-sufficient routing evidence; model-authored scores never affect selection or authority.",
       scheduling_contract: "Use work.schedule only when the request explicitly declares deferred or recurring execution or an external condition. not_before and recurrence timestamps are absolute ISO timestamps. Recurrence uses a fixed positive interval_seconds and optional max_occurrences/end_at. wait_for uses a stable lowercase condition key and human-readable description. External-condition waits are not clarification questions or operational blocks.",
       import_context: item.provenance ? { provenance: item.provenance, legacy: item.legacy_depot ?? null,
         project_candidate_id: item.project_candidate_id ?? null } : null };

@@ -88,6 +88,7 @@ function jobView(job, data) {
     occurrence_key: job.occurrence_key ?? null,
     action_policy: job.action_policy ?? null,
     human_task: job.human_task ?? null,
+    complexity: job.work?.complexity ?? null,
   };
 }
 
@@ -166,6 +167,7 @@ export function itemView(data, item) {
     brief: legacy?.["Normalized Brief"] || item.decision?.reason || null,
     decision_provider: item.decision?.provider_evidence ?? item.triage?.attempts?.at(-1)?.provider_evidence ?? null,
     decision_provider_transitions: item.provider_transitions ?? [],
+    complexity: item.decision?.complexity ?? null,
     context: item.input.context ?? null,
     acceptance_criteria: acceptance,
     reason: reviewHold?.hold.reason ?? (waitingJob ? assessJobEligibility(waitingJob, data.system_metadata?.condition_signals ?? {}).reason

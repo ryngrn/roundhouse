@@ -82,8 +82,11 @@ test("scheduled work: recurrence materialization is idempotent in durable contro
   const first = initializeJobSchedule(job(), { not_before: null, wait_for: null, recurrence: {
     start_at: "2026-01-01T00:00:00Z", interval_seconds: 3600, max_occurrences: 2, end_at: null,
   } }, {}, { now: Date.parse("2025-12-31T00:00:00Z") });
+  first.work.complexity = { actual_outcome: { status: "shipped", cost_usd: 0, summary: "First occurrence." } };
   first.state = "Shipped";
-  const data = { items: { item: { id: "item", job_ids: [first.id] } }, jobs: { [first.id]: first } };
+  const data = { items: { item: { id: "item", job_ids: [first.id], decision: {
+    complexity: { actual_outcome: { status: "shipped", cost_usd: 0, summary: "First occurrence." } },
+  } } }, jobs: { [first.id]: first } };
 
   const created = ensureNextOccurrence(data, first, { now: Date.parse("2026-01-01T00:30:00Z") });
   const repeated = ensureNextOccurrence(data, first, { now: Date.parse("2026-01-01T00:45:00Z") });
@@ -92,6 +95,8 @@ test("scheduled work: recurrence materialization is idempotent in durable contro
   assert.equal(repeated.created, false);
   assert.equal(repeated.successor.id, created.successor.id);
   assert.deepEqual(data.items.item.job_ids, [first.id, created.successor.id]);
+  assert.equal(created.successor.work.complexity.actual_outcome, null);
+  assert.equal(data.items.item.decision.complexity.actual_outcome, null);
   assert.equal(Object.values(data.jobs).filter((entry) => entry.occurrence_key === created.successor.occurrence_key).length, 1);
 });
 

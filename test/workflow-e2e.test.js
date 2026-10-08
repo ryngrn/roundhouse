@@ -86,11 +86,19 @@ test("e2e: autonomous Depot request creates actual change, verifies exact commit
   assert.equal(job.attempts[0].provider_evidence.selected.id, "local-project");
   assert.equal(job.attempts[0].provider_evidence.invoked.id, "local-project");
   assert.deepEqual(job.attempts[0].provider_evidence.capability_probe.required, []);
+  assert.equal(result.items[item.id].decision.complexity.score,
+    result.items[item.id].decision.complexity.factors.reduce((sum, factor) => sum + factor.contribution, 0));
+  assert.equal(result.items[item.id].decision.work_items[0].complexity.routing.selected_executor_id, "local-project");
+  assert.equal(job.work.complexity.actual_outcome.status, "shipped");
+  assert.equal(job.work.complexity.actual_outcome.cost_usd, null);
+  assert.match(job.work.complexity.predicted_cost.basis, /No trusted USD estimate/);
   assert.ok(!job.history.some((e) => e.to === "Review"));
   const status = statusView(result).items.find((i) => i.id === item.id);
   assert.equal(status.state, "Shipped");
   assert.equal(status.decision_provider.invoked.id, "command");
   assert.equal(status.jobs[0].latest_attempt_provider.invoked.id, "local-project");
+  assert.equal(status.complexity.actual_outcome.status, "shipped");
+  assert.equal(status.jobs[0].complexity.actual_outcome.status, "shipped");
   assert.equal(git(h.repository, ["branch", "--show-current"]), "main");
   assert.equal(git(h.repository, ["status", "--porcelain"]), "");
   const persisted = new Store(h.store.directory).read();

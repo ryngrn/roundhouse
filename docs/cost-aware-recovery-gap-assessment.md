@@ -22,7 +22,7 @@ ancestor of this checkout.
 | Token/cost normalization, attempt usage, aggregation, and outcome telemetry | Excluded | Planned slice 6 owns paid and local usage capture. The recovered post-spend budget check is also too late to serve slice 4's dispatch-boundary outcome. |
 | KPI and status-view projections | Excluded | Planned slice 7 owns cost-efficiency metrics and Control Room projection. |
 | Broad compatibility and rollout fixtures | Excluded | Planned slice 8 owns end-to-end rollout proof. |
-| Bounded explainable complexity record | Retained and rewritten | Neither the recovered work nor slices 2–8 define a request-level and package-level 0–100 score contract. The new contract is validation-only and does not alter routing, budgets, usage capture, approval, action authority, provider capability checks, verification, secrets, quarantine, protected branches, or shipping. |
+| Bounded explainable complexity record | Retained and rewritten | Neither the recovered work nor slices 2–8 define a request-level and package-level 0–100 score. Roundhouse now computes it from normalized decision and routing evidence without altering routing, budgets, usage capture, approval, action authority, provider capability checks, verification, secrets, quarantine, protected branches, or shipping. |
 
 No recovered source file was copied. In particular, the archived `cost-policy.js`,
 engine mutations, configuration extensions, usage aggregation, and view changes
@@ -30,10 +30,12 @@ remain excluded.
 
 ## Complexity scoring contract
 
-A decision may carry one `complexity` record for the complete request and one for
-each independently executable `work_item`. Missing records remain readable as
-`null` for compatibility with existing command providers and durable decisions;
-once a record is supplied, every field and factor is mandatory.
+A decision carries one computed `complexity` record for the complete request and
+one for each independently executable `work_item`. Missing records remain readable
+as `null` for compatibility with existing command providers and durable decisions.
+Model-authored values are not used: after normalization, Roundhouse replaces them
+with scores derived from request structure, project policy, verification
+obligations, and the authoritative cheapest-sufficient routing result.
 
 The seven fixed maximum contributions sum to 100:
 
@@ -48,15 +50,28 @@ The seven fixed maximum contributions sum to 100:
 | Resource cost | 10 |
 
 Each contribution is an integer from zero through its weight and includes a
-concise evidence rationale. The published score must equal the exact sum. Stable
-factor IDs, fixed weights, integer arithmetic, canonical factor completeness, and
-no time-derived input make rescoring stable for unchanged evidence. Changed
+concise evidence rationale. Scope counts normalized packages, acceptance criteria,
+capabilities, repositories, and bounded text size. Ambiguity uses execution
+confidence, context sufficiency, and unresolved questions. Dependencies count
+declared and decomposition edges. Risk uses the highest normalized action class.
+Verification burden counts configured check IDs, criteria, and repository work.
+The local-capability gap maps the selected authoritative routing tier (mechanical
+0, local 1, higher tiers progressively larger), while resource cost uses routing
+tier, bounded work-text size, and counted resource types as a non-USD proxy.
+
+The published score is the exact sum. Stable factor IDs, fixed weights, integer
+arithmetic, sorted resource keys, canonical factor order, and no timestamps or
+identifiers make rescoring stable for unchanged normalized evidence. Changed
 requirements, project policy, executor advertisements, verification obligations,
-or cost estimates are new evidence and may legitimately change a score.
+or cost evidence may legitimately change a score.
 
 The same record keeps the selected numeric tier, every eligible executor and why
-it qualified, the selected executor and selection explanation, a nullable USD
-prediction with its basis, and a nullable actual outcome. The outcome slot is only
-a contract here: slice 6 remains responsible for trustworthy usage capture and
-population. Executor eligibility remains subordinate to existing capability,
-approval, action, and project policy gates; a score never grants authority.
+it passed the existing gates, the selected executor and selection explanation, a
+nullable USD prediction with its basis, and a nullable actual outcome. When no
+trusted USD estimate is configured the value is explicitly `null`, never guessed.
+On terminal delivery or blocking, Roundhouse records a compact status and summary;
+it copies a numeric actual cost only when execution evidence already supplies one,
+without retaining arbitrary provider payloads or implementing usage aggregation.
+Slice 6 remains responsible for trustworthy usage capture. Executor eligibility
+remains subordinate to capability, approval, action, and project policy gates; a
+score never grants authority or replaces cheapest-sufficient selection.

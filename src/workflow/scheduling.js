@@ -149,6 +149,7 @@ export function nextOccurrence(job, { position, now = Date.now() } = {}) {
       transitions: [{ from: null, to: Date.parse(eligibleAt) > now ? "waiting" : "eligible", at: new Date(now).toISOString(),
         reason: Date.parse(eligibleAt) > now ? `Recurring occurrence ${occurrence} is scheduled for ${eligibleAt}.` : `Recurring occurrence ${occurrence} is due.` }] },
   };
+  if (next.work?.complexity) next.work.complexity.actual_outcome = null;
   return next;
 }
 
@@ -163,6 +164,7 @@ export function ensureNextOccurrence(data, job, { now = Date.now() } = {}) {
   data.jobs[candidate.id] = candidate;
   parent.job_ids ??= [];
   if (!parent.job_ids.includes(candidate.id)) parent.job_ids.push(candidate.id);
+  if (parent.decision?.complexity) parent.decision.complexity.actual_outcome = null;
   return { successor: candidate, created: true };
 }
 

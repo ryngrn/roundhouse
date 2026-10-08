@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { complexityFactorWeights, validateComplexityScore } from "../src/workflow/complexity-score.js";
+import { complexityFactorWeights, computeComplexityScore, computeRequestComplexity, recordComplexityOutcome,
+  validateComplexityScore } from "../src/workflow/complexity-score.js";
 import { validateDecision } from "../src/workflow/decision.js";
 
 const score = (changes = {}) => ({
@@ -56,4 +57,55 @@ test("legacy decision providers remain compatible when score records are absent"
   const value = validateDecision(legacy);
   assert.equal(value.complexity, null);
   assert.equal(value.work_items[0].complexity, null);
+});
+
+const packageWork = (changes = {}) => ({ title: "Implement bounded behavior", outcome: "A verified result.",
+  repository_required: true, required_capabilities: ["artifact"], action_class: "read_only",
+  acceptance_criteria: [{ description: "Tests pass.", verification_ids: ["tests"] }], ...changes });
+const evidence = {
+  selected: { id: "local", tier: 1 },
+  routing: { results: [
+    { provider_id: "mechanical", tier: 0, eligible: false },
+    { provider_id: "local", tier: 1, eligible: true },
+    { provider_id: "paid", tier: 2, eligible: true },
+  ] },
+};
+
+test("normalized inputs produce stable deterministic scores and routing explanations", () => {
+  const input = { work_items: [packageWork()], dependencies: ["prior-job"], execution_confidence: 0.8,
+    sufficient_context: true, questions: [], routing_evidence: evidence, resource_requirements: { gpu: 1 } };
+  const first = computeComplexityScore(input);
+  const second = computeComplexityScore(structuredClone(input));
+  assert.deepEqual(second, first);
+  assert.equal(first.score, first.factors.reduce((sum, factor) => sum + factor.contribution, 0));
+  assert.deepEqual(first.factors.map((factor) => factor.id), Object.keys(complexityFactorWeights));
+  assert.equal(first.routing.selected_executor_id, "local");
+  assert.deepEqual(first.routing.eligible_executors.map((executor) => executor.id), ["local", "paid"]);
+  assert.equal(first.predicted_cost.cost_usd, null);
+  assert.match(first.predicted_cost.basis, /No trusted USD estimate/);
+});
+
+test("decomposition retains an independent score for every executable package", () => {
+  const works = [packageWork(), packageWork({ title: "Second package", required_capabilities: [] })];
+  const scores = works.map((work) => computeComplexityScore({ work_items: [work], routing_evidence: evidence }));
+  const whole = computeRequestComplexity({ work_items: works, dependencies: [], execution_confidence: 1,
+    sufficient_context: true, questions: [] }, scores);
+  assert.equal(scores.length, works.length);
+  assert.ok(scores.every((entry) => entry.factors.every((factor) => factor.rationale)));
+  assert.equal(whole.routing.selected_executor_id, null);
+  assert.match(whole.routing.explanation, /each package/);
+});
+
+test("terminal audit outcomes use available numeric cost without retaining provider payloads", () => {
+  const workComplexity = computeComplexityScore({ work_items: [packageWork()], routing_evidence: evidence });
+  const data = { items: { item: { job_ids: ["item-1"], decision: { complexity: structuredClone(workComplexity),
+    work_items: [{ ...packageWork(), complexity: structuredClone(workComplexity) }] } } }, jobs: {} };
+  const job = { id: "item-1", parent_id: "item", state: "Shipped", work: { ...packageWork(), complexity: workComplexity },
+    attempts: [{ execution: { usage: { cost_usd: 0.125, secret: "not retained" } } }] };
+  data.jobs[job.id] = job;
+  recordComplexityOutcome(data, job, "shipped", "Verified delivery was confirmed.");
+  assert.deepEqual(job.work.complexity.actual_outcome,
+    { status: "shipped", cost_usd: 0.125, summary: "Verified delivery was confirmed." });
+  assert.equal(data.items.item.decision.complexity.actual_outcome.cost_usd, 0.125);
+  assert.equal(JSON.stringify(job.work.complexity).includes("secret"), false);
 });

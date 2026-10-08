@@ -119,6 +119,18 @@ may write artifact files in their workspace. At least one structured result or f
 is required. Roundhouse records a run UUID, provider ID, input digest, attempt state,
 failures, evidence, immutable output reference, and reconciliation state.
 
+Every newly normalized executable decision also receives a deterministic
+complexity audit for the complete request and for each independently executable
+package. Seven fixed integer factors sum to 0–100: scope 20, ambiguity 15,
+dependencies 15, risk 15, verification burden 15, local executor capability gap
+10, and resource cost 10. The audit records factor rationales, eligible providers,
+the tier and provider chosen by the existing cheapest-sufficient router, and a
+nullable predicted USD cost with its basis. A missing trusted estimate stays null.
+The score is explanatory only: it cannot make a provider eligible, change action
+authority, skip approval or verification, or select a more expensive provider.
+Terminal jobs add a compact outcome and copy actual cost only when bounded
+execution evidence already provides it; no provider or browser evidence is inferred.
+
 Remote Desktop Commander is never an execution provider. Its permitted scope is
 transport, inspection, connectivity checks, bootstrap, and emergency repair of the
 supported Roundhouse/Herdr path. Workflow configuration rejects it as a decision
