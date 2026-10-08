@@ -155,6 +155,11 @@ test("e2e: exploding a blocked prerequisite removes only that job and releases i
     h.store.move(data, data.jobs[blockedId], "Blocked", "Fixture blocker.");
     data.jobs[blockedId].processes = [{ pid: 2_147_483_647, at: "2026-01-01T00:00:00.000Z" }];
     data.projects.example = { ...data.projects.example, blocked: true, active: false };
+    data.items.recovery = { id: "recovery", state: "Needs Clarification", revision: 1, job_ids: [],
+      blocker_followup: { original_id: blockedId, kind: "job" },
+      input: { context: { blocker_entity_id: blockedId } } };
+    data.items.unrelatedRecovery = { id: "unrelatedRecovery", state: "Needs Clarification", revision: 1, job_ids: [],
+      blocker_followup: { original_id: "other-job", kind: "job" } };
   });
   const revision = h.store.read().jobs[blockedId].revision;
 
@@ -163,9 +168,22 @@ test("e2e: exploding a blocked prerequisite removes only that job and releases i
   assert.equal(after.jobs[blockedId], undefined);
   assert.deepEqual(after.jobs[dependentId].dependencies, []);
   assert.deepEqual(after.items[item.id].job_ids, [dependentId]);
+  assert.equal(after.items.recovery, undefined);
+  assert.ok(after.items.unrelatedRecovery);
   assert.equal(after.projects.example.blocked, false);
   assert.deepEqual(removal.released_jobs, [dependentId]);
+  assert.deepEqual(removal.removed_recovery_items, ["recovery"]);
   assert.equal(after.system_metadata.job_explosions.at(-1).id, blockedId);
+  assert.deepEqual(after.system_metadata.job_explosions.at(-1).removed_recovery_items, ["recovery"]);
+
+  h.store.change((data) => {
+    data.items.lateRecovery = { id: "lateRecovery", state: "Needs Clarification", revision: 1, job_ids: [],
+      blocker_followup: { original_id: blockedId, kind: "job" } };
+  });
+  const repeated = await h.engine.explodeJob(blockedId, { expectedRevision: revision, actor: "test", note: "Confirm deletion." });
+  assert.equal(repeated.already_removed, true);
+  assert.deepEqual(repeated.removed_recovery_items, ["lateRecovery"]);
+  assert.equal(h.store.read().items.lateRecovery, undefined);
 
   const result = await h.engine.runDispatch();
   assert.equal(result.jobs[dependentId].state, "Shipped");

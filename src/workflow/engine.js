@@ -915,7 +915,25 @@ export class Engine {
     try {
       return await this.store.change((data) => {
         const job = data.jobs[id];
-        if (!job) throw new Error("Blocked job was not found.");
+        const removeRecoveryItems = () => {
+          const removed = [];
+          for (const [itemId, candidate] of Object.entries(data.items)) {
+            const originalId = candidate.blocker_followup?.original_id ?? candidate.input?.context?.blocker_entity_id;
+            if (originalId !== id) continue;
+            removed.push(itemId);
+            delete data.items[itemId];
+          }
+          return removed;
+        };
+        if (!job) {
+          const explosion = data.system_metadata?.job_explosions?.findLast((entry) => entry.id === id);
+          if (!explosion) throw new Error("Blocked job was not found.");
+          if (explosion.prior_revision !== expectedRevision) throw new Error("Stale job revision; review the latest blocker before removing it.");
+          const removedRecoveryItems = removeRecoveryItems();
+          explosion.removed_recovery_items = [...new Set([...(explosion.removed_recovery_items ?? []), ...removedRecoveryItems])];
+          return { removed: true, already_removed: true, id, project_id: explosion.project_id, parent_id: explosion.parent_id,
+            released_jobs: explosion.released_jobs ?? [], removed_recovery_items: removedRecoveryItems, at: explosion.at };
+        }
         if (job.state !== "Blocked") throw new Error("Only a Blocked job can be removed from the queue.");
         if (job.revision !== expectedRevision) throw new Error("Stale job revision; review the latest blocker before removing it.");
         if ((job.processes ?? []).some(({ pid }) => processIsAlive(pid)) || job.owning_node_id || data.projects?.[job.project_id]?.active) {
@@ -923,6 +941,7 @@ export class Engine {
         }
         const at = new Date(this.clock()).toISOString();
         const releasedJobs = [];
+        const removedRecoveryItems = [];
         for (const candidate of Object.values(data.jobs)) {
           if (candidate.id === id || !(candidate.dependencies ?? []).includes(id)) continue;
           candidate.dependencies = candidate.dependencies.filter((dependency) => dependency !== id);
@@ -932,6 +951,7 @@ export class Engine {
             reason: `Blocked prerequisite ${id} was removed by ${actor.trim()}; remaining dependencies are preserved.`, at });
           releasedJobs.push(candidate.id);
         }
+        removedRecoveryItems.push(...removeRecoveryItems());
         const parent = data.items[job.parent_id];
         if (parent) {
           parent.job_ids = (parent.job_ids ?? []).filter((jobId) => jobId !== id);
@@ -944,13 +964,14 @@ export class Engine {
         data.system_metadata.job_explosions ??= [];
         data.system_metadata.job_explosions.push({ id, parent_id: job.parent_id ?? null, project_id: job.project_id ?? null,
           title: job.work?.title ?? id, prior_revision: job.revision, actor: actor.trim(), note: note.trim(), at,
-          released_jobs: releasedJobs });
+          released_jobs: releasedJobs, removed_recovery_items: removedRecoveryItems });
         if (data.system_metadata.job_explosions.length > 500) data.system_metadata.job_explosions.splice(0, data.system_metadata.job_explosions.length - 500);
         delete data.jobs[id];
         const project = data.projects[job.project_id] ?? {};
         data.projects[job.project_id] = { ...project, blocked: false, active: false,
           resume_approval: { actor: actor.trim(), note: `Removed blocker ${id}: ${note.trim()}`, at } };
-        return { removed: true, id, project_id: job.project_id, parent_id: job.parent_id, released_jobs: releasedJobs, at };
+        return { removed: true, id, project_id: job.project_id, parent_id: job.parent_id, released_jobs: releasedJobs,
+          removed_recovery_items: removedRecoveryItems, at };
       });
     } finally { release(); }
   }
