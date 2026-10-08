@@ -14,3 +14,15 @@ test("five-minute dispatcher runs one bounded Depot triage before verified execu
   assert.doesNotMatch(triage,/engine\.run\(/);
   assert.match(triage,/process\.argv\.includes\("--dry-run"\)/);
 });
+
+test("five-minute dispatcher runs installed production Unblocker before planning or execution", () => {
+  const wrapper=fs.readFileSync(new URL("../scripts/macos/dispatch-once.sh",import.meta.url),"utf8");
+  assert.match(wrapper,/io\.roundhouse\.service\.plist/);
+  assert.match(wrapper,/Print :ProgramArguments:3/);
+  assert.match(wrapper,/src\/workflow\/unblocker\.js/);
+  assert.match(wrapper,/depot unblock --state-dir/);
+  assert.ok(wrapper.indexOf('depot unblock --state-dir') < wrapper.indexOf('triage-once.mjs'));
+  assert.ok(wrapper.indexOf('depot unblock --state-dir') < wrapper.indexOf('depot dispatch'));
+  assert.match(wrapper,/recovery pass failed, all holds retained/);
+  assert.doesNotMatch(wrapper,/sleep 300|while true|setInterval/);
+});
