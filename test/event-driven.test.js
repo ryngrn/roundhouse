@@ -23,15 +23,18 @@ test("WorkerLoop startup uses one wake and installs no recurring timer", async (
   globalThis.setInterval = () => { intervals += 1; return { unref() {} }; };
   try {
     let triage = 0;
+    let dispatch = 0;
     const store = { shared: true, claimRemoteCommand: async () => null };
     const worker = new WorkerLoop({ service: { store, engine: {
       store,
       runTriage: async () => { triage += 1; return { triaged: 0 }; },
-      runDispatch: async () => ({ executed: 0 }),
+      runDispatch: async () => { dispatch += 1; return { executed: 0 }; },
     } } });
     await worker.start();
     assert.equal(intervals, 0);
     assert.equal(triage, 1);
+    assert.equal(dispatch, 1);
+    assert.ok(worker.lastDispatch);
     worker.stop();
   } finally { globalThis.setInterval = original; }
 });
@@ -39,12 +42,13 @@ test("WorkerLoop startup uses one wake and installs no recurring timer", async (
 test("duplicate wakes coalesce and a wake during an active cycle schedules one follow-up", async () => {
   let release;
   let calls = 0;
+  let dispatches = 0;
   const firstCycle = new Promise((resolve) => { release = resolve; });
   const store = { shared: true, claimRemoteCommand: async () => null };
   const worker = new WorkerLoop({ service: { store, engine: {
     store,
     runTriage: async () => { calls += 1; if (calls === 1) await firstCycle; return { triaged: 0 }; },
-    runDispatch: async () => ({ executed: 0 }),
+    runDispatch: async () => { dispatches += 1; return { executed: 0 }; },
   } } });
   const startup = worker.start();
   await waitFor(() => calls === 1);
@@ -53,6 +57,7 @@ test("duplicate wakes coalesce and a wake during an active cycle schedules one f
   release();
   await Promise.all([startup, duplicateA, duplicateB]);
   assert.equal(calls, 2);
+  assert.equal(dispatches, 2);
   worker.stop();
 });
 
@@ -181,6 +186,21 @@ test("relay outage never blocks local triage or dispatch", async () => {
   assert.equal(triage, 1);
   assert.equal(dispatch, 1);
   assert.match(result.remote_command_error, /relay offline/);
+});
+
+test("a worker lock is reported as a dispatch attempt instead of silent idle", async () => {
+  const store = { shared: false };
+  const worker = new WorkerLoop({ service: { store, engine: {
+    store,
+    runTriage: async () => ({ triaged: 0 }),
+    runDispatch: async () => { throw new Error("Locked: /state/worker.lock. Another worker may be active; inspect before recovery."); },
+  } } });
+  const result = await worker.tick();
+  assert.equal(result.executed, 0);
+  assert.match(result.error, /Locked: \/state\/worker\.lock/);
+  assert.ok(worker.status().last_dispatch);
+  assert.match(worker.status().dispatch_error, /Locked: \/state\/worker\.lock/);
+  assert.equal(worker.status().cycle_phase, "idle");
 });
 
 test("relay stores one projection row instead of rewriting workflow tables", async () => {

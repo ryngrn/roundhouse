@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
 import { harness } from "./support/harness.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { startRoundhouseServer } from "../src/server/app-server.js";
@@ -46,6 +48,8 @@ test("local server: hosted redirect, health, API, worker, evidence, config, and 
   const tick = await request(running.url, "/api/worker/tick", { method: "POST", body: {} });
   assert.equal(tick.status, 200);
   assert.equal(tick.json().executed, 1);
+  assert.ok(tick.json().worker.last_dispatch);
+  assert.equal(tick.json().worker.dispatch_error, null);
 
   const overview = (await request(running.url, "/api/overview")).json();
   assert.equal(overview.counts.completed, 1);
@@ -64,6 +68,26 @@ test("local server: hosted redirect, health, API, worker, evidence, config, and 
   const saved = await request(running.url, "/api/config", { method: "PUT", body: { configuration: config.configuration } });
   assert.equal(saved.status, 200);
   assert.equal(saved.json().configuration.projects[0].weight, 3);
+});
+
+test("server startup safely recovers a dead local worker lock before dispatch", async (t) => {
+  const h = harness();
+  const item = h.submit("Preserve interrupted work during stale-lock recovery", "stale-worker-lock");
+  h.store.change((data) => h.store.move(data, data.items[item.id], "Decision", "Interrupted decision in progress."));
+  fs.mkdirSync(h.store.workerLock, { mode: 0o700 });
+  fs.writeFileSync(`${h.store.workerLock}/owner.json`, JSON.stringify({
+    pid: 99_999_999, hostname: os.hostname(), token: "dead-worker", at: "2026-10-08T00:00:00.000Z",
+  }), { mode: 0o600 });
+
+  const running = await startRoundhouseServer({
+    stateDirectory: h.store.directory, configFile: h.configFile, port: 0,
+    autoStartWorker: false, relayConnectionString: null,
+  });
+  t.after(() => running.close());
+  assert.equal(fs.existsSync(h.store.workerLock), false);
+  const overview = (await request(running.url, "/api/overview")).json();
+  assert.equal(overview.items[0].state, "Blocked");
+  assert.match(overview.items[0].reason, /Interrupted attempt/);
 });
 
 test("local snapshot explicitly refreshes external durable changes without waking the worker", async (t) => {

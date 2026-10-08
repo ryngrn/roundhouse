@@ -25,13 +25,15 @@ export class WorkerLoop {
     this.dispatchError = null;
     this.commandError = null;
     this.lastCommand = null;
+    this.cyclePhase = "idle";
   }
 
   handleError(plane, error) {
-    if (!/^Locked:/.test(error.message)) {
+    const locked = /^Locked:/.test(error.message);
+    if (plane === "triage") this.triageError = error.message;
+    else this.dispatchError = error.message;
+    if (!locked) {
       this.lastError = error.message;
-      if (plane === "triage") this.triageError = error.message;
-      else this.dispatchError = error.message;
       this.onError(error);
     }
     return { error: error.message };
@@ -131,8 +133,8 @@ export class WorkerLoop {
     if (this.dispatchRunning) return this.dispatchRunning;
     this.dispatchRunning = (async () => {
       try {
-        const result = this.service.engine ? await this.service.engine.runDispatch() : { executed: 0 };
         this.lastDispatch = new Date().toISOString();
+        const result = this.service.engine ? await this.service.engine.runDispatch() : { executed: 0 };
         this.lastRun = this.lastDispatch;
         this.dispatchError = null;
         if (!this.triageError) this.lastError = null;
@@ -148,9 +150,13 @@ export class WorkerLoop {
     this.cycleRunning = (async () => {
       // Remote commands are an optional relay concern. The local store remains
       // authoritative, so a relay failure must never prevent local triage or dispatch.
+      this.cyclePhase = "remote_commands";
       const commands = this.commandQueue ? await this.remoteCommandTick() : { remote_commands: 0 };
+      this.cyclePhase = "unblocker";
       const unblocker = await this.unblockerTick();
+      this.cyclePhase = "triage";
       const triage = await this.triageTick();
+      this.cyclePhase = "dispatch";
       const dispatch = await this.dispatchTick();
       // An execution failure may have created a new isolated hold in this cycle.
       if (dispatch.executed) await this.unblockerTick();
@@ -158,11 +164,13 @@ export class WorkerLoop {
       const result = { ...commands, ...unblocker, ...triage, ...dispatch, triaged: triage.triaged ?? 0, executed: dispatch.executed ?? 0,
         event_deliveries_attempted: events.attempted ?? 0,
         error: commands.remote_command_error ?? triage.error ?? dispatch.error };
+      this.cyclePhase = "publishing";
       await this.onCycle(result);
+      this.cyclePhase = "idle";
       return result;
     })();
     try { return await this.cycleRunning; }
-    finally { this.cycleRunning = null; }
+    finally { this.cycleRunning = null; this.cyclePhase = "idle"; }
   }
 
   wake() {
@@ -201,7 +209,11 @@ export class WorkerLoop {
 
   status() {
     return {
-      running: Boolean(this.commandRunning || this.unblockerRunning || this.triageRunning || this.dispatchRunning),
+      running: Boolean(this.cycleRunning || this.commandRunning || this.unblockerRunning || this.triageRunning || this.dispatchRunning),
+      cycle_running: Boolean(this.cycleRunning),
+      cycle_phase: this.cyclePhase,
+      wake_requested: this.wakeRequested,
+      wake_draining: Boolean(this.wakeDrain),
       unblocker_running: Boolean(this.unblockerRunning),
       last_unblocker: this.lastUnblocker,
       unblocker_error: this.unblockerError,

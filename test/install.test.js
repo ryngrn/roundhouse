@@ -16,6 +16,8 @@ test("macOS install configuration is loopback-local, durable, reversible, and pa
   assert.match(menu, /io\.roundhouse\.menu/);
   assert.match(dispatch, /io\.roundhouse\.dispatch/);
   assert.match(dispatch, /api\/worker\/tick/);
+  assert.match(dispatch, /<string>POST<\/string>/);
+  assert.match(dispatch, /<key>RunAtLoad<\/key><true\/>/);
   assert.match(dispatch, /StartInterval/);
   assert.doesNotMatch(dispatch, /git\/roundhouse|src\/cli\.js|dispatch-once/);
 });

@@ -105,6 +105,16 @@ export async function startRoundhouseServer({
   const config = configFile ?? defaults.configFile;
   if (!service) ensureLocalConfig(config);
   const ownedStore = service ? null : await openStorage({ directory: state });
+  // A crashed local worker must not leave the scheduler silently locked forever.
+  // Recovery is conservative: it refuses live/remote owners and quarantines any
+  // interrupted execution instead of replaying it.
+  if (ownedStore && !ownedStore.shared && typeof ownedStore.recover === "function") {
+    try { ownedStore.recover(); }
+    catch (error) {
+      if (!/Cannot recover a live or remote (?:triage )?worker\./.test(error.message)) throw error;
+      process.stderr.write(`Worker recovery deferred: ${error.message}\n`);
+    }
+  }
   const roundhouse = service ?? new RoundhouseService({ store: ownedStore, configFile: config });
   await roundhouse.initialize?.();
   const relay = remoteRelay === undefined
@@ -290,7 +300,8 @@ export async function startRoundhouseServer({
         verifyOrigin(request, origins);
         await jsonBody(request);
         const result = await loop.tick();
-        return send(response, 200, { triaged: result.triaged ?? 0, executed: result.executed ?? 0, worker: loop.status() });
+        return send(response, 200, { triaged: result.triaged ?? 0, executed: result.executed ?? 0,
+          ...(result.error ? { error: result.error } : {}), worker: loop.status() });
       }
       return send(response, 404, { error: "Not Found" });
     } catch (error) {
