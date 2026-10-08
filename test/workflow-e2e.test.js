@@ -12,6 +12,7 @@ import { GitDelivery } from "../src/workflow/delivery.js";
 import { statusView } from "../src/workflow/cli.js";
 import { once } from "node:events";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
+import { CapabilityRuntime } from "../src/workflow/execution-adapters.js";
 
 function schedulingProject(id, weight = 1) {
   return {
@@ -226,6 +227,48 @@ test("e2e: safe provider failure falls back only at a new attempt boundary", asy
   assert.deepEqual(job.attempts[1].provider_transition.from, "a-primary");
   assert.deepEqual(job.attempts[1].provider_transition.to, "b-secondary");
   assert.equal(job.attempts[1].provider_evidence.fallback.excluded_provider_ids[0], "a-primary");
+});
+
+test("e2e: live availability and confidence probes escalate through distinct durable attempts", async () => {
+  const h = harness({ policy: { max_rework_attempts: 0 } });
+  h.config.execution.capabilities = ["local"];
+  h.config.projects[0].required_capabilities = ["local"];
+  h.config.execution.providers = [
+    { id: "a-offline-local", kind: "command", capabilities: ["local"], tier: 1, min_confidence: 0.8,
+      probe: [process.execPath, "-e", "process.stdout.write(JSON.stringify({available:false,capabilities:['local'],node_id:'offline-node',reason:'Model service is stopped.'}))"],
+      command: [process.execPath, "-e", "process.exit(99)"] },
+    { id: "b-insufficient-local", kind: "command", capabilities: ["local"], tier: 1, min_confidence: 0.8,
+      probe: [process.execPath, "-e", "process.stdout.write(JSON.stringify({available:true,capabilities:[],node_id:'small-node'}))"],
+      command: [process.execPath, "-e", "process.exit(99)"] },
+    { id: "c-low-confidence", kind: "project", capabilities: ["local"], tier: 1, min_confidence: 0.8 },
+    { id: "d-tier-2", kind: "project", capabilities: ["local"], tier: 2, min_confidence: 0.8 },
+  ];
+  const invoked = [];
+  const projectRuntime = { execute: async ({ run, workspace }) => {
+    invoked.push(run.provider_id);
+    if (run.provider_id === "c-low-confidence") return { passed: true, exit_code: 0, confidence: 0.42 };
+    fs.appendFileSync(path.join(workspace, "feature.txt"), "implemented: live provider escalation\n");
+    return { passed: true, exit_code: 0, confidence: 0.96 };
+  } };
+  h.submit("probe local models and preserve quality");
+  const runtime = new CapabilityRuntime(h.config.execution.providers, projectRuntime);
+  const result = await new Engine({ store: h.store, config: h.config, runtime }).run();
+  const job = Object.values(result.jobs)[0];
+  assert.equal(job.state, "Shipped");
+  assert.deepEqual(job.attempts.map((attempt) => attempt.run.provider_id),
+    ["a-offline-local", "b-insufficient-local", "c-low-confidence", "d-tier-2"]);
+  assert.deepEqual(job.attempts.map((attempt) => attempt.provider_failure?.category ?? null),
+    ["availability", "capability", "confidence", null]);
+  assert.equal(job.attempts[0].provider_evidence.live_probe.available, false);
+  assert.equal(job.attempts[0].provider_evidence.live_probe.node_id, "offline-node");
+  assert.equal(job.attempts[0].provider_evidence.invoked, null, "an unavailable provider is selected and probed, but never invoked");
+  assert.equal(job.attempts[1].provider_evidence.invoked, null, "a provider missing current capability is never invoked");
+  assert.equal(job.attempts[2].provider_evidence.invoked.id, "c-low-confidence");
+  assert.equal(job.attempts[3].provider_evidence.invoked.id, "d-tier-2");
+  assert.match(job.provider_transitions[0].reason, /availability/);
+  assert.match(job.provider_transitions[1].reason, /capability/);
+  assert.match(job.provider_transitions[2].reason, /confidence/);
+  assert.deepEqual(invoked, ["c-low-confidence", "d-tier-2"], "unavailable and insufficient providers are probed but never execute");
 });
 
 test("e2e: externally uncertain provider failure blocks reconciliation without fallback", async () => {

@@ -36,7 +36,18 @@ A capability probe records every considered provider and its missing capabilitie
 selection chooses one provider that satisfies the complete requirement rather than
 composing partial providers.
 
-Provider failures are categorized as `quota`, `authentication`, or `availability`.
+Command execution providers may also declare a foreground `probe` argv. Immediately
+before invocation it receives the provider identity, required capabilities, routing
+requirements, and run identity on stdin and returns JSON with `available`,
+`capabilities`, and optional `confidence`, `node_id`, `observed_at`, and `reason`.
+Advertised capabilities are intersected with operator-owned configuration, so a
+probe can reduce current authority but cannot grant itself new authority. An
+unavailable provider or one currently missing a requirement closes a replay-safe
+attempt before its execution command is invoked. Other configured nodes remain
+eligible; fleet health does not require every machine to be online.
+
+Provider failures are categorized as `quota`, `authentication`, `availability`,
+`capability`, or `confidence`.
 A category alone never proves replay safety. Fallback is eligible only when the
 provider explicitly reports `safe_to_retry: true`, `replay_safe: true`, or an
 `action_status` of `none`, `not_started`, or `pre_action`. Roundhouse closes the
@@ -44,6 +55,11 @@ failed attempt, records its evidence, excludes that provider, and selects a diff
 configured compatible provider for a new attempt. It never changes provider inside
 an active attempt, and this operational fallback does not consume the work-repair
 budget.
+
+When a provider returns numeric `confidence`, the result must meet that provider's
+configured `min_confidence`. A lower-confidence result is retained as failed-attempt
+evidence and a new eligible attempt selects the next sufficient tier. Missing
+confidence remains compatible with providers that do not implement result scoring.
 
 An action reported as started, uncertain, unknown, or possibly completed is never
 replayed. Roundhouse blocks it for reconciliation. If no compatible provider remains,

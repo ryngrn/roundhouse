@@ -7,7 +7,7 @@ import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { claudeDecisionArgs, decisionSchema } from "../src/workflow/decision.js";
 import { claudeDefaultTools, claudeExecutorArgs, claudeResult } from "../src/workflow/runtime.js";
 import { externallyUncertain, providerCapabilities, providerCapabilityEvidence, providerContract, providerFailureEvidence,
-  providerIdentity, validateProviderSelection } from "../src/workflow/provider-contract.js";
+  providerAdvertisement, providerIdentity, validateProviderSelection } from "../src/workflow/provider-contract.js";
 
 function manifest(root, changes = {}) {
   return { projects: [{ id: "example", name: "Example", purpose: "Exercise provider contracts", success_state: "Checks pass",
@@ -46,6 +46,23 @@ test("provider fallback requires explicit safe pre-action failure evidence", () 
   });
   assert.equal(providerFailureEvidence({ provider_failure: { category: "availability" } }).fallback_eligible, false);
   assert.equal(externallyUncertain({ provider_failure: { category: "availability", action_status: "uncertain" } }), true);
+});
+
+test("live provider advertisements are bounded by configured capabilities", () => {
+  const configured = { id: "local-model", capabilities: ["research", "artifact"] };
+  assert.deepEqual(providerAdvertisement({ available: true, capabilities: ["research", "unconfigured"], confidence: 0.91,
+    node_id: "studio" }, configured, ["research", "artifact"]), {
+    provider_id: "local-model", available: true, capabilities: ["research"], required: ["research", "artifact"],
+    missing: ["artifact"], confidence: 0.91, eligible: false,
+    reason: "Provider does not currently advertise: artifact.", node_id: "studio",
+  });
+  assert.equal(providerFailureEvidence({ provider_failure: { category: "confidence", safe_to_retry: true } }).category, "confidence");
+  assert.equal(providerFailureEvidence({ provider_failure: { code: "insufficient_capability", action_status: "not_started" } }).category, "capability");
+  assert.deepEqual(providerAdvertisement({ available: true, capabilities: ["research"], confidence: 0.6 },
+    { id: "local-model", capabilities: ["research"], min_confidence: 0.8 }, ["research"]), {
+    provider_id: "local-model", available: true, capabilities: ["research"], required: ["research"], missing: [],
+    confidence: 0.6, eligible: false, reason: "Provider confidence 0.6 is below the configured threshold 0.8.",
+  });
 });
 
 test("legacy Codex defaults and explicit Codex configuration remain unchanged", () => {

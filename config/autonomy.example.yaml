@@ -16,6 +16,8 @@ execution:
   # Providers use deterministic cheapest-sufficient routing. Lower tiers are
   # skipped only for a recorded capability, risk, confidence, context, or
   # latency gap. A project provider preserves the existing executor path.
+  # Command providers may add `probe: [/absolute/path/to/provider, probe]` to
+  # advertise current availability and capabilities before execution.
   providers:
     - id: local-software
       kind: project

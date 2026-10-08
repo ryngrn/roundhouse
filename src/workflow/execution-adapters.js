@@ -1,6 +1,6 @@
 import { runProcess } from "./runtime.js";
 import { assertNotRemoteDesktopCommanderCommand } from "./remote-desktop-policy.js";
-import { providerCapabilityEvidence, providerIdentity } from "./provider-contract.js";
+import { providerAdvertisement, providerCapabilityEvidence, providerIdentity } from "./provider-contract.js";
 
 const providerId = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
 const riskRank = Object.freeze({ read_only: 0, consequential: 1, human_task: 2 });
@@ -21,16 +21,20 @@ function routingProbe(provider, requiredCapabilities, requirements) {
   const minConfidence = provider.min_confidence ?? 0;
   const contextWindow = provider.context_window ?? Number.MAX_SAFE_INTEGER;
   const latencyMs = provider.latency_ms ?? 0;
-  const capability = requiredCapabilities.filter((entry) => !provider.capabilities.includes(entry));
+  const currentCapabilities = provider.current_capabilities ?? provider.capabilities;
+  const capability = requiredCapabilities.filter((entry) => !currentCapabilities.includes(entry));
   const gaps = {
+    availability: provider.available === false ? { available: false, reason: provider.unavailable_reason ?? null } : null,
     capability,
     risk: riskRank[requirements.risk] > riskRank[maxRisk] ? { required: requirements.risk, supported: maxRisk } : null,
-    confidence: requirements.confidence < minConfidence ? { required: requirements.confidence, minimum: minConfidence } : null,
+    confidence: requirements.confidence < minConfidence ? { required: requirements.confidence, minimum: minConfidence }
+      : provider.current_confidence != null && provider.current_confidence < minConfidence
+        ? { advertised: provider.current_confidence, minimum: minConfidence } : null,
     context: requirements.context_bytes > contextWindow ? { required: requirements.context_bytes, limit: contextWindow } : null,
     latency: requirements.max_latency_ms != null && latencyMs > requirements.max_latency_ms
       ? { required_max_ms: requirements.max_latency_ms, provider_ms: latencyMs } : null,
   };
-  return { provider_id: provider.id, tier, eligible: !capability.length && !gaps.risk && !gaps.confidence && !gaps.context && !gaps.latency, gaps };
+  return { provider_id: provider.id, tier, eligible: !gaps.availability && !capability.length && !gaps.risk && !gaps.confidence && !gaps.context && !gaps.latency, gaps };
 }
 
 export function requiredExecutionCapabilities(project, job = null) {
@@ -89,6 +93,8 @@ export class ExecutionAdapterRegistry {
       min_confidence: adapter.min_confidence ?? 0,
       context_window: adapter.context_window ?? Number.MAX_SAFE_INTEGER,
       latency_ms: adapter.latency_ms ?? 0,
+      probe: typeof adapter.probe === "function" ? adapter.probe.bind(adapter) : async ({ requiredCapabilities = [] } = {}) =>
+        providerAdvertisement({ available: true, capabilities: adapter.capabilities }, adapter, requiredCapabilities),
       execute: adapter.execute.bind(adapter),
     });
     return this;
@@ -129,11 +135,28 @@ class ProjectExecutionAdapter {
 class CommandExecutionAdapter {
   constructor(configuration) {
     assertNotRemoteDesktopCommanderCommand(configuration.command, `Execution provider ${configuration.id}`);
+    if (configuration.probe) assertNotRemoteDesktopCommanderCommand(configuration.probe, `Execution provider ${configuration.id} probe`);
     this.id = configuration.id;
     this.capabilities = configuration.capabilities;
     Object.assign(this, { tier: configuration.tier, max_risk: configuration.max_risk, min_confidence: configuration.min_confidence,
       context_window: configuration.context_window, latency_ms: configuration.latency_ms });
     this.command = configuration.command;
+    this.probeCommand = configuration.probe;
+  }
+
+  async probe({ project, workspace, run, requiredCapabilities, requirements, onStart }) {
+    if (!this.probeCommand) return providerAdvertisement({ available: true, capabilities: this.capabilities }, this, requiredCapabilities);
+    const result = await runProcess(this.probeCommand, {
+      cwd: workspace,
+      input: JSON.stringify({ provider: providerIdentity(this), required_capabilities: requiredCapabilities, requirements, run }),
+      timeout: Math.min(project.timeout_ms ?? 30_000, 30_000),
+      onStart,
+    });
+    if (!result.passed) return providerAdvertisement({ available: false, capabilities: [], reason: result.error ?? `Probe exited ${result.exit_code}.` }, this, requiredCapabilities);
+    let output;
+    try { output = JSON.parse(result.stdout); }
+    catch { throw new Error(`Execution provider ${this.id} probe returned invalid JSON.`); }
+    return providerAdvertisement(output, this, requiredCapabilities);
   }
 
   async execute({ project, job, workspace, previous_failure, onStart, run }) {
@@ -182,8 +205,30 @@ export class CapabilityRuntime {
       throw new Error(`Execution provider cannot change within attempt ${request.run.attempt}: selected ${request.run.provider_id}, resolved ${resolved?.id ?? "none"}.`);
     }
     if (request.run) request.run.provider_id = adapter.id;
+    const advertisement = await adapter.probe({ ...request, requiredCapabilities: required, requirements });
+    if (!advertisement.eligible) {
+      const category = !advertisement.available ? "availability" : advertisement.missing.length ? "capability" : "confidence";
+      return { passed: false, exit_code: null, error: advertisement.reason,
+        provider_probe: advertisement,
+        provider_failure: { category, code: category === "availability" ? "provider_unavailable"
+          : category === "capability" ? "capability_unavailable" : "confidence_below_threshold",
+          dependency: advertisement.missing.length ? advertisement.missing.join(", ") : adapter.id,
+          message: advertisement.reason, safe_to_retry: true, action_status: "not_started" },
+        provider: { id: adapter.id, capabilities: [...adapter.capabilities], required } };
+    }
     await request.onProviderStart?.(providerIdentity(adapter));
     const result = await adapter.execute(request);
-    return { ...result, provider: { id: adapter.id, capabilities: [...adapter.capabilities], required } };
+    const confidence = result?.output?.confidence ?? result?.confidence;
+    if (result?.passed && confidence != null && (!Number.isFinite(confidence) || confidence < adapter.min_confidence)) {
+      const message = Number.isFinite(confidence)
+        ? `Provider confidence ${confidence} is below the configured threshold ${adapter.min_confidence}.`
+        : "Provider returned an invalid confidence value.";
+      return { ...result, passed: false, error: message, provider_probe: advertisement,
+        provider_failure: { category: "confidence", code: "confidence_below_threshold", dependency: adapter.id,
+          message, safe_to_retry: true, action_status: "completed_locally" },
+        provider: { id: adapter.id, capabilities: [...adapter.capabilities], required } };
+    }
+    return { ...result, provider_probe: advertisement,
+      provider: { id: adapter.id, capabilities: [...adapter.capabilities], required } };
   }
 }

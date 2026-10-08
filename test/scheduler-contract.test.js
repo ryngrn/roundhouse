@@ -47,6 +47,12 @@ test("scheduler contract: invalid capacity, capability, project limit, and resou
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { providers: [
     { id: "duplicate", kind: "project", capabilities: [] }, { id: "duplicate", kind: "command", capabilities: [], command: ["provider"] },
   ] } }, filename), /ids must be unique/);
+  assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { providers: [
+    { id: "bad-probe", kind: "command", capabilities: [], command: ["provider"], probe: [] },
+  ] } }, filename), /probe must be an argv array/);
+  assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { providers: [
+    { id: "project-probe", kind: "project", capabilities: [], probe: ["provider", "probe"] },
+  ] } }, filename), /cannot define a probe command/);
 });
 
 test("execution providers: registration and selection depend only on complete capability fit", () => {
@@ -92,6 +98,23 @@ test("execution providers: cheapest-sufficient routing is deterministic and expl
   assert.equal(explicit.registry.get("tier-1-local", ["research"]).id, "tier-1-local", "explicit provider pins remain authoritative");
 });
 
+test("execution providers: offline and degraded nodes do not prevent another sufficient node from serving tier 1 or tier 2 work", () => {
+  const providers = [
+    { id: "offline-studio", capabilities: ["research"], tier: 1, available: false, node_id: "studio" },
+    { id: "degraded-laptop", capabilities: ["research", "artifact"], current_capabilities: ["research"], tier: 1, node_id: "laptop" },
+    { id: "online-desktop", capabilities: ["research", "artifact"], tier: 2, available: true, node_id: "desktop" },
+  ];
+  assert.equal(selectExecutionProvider(providers, ["research"]).id, "degraded-laptop");
+  const evidence = executionProviderEvidence(providers, ["research", "artifact"]);
+  assert.equal(evidence.selected.id, "online-desktop");
+  assert.deepEqual(evidence.routing.results.map((entry) => [entry.provider_id, entry.eligible]), [
+    ["offline-studio", false], ["degraded-laptop", false], ["online-desktop", true],
+  ]);
+  assert.equal(evidence.routing.results[0].gaps.availability.available, false);
+  assert.deepEqual(evidence.routing.results[1].gaps.capability, ["artifact"]);
+  assert.equal(evidence.routing.selection.escalated, true);
+});
+
 test("execution providers: capabilities split across providers are an unsupported combination", () => {
   const providers = [
     { id: "research", capabilities: ["research"] },
@@ -126,6 +149,25 @@ test("execution providers: command adapters and the existing project runtime sha
   assert.equal(projectCalls, 1);
   assert.equal(operations.output.received.id, "operations");
   assert.deepEqual(operations.provider.required, ["research", "scheduling"]);
+});
+
+test("execution providers: a below-threshold live probe closes the attempt before invocation", async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-provider-confidence-"));
+  let invoked = false;
+  const runtime = new CapabilityRuntime([{
+    id: "local-model", kind: "command", capabilities: ["research"], min_confidence: 0.8,
+    probe: [process.execPath, "-e", "process.stdout.write(JSON.stringify({available:true,capabilities:['research'],confidence:0.6}))"],
+    command: [process.execPath, "-e", "process.exit(99)"],
+  }], { execute: async () => ({ passed: true }) });
+  const result = await runtime.execute({
+    project: { required_capabilities: ["research"], timeout_ms: 10_000 },
+    job: { work: { required_capabilities: [] }, project_context: {} }, workspace,
+    run: { attempt: 1, provider_id: "local-model" }, onStart: () => {}, onProviderStart: () => { invoked = true; },
+  });
+  assert.equal(result.passed, false);
+  assert.equal(result.provider_failure.category, "confidence");
+  assert.equal(result.provider_failure.action_status, "not_started");
+  assert.equal(invoked, false);
 });
 
 test("execution providers: an active attempt is pinned to its selected provider", async () => {

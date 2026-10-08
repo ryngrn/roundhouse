@@ -859,7 +859,6 @@ export class Engine {
               data.jobs[id].provider_evidence = structuredClone(recorded.provider_evidence);
             });
           };
-          await onProviderStart();
           execution = await this.runtime.execute({ project, job: providerJob, workspace: prepared.workspace,
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
             previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id),
@@ -872,12 +871,28 @@ export class Engine {
                 policy: project.policy.shipping, report_token: remote_execution.report_token,
                 recorded_at: new Date().toISOString(), reconciliation: { required_on_interruption: true, status: "remote_execution" } };
             }) });
+          const reportedConfidence = execution?.output?.confidence ?? execution?.confidence;
+          const selectedConfiguration = this.config.execution.providers.find((provider) => provider.id === providerEvidence.selected.id);
+          if (execution?.passed && reportedConfidence != null
+            && (!Number.isFinite(reportedConfidence) || reportedConfidence < (selectedConfiguration?.min_confidence ?? 0))) {
+            const threshold = selectedConfiguration?.min_confidence ?? 0;
+            const message = Number.isFinite(reportedConfidence)
+              ? `Provider confidence ${reportedConfidence} is below the configured threshold ${threshold}.`
+              : "Provider returned an invalid confidence value.";
+            execution = { ...execution, passed: false, error: message,
+              provider_failure: { category: "confidence", code: "confidence_below_threshold",
+                dependency: providerEvidence.selected.id, message, safe_to_retry: true, action_status: "completed_locally" } };
+          }
           await this.store.change((data) => {
             const recorded = data.jobs[id].attempts.at(-1);
             if (execution.provider?.id && execution.provider.id !== recorded.provider_evidence?.selected?.id) {
               throw new Error(`Execution provider cannot change within attempt ${recorded.number}: selected ${recorded.provider_evidence?.selected?.id}, returned ${execution.provider.id}.`);
             }
             recorded.execution = execution;
+            if (execution.provider_probe) {
+              recorded.provider_evidence.live_probe = structuredClone(execution.provider_probe);
+              data.jobs[id].provider_evidence = structuredClone(recorded.provider_evidence);
+            }
             recorded.run.provider_id = execution.provider?.id ?? recorded.run.provider_id;
             recorded.status = execution.passed ? "executed" : "failed";
             recorded.run.status = recorded.status;

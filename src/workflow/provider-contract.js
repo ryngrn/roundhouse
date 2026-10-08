@@ -1,5 +1,5 @@
 export const providerCapabilities = Object.freeze(["decision", "conversation", "execution"]);
-export const fallbackProviderFailureCategories = Object.freeze(["quota", "authentication", "availability"]);
+export const fallbackProviderFailureCategories = Object.freeze(["quota", "authentication", "availability", "capability", "confidence"]);
 
 const contracts = Object.freeze({
   codex: Object.freeze({ capabilities: Object.freeze([...providerCapabilities]) }),
@@ -27,6 +27,41 @@ export function providerIdentity(provider, fallbackId = null) {
   };
 }
 
+export function providerAdvertisement(value, configured, requiredCapabilities = []) {
+  const advertised = value?.provider ?? value;
+  if (!advertised || typeof advertised !== "object" || Array.isArray(advertised)) {
+    throw new Error(`Provider ${configured.id} probe must return a JSON object.`);
+  }
+  const capabilities = advertised.capabilities ?? configured.capabilities;
+  if (!Array.isArray(capabilities) || capabilities.some((entry) => typeof entry !== "string")) {
+    throw new Error(`Provider ${configured.id} probe capabilities must be an array of strings.`);
+  }
+  const configuredCapabilities = new Set(configured.capabilities ?? []);
+  const current = [...new Set(capabilities)].filter((entry) => configuredCapabilities.has(entry));
+  const unavailable = advertised.available === false;
+  const missing = requiredCapabilities.filter((entry) => !current.includes(entry));
+  const confidence = advertised.confidence ?? null;
+  if (confidence != null && (!Number.isFinite(confidence) || confidence < 0 || confidence > 1)) {
+    throw new Error(`Provider ${configured.id} probe confidence must be 0–1.`);
+  }
+  const minConfidence = configured.min_confidence ?? 0;
+  const confidenceSufficient = confidence == null || confidence >= minConfidence;
+  return {
+    provider_id: configured.id,
+    available: !unavailable,
+    capabilities: current,
+    required: [...requiredCapabilities],
+    missing,
+    confidence,
+    eligible: !unavailable && missing.length === 0 && confidenceSufficient,
+    reason: advertised.reason ?? (unavailable ? "Provider reported that it is unavailable."
+      : missing.length ? `Provider does not currently advertise: ${missing.join(", ")}.`
+        : !confidenceSufficient ? `Provider confidence ${confidence} is below the configured threshold ${minConfidence}.` : null),
+    ...(advertised.node_id ? { node_id: advertised.node_id } : {}),
+    ...(advertised.observed_at ? { observed_at: advertised.observed_at } : {}),
+  };
+}
+
 export function providerCapabilityEvidence(providers, requiredCapabilities, selected = null, routing = null) {
   const required = [...new Set(requiredCapabilities ?? [])];
   const configured = (providers ?? []).map((provider) => providerIdentity(provider)).filter(Boolean);
@@ -48,6 +83,8 @@ const normalizedFailureCategory = (value) => {
   const text = String(value ?? "").toLowerCase().replaceAll("-", "_");
   if (text.includes("quota") || text.includes("rate_limit") || text.includes("capacity")) return "quota";
   if (text.includes("auth") || text.includes("credential") || text.includes("permission")) return "authentication";
+  if (text.includes("capab") || text.includes("insufficient")) return "capability";
+  if (text.includes("confidence") || text.includes("quality") || text.includes("threshold")) return "confidence";
   if (text.includes("avail") || text.includes("outage") || text.includes("dependency")) return "availability";
   return null;
 };

@@ -199,7 +199,7 @@ export function validateWorkflowConfig(raw, filename) {
   check(suppliedProviders === undefined || Array.isArray(suppliedProviders), "execution.providers must be an array.");
   const providers = (suppliedProviders ?? [{ id: "local-project", kind: "project", capabilities }]).map((provider) => {
     check(plainObject(provider), "Execution provider must be an object.");
-    for (const key of Object.keys(provider)) check(["id", "kind", "capabilities", "command", "tier", "max_risk", "min_confidence", "context_window", "latency_ms"].includes(key), `Unknown execution provider setting: ${key}`);
+    for (const key of Object.keys(provider)) check(["id", "kind", "capabilities", "command", "probe", "tier", "max_risk", "min_confidence", "context_window", "latency_ms"].includes(key), `Unknown execution provider setting: ${key}`);
     check(nonempty(provider.id) && contractKey.test(provider.id), "Execution provider id must be a stable lowercase identifier.");
     check(["project", "command"].includes(provider.kind), `Execution provider ${provider.id} kind must be project or command.`);
     const declared = stringSet(provider.capabilities ?? [], `Execution provider ${provider.id} capabilities`);
@@ -216,6 +216,8 @@ export function validateWorkflowConfig(raw, filename) {
     check(declared.every((capability) => capabilities.includes(capability)), `Execution provider ${provider.id} declares a capability unavailable on this installation.`);
     if (provider.kind === "command") check(commandValid(provider.command), `Execution provider ${provider.id} requires an argv array.`);
     else check(provider.command === undefined, `Project execution provider ${provider.id} cannot define a command.`);
+    check(provider.probe === undefined || commandValid(provider.probe), `Execution provider ${provider.id} probe must be an argv array.`);
+    check(provider.kind === "command" || provider.probe === undefined, `Project execution provider ${provider.id} cannot define a probe command.`);
     if (provider.kind === "command") assertNotRemoteDesktopCommanderCommand(provider.command, `Execution provider ${provider.id}`);
     return { ...provider, capabilities: declared };
   });
