@@ -8,7 +8,7 @@ import { computeAdvisory, validateDecision, routeDecision } from "../src/workflo
 import { Store, acquireLock } from "../src/workflow/store.js";
 import { runProcess } from "../src/workflow/runtime.js";
 import { notionInput } from "../src/workflow/cli.js";
-import { listIssues, respondToIssue, dispatchHoldReason } from "../src/workflow/issues.js";
+import { listIssues, respondToIssue, dispatchHoldReason, needsHumanReview } from "../src/workflow/issues.js";
 
 const project = { id: "example", status: "active", executor: { kind: "command" }, runtime: "local",
   verification: [{ id: "tests" }], policy: { project_confidence: 0.8, execution_confidence: 0.9, allow_autonomous: true, shipping: "push_branch" } };
@@ -144,4 +144,18 @@ test("unit: Ready work with unsafe prerequisites is an issue, not executable cle
   assert.equal(store.read().jobs.held.state, "Blocked");
   assert.equal(store.read().items[plan.follow_up_id].state, "Depot");
   assert.equal(store.read().jobs.held.attempts.length, 0);
+});
+
+
+test("unit: review rolls up blockers and questions but does not replay execution", () => {
+  const blocked = { state: "Blocked", history: [{ reason: "Verification failed" }] };
+  assert.deepEqual(needsHumanReview(blocked), { required: true, kind: "blocked", reason: "Verification failed" });
+  assert.equal(needsHumanReview({ state: "Needs Clarification", refinement: { active_question: { prompt: "What project?" } } }).kind, "clarification");
+  assert.equal(needsHumanReview({ state: "Review" }).kind, "approval");
+  assert.equal(needsHumanReview({ state: "Depot" }).required, false);
+  assert.equal(needsHumanReview({ state: "Executing" }).required, false);
+  assert.equal(needsHumanReview({ state: "Ready" }, { dispatchHold: "Waiting for prerequisite job-1 (Ready)." }).required, false);
+  assert.equal(needsHumanReview({ state: "Ready" }, { dispatchHold: "Waiting for prerequisite job-1 (Blocked)." }).kind, "blocked");
+  assert.equal(needsHumanReview({ state: "Ready" }, { dispatchHold: "Project policy changed." }).required, true);
+  assert.equal(blocked.state, "Blocked");
 });

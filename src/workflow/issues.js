@@ -28,6 +28,23 @@ export function dispatchHoldReason(job, data, config) {
   return null;
 }
 
+// Review is a human-facing attention signal, never permission to replay work.
+export function needsHumanReview(entity, { dispatchHold = null } = {}) {
+  const state = entity?.state;
+  if (state === "Blocked") return { required: true, kind: "blocked",
+    reason: entity.history?.at(-1)?.reason || "Work is blocked and needs investigation." };
+  if (state === "Needs Clarification") return { required: true, kind: "clarification",
+    reason: entity.refinement?.active_question?.prompt || entity.decision?.question ||
+      entity.history?.at(-1)?.reason || "An answer is needed before proceeding." };
+  if (state === "Review") return { required: true, kind: "approval",
+    reason: entity.history?.at(-1)?.reason || "Approval or a decision is required." };
+  // A normal prerequisite still in Ready is not a request for human intervention.
+  if (state === "Ready" && dispatchHold && !/^Waiting for prerequisite .+ \(Ready\)\.$/.test(dispatchHold)) {
+    return { required: true, kind: "blocked", reason: dispatchHold };
+  }
+  return { required: false, kind: null, reason: null };
+}
+
 // Persist decisions about blocked work without ever implicitly replaying the original
 // failed attempt. Both web and CLI write this same authoritative local state.
 export function listIssues(data, { projectId, config } = {}) {

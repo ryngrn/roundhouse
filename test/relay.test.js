@@ -225,3 +225,33 @@ test("relay: wake watcher syncs once on startup and once per ntfy message", asyn
   assert.deepEqual(seen, [1, 2]);
   assert.deepEqual(result, { stopped: true });
 });
+
+
+test("relay: projected Needs Review includes blocked, clarification and approval without losing original states", () => {
+  const h = harness();
+  const ids = ["blocked", "clarification", "approval", "unrefined"]
+    .map((key) => h.store.submit({ text: "Issue " + key, source: "fixture", actor: "test" }, "unified-" + key).id);
+  h.store.change((data) => {
+    data.items[ids[0]].state = "Blocked";
+    data.items[ids[0]].history.push({ from: "Decision", to: "Blocked", reason: "Test failure", at: new Date().toISOString() });
+    data.items[ids[1]].state = "Needs Clarification";
+    data.items[ids[1]].refinement.active_question = { prompt: "Which project?", id: "q1", revision: 1 };
+    data.items[ids[2]].state = "Review";
+  });
+  const before = h.store.read();
+  const view = dashboardProjection(before, h.config).overview;
+  assert.equal(view.counts.needs_review, 3);
+  assert.equal(view.counts.needs_you, 3);
+  const byId = Object.fromEntries(view.items.map((item) => [item.id, item]));
+  for (const [index, kind, rawState] of [
+    [0, "blocked", "Blocked"], [1, "clarification", "Needs Clarification"],
+    [2, "approval", "Review"],
+  ]) {
+    assert.equal(byId[ids[index]].review_required, true);
+    assert.equal(byId[ids[index]].review_kind, kind);
+    assert.equal(byId[ids[index]].state, rawState);
+  }
+  assert.equal(byId[ids[3]].review_required, false);
+  assert.equal(before.items[ids[0]].state, "Blocked");
+  assert.equal(h.store.read().items[ids[0]].state, "Blocked");
+});
