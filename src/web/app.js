@@ -58,6 +58,11 @@ function node(tag, text, className) {
 const slug = (value) => String(value || "").toLowerCase().replaceAll(" ", "-");
 const projectLabel = (item) => item.project || item.project_candidate?.name || "Unassigned";
 const shortDate = (value) => value ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value)) : "—";
+const outcomeLabel = (value) => String(value || "").split("_").map((part) => {
+  if (part === "rdc") return "RDC";
+  if (part === "chatgpt") return "ChatGPT";
+  return part.charAt(0).toUpperCase() + part.slice(1);
+}).join(" ");
 
 const PROJECT_VISUALS = [
   { match: /roundhouse/i, emoji: "🚂", accent: "#b9d76c" },
@@ -134,6 +139,56 @@ function renderConnection(overview) {
   $("#count-all").textContent = overview.items.length;
   const countIds = { needs_you: "needs", active: "active", queued: "queued", completed: "completed", blocked: "blocked" };
   for (const [key, id] of Object.entries(countIds)) $("#count-" + id).textContent = overview.counts[key];
+}
+
+function executionPathLabel(path) {
+  return (path || []).map((component) => [outcomeLabel(component.kind), component.provider, component.machine]
+    .filter(Boolean).join(" · ")).join(" → ");
+}
+
+function renderExecutionOutcomes(overview) {
+  const section = $("#execution-outcomes-section");
+  const metrics = overview.execution_metrics;
+  if (!metrics) { section.hidden = true; return; }
+  section.hidden = false;
+  const nativeRate = metrics.kpis?.native_path_success_rate?.percentage;
+  $("#native-path-rate").textContent = Number.isFinite(nativeRate)
+    ? `${nativeRate.toLocaleString(undefined, { maximumFractionDigits: 1 })}%` : "—";
+  $("#exception-count").textContent = String(metrics.classification_counts?.exception_success ?? 0);
+  $("#recovered-count").textContent = String(metrics.classification_counts?.recovered_success ?? 0);
+  const leadingReasons = (metrics.exception_reasons || []).slice(0, 3);
+  $("#leading-exception-reason").textContent = leadingReasons.length
+    ? leadingReasons.map((entry) => `${outcomeLabel(entry.reason)} · ${entry.count}`).join(" / ") : "None";
+  const population = metrics.population || {};
+  $("#execution-outcomes-coverage").textContent = `${population.measured_jobs ?? 0} measured job${population.measured_jobs === 1 ? "" : "s"}`
+    + (population.excluded_jobs ? ` · ${population.excluded_jobs} historical or unclassified excluded` : "");
+
+  const root = $("#execution-outcome-records"); root.replaceChildren();
+  const records = metrics.drill_down || [];
+  if (!records.length) { root.append(node("p", "No classified execution outcomes yet.", "empty-state")); return; }
+  for (const record of records) {
+    const row = node("button", undefined, "execution-outcome-record"); row.type = "button";
+    const identity = node("span", undefined, "execution-outcome-identity");
+    identity.append(node("strong", record.job_id), node("span", record.project_id || "Unassigned project"));
+    const classification = node("span", outcomeLabel(record.classification), `outcome-classification outcome-${record.classification}`);
+    const facts = node("span", undefined, "execution-outcome-facts");
+    const path = executionPathLabel(record.execution_path);
+    if (path) facts.append(node("span", path));
+    if (record.reason?.code) facts.append(node("span", `Reason · ${outcomeLabel(record.reason.code)}`));
+    if (typeof record.exception_expected === "boolean") {
+      facts.append(node("span", record.exception_expected ? "Expected exception" : "Unexpected exception"));
+    }
+    if (record.human_intervention_count !== null && record.human_intervention_count !== undefined) {
+      facts.append(node("span", `Human interventions · ${record.human_intervention_count}`));
+    }
+    if (Number.isFinite(record.human_minutes)) facts.append(node("span", `Human minutes · ${record.human_minutes}`));
+    const provenanceStages = Object.keys(record.provenance || {});
+    if (provenanceStages.length) facts.append(node("span", `Provenance · ${provenanceStages.map(outcomeLabel).join(" / ")}`));
+    if (record.evidence_links?.length) facts.append(node("span", `Evidence · ${record.evidence_links.length}`));
+    row.append(identity, classification, facts, node("span", "→", "active-job-arrow"));
+    row.addEventListener("click", () => openWork(record.item_id));
+    root.append(row);
+  }
 }
 
 function activeExecutionSummary(job) {
@@ -450,6 +505,24 @@ async function submitDecisionSession() {
 
 function evidenceView(item) {
   const root = node("div", undefined, "detail-grid");
+  const outcomes = node("section", undefined, "detail-section"); outcomes.append(node("h3", "Execution paths"));
+  for (const job of item.jobs) {
+    const outcome = job.execution_outcome;
+    const entry = node("div", undefined, "job-outcome");
+    entry.append(node("strong", `${job.title} · ${outcome ? outcomeLabel(outcome.classification) : "Not classified"}`));
+    if (!outcome) entry.append(node("p", "No authoritative execution outcome is recorded; this job is excluded from execution-path metrics."));
+    else {
+      const path = executionPathLabel(outcome.execution_path); if (path) entry.append(node("p", path));
+      if (outcome.reason?.code) entry.append(node("p", `Reason · ${outcomeLabel(outcome.reason.code)}${outcome.reason.note ? ` — ${outcome.reason.note}` : ""}`));
+      if (typeof outcome.exception_expected === "boolean") entry.append(node("p", outcome.exception_expected ? "Exception was expected or authorized." : "Exception was unexpected."));
+      if (outcome.human_intervention_count !== null && outcome.human_intervention_count !== undefined) entry.append(node("p", `Human interventions · ${outcome.human_intervention_count}`));
+      if (Number.isFinite(outcome.human_minutes)) entry.append(node("p", `Human minutes · ${outcome.human_minutes}`));
+      const stages = Object.keys(outcome.provenance || {}); if (stages.length) entry.append(node("p", `Roundhouse provenance · ${stages.map(outcomeLabel).join(" · ")}`));
+      if (outcome.evidence_links?.length) entry.append(node("p", `Linked evidence · ${outcome.evidence_links.length}`));
+    }
+    outcomes.append(entry);
+  }
+  if (item.jobs.length) root.append(outcomes);
   const allocations = item.jobs.flatMap((job) => job.allocation_history || []).map(allocationSummary).filter(Boolean);
   root.append(detailSection("Allocation decisions", allocations.length ? allocations : ["No dispatch decision recorded yet."]));
   root.append(detailSection("Verification", item.evidence.checks.length ? item.evidence.checks.map((check) => `${check.passed ? "Passed" : "Failed"} · ${check.id}${check.summary ? ` — ${check.summary}` : ""}`) : ["No verification evidence recorded yet."]));
@@ -518,7 +591,7 @@ let pendingLoads = 0;
 async function readAndRender() {
   try {
     const [overview, config] = await Promise.all([api("/api/overview"), api("/api/config")]); currentOverview = overview; configuration = config.configuration;
-    renderConnection(overview); renderActiveJobs(overview); renderUntrackedActivity(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
+    renderConnection(overview); renderExecutionOutcomes(overview); renderActiveJobs(overview); renderUntrackedActivity(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
   } catch (error) { $("#connection").textContent = `● App unavailable · ${error.message}`; $("#connection").className = "connection failed"; }
 }
 function load() {

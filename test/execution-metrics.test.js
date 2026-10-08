@@ -99,6 +99,12 @@ test("trustworthy completion KPI excludes imported, unclassified, and Shipped-on
   });
   assert.equal(metrics.kpis.tasks_completed_without_intervention.percentage, 100);
   assert.equal(metrics.classification_counts.native_success, 1);
+  assert.equal(metrics.drill_down.length, 1);
+  assert.equal("machine" in metrics.drill_down[0].execution_path[0], false);
+  assert.deepEqual(Object.keys(metrics.drill_down[0].provenance).sort(),
+    ["delivery", "dispatch", "executor_ownership", "intake", "verification"]);
+  assert.equal("human_minutes" in metrics.drill_down[0], true);
+  assert.equal(metrics.drill_down[0].human_minutes, null);
 });
 
 test("status read model exposes scoped authoritative execution KPIs", () => {

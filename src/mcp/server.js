@@ -134,7 +134,8 @@ const executionMetricsSchema = z.object({
     job_id: z.string(), item_id: z.string(), project_id: z.string().nullable(), job_type: z.string(),
     classification: z.string(), reason: z.unknown().nullable(), exception_expected: z.boolean().nullable(),
     human_intervention_count: z.number().int().nonnegative(), human_minutes: z.number().nonnegative().nullable(),
-    recorded_at: z.string(), execution_path: z.array(z.unknown()), evidence_links: z.array(z.unknown()),
+    recorded_at: z.string(), execution_path: z.array(z.unknown()), provenance: z.record(z.string(), z.unknown()),
+    evidence_links: z.array(z.unknown()),
   })),
 });
 const followSchema = z.object({

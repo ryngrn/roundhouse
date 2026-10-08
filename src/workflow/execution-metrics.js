@@ -197,6 +197,7 @@ export function executionOutcomeMetrics(data, { jobIds } = {}) {
       human_minutes: outcome.human_minutes,
       recorded_at: outcome.recorded_at,
       execution_path: outcome.execution_path,
+      provenance: outcome.provenance,
       evidence_links: outcome.evidence_links,
     })),
   };

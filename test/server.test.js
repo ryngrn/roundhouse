@@ -123,6 +123,9 @@ test("local server: protected UI, health, API, worker, evidence, config, and not
   assert.equal(overview.items[0].state, "Shipped");
   assert.ok(overview.items[0].evidence.checks.every((check) => check.passed));
   assert.equal(overview.items[0].evidence.deliveries[0].deployment.status, "succeeded");
+  assert.equal(overview.execution_metrics.kpis.native_path_success_rate.percentage, 100);
+  assert.equal(overview.execution_metrics.drill_down[0].classification, "native_success");
+  assert.equal(overview.items[0].jobs[0].execution_outcome.classification, "native_success");
   assert.equal(overview.connection.mcp, "available");
 
   const notices = (await request(running.url, "/api/notifications")).json();
@@ -315,6 +318,46 @@ test("served browser client renders local and machine-local active jobs from the
   assert.match(untracked, /Untracked\s+Possible executor process · PID 909\s+Executable · codex/);
   assert.match(untracked, /Repository worktree · manual-agent\s+\/tmp\/manual-agent/);
   assert.match(untracked, /Observed only · no job, owner, completion, or delivery inferred/);
+});
+
+test("served browser client renders the authoritative execution summary and drill-down without filling absent provenance", async () => {
+  const script = fs.readFileSync(new URL("../src/web/app.js", import.meta.url), "utf8");
+  const overview = {
+    items: [], active_jobs: [], untracked_activity: [], projects: {}, project_candidates: {}, allocations: { latest: {} },
+    counts: { needs_you: 0, active: 0, queued: 0, completed: 3, blocked: 0 },
+    connection: { worker: { running: false }, storage: { kind: "local", node: null } },
+    execution_metrics: {
+      population: { total_jobs: 4, measured_jobs: 3, completed_jobs: 3, excluded_jobs: 1,
+        exclusions: { historical_import: 1, unclassified: 0 } },
+      classification_counts: { native_success: 1, recovered_success: 1, exception_success: 1, failed_or_abandoned: 0 },
+      kpis: { native_path_success_rate: { percentage: 100 / 3 } },
+      exception_reasons: [{ reason: "herdr_failure", count: 1, share: 1 }],
+      drill_down: [{ job_id: "job-exception", item_id: "item-exception", project_id: "roundhouse",
+        classification: "exception_success", reason: { code: "herdr_failure", note: "Remote execution stopped." },
+        exception_expected: false, human_intervention_count: 1, human_minutes: null,
+        execution_path: [{ kind: "manual_rdc" }], provenance: {}, evidence_links: [] }],
+    },
+  };
+  const responses = {
+    "/api/overview": overview,
+    "/api/config": { configuration: { projects: [] } },
+  };
+  const document = browserDocument();
+  const browserFetch = async (pathname) => ({ ok: Boolean(responses[pathname]), status: responses[pathname] ? 200 : 404,
+    text: async () => JSON.stringify(responses[pathname] || { error: "Not found" }) });
+  vm.runInNewContext(script, { document, fetch: browserFetch, crypto: {}, setTimeout: () => 1 }, { filename: "served-app.js" });
+  await settleUntil(() => document.querySelector("#native-path-rate").textContent === "33.3%");
+
+  assert.equal(document.querySelector("#execution-outcomes-section").hidden, false);
+  assert.equal(document.querySelector("#exception-count").textContent, "1");
+  assert.equal(document.querySelector("#recovered-count").textContent, "1");
+  assert.equal(document.querySelector("#leading-exception-reason").textContent, "Herdr Failure · 1");
+  assert.equal(document.querySelector("#execution-outcomes-coverage").textContent,
+    "3 measured jobs · 1 historical or unclassified excluded");
+  const records = elementText(document.querySelector("#execution-outcome-records"));
+  assert.match(records, /job-exception\s+roundhouse\s+Exception Success\s+Manual RDC/);
+  assert.match(records, /Reason · Herdr Failure\s+Unexpected exception\s+Human interventions · 1/);
+  assert.doesNotMatch(records, /machine|provider|minutes|evidence/i);
 });
 
 test("served browser client uses one explicit atomic decision-session submission", async (t) => {
