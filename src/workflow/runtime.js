@@ -343,6 +343,10 @@ export class HerdrRuntime {
       if (!placement.selection) return { ...placementRequest, passed: false, error: placement.hold.reason,
         remote_execution: { ...preflightIdentity, placement, phase: placement.hold.code } };
     } else placement = staticHerdrPlacement(project, job);
+    const selectedPlacementFailure = (reason, code = "placement_unavailable") => ({
+      ...placement,
+      hold: { ...unavailablePlacement(reason, code).hold },
+    });
     const machine = placement.selection.machine;
     const agent = placement.selection.agent;
     const baseIdentity = { runtime: "herdr", machine_selector: machine, agent_target: agent, workspace_mode: workspaceMode,
@@ -355,18 +359,19 @@ export class HerdrRuntime {
     });
     if (!probe.passed) {
       const failure = machineProbeFailure(probe, machine);
-      return { ...probe, error: failure.reason, remote_execution: { ...baseIdentity, placement: unavailablePlacement(failure.reason), phase: failure.phase } };
+      return { ...probe, error: failure.reason, remote_execution: { ...baseIdentity,
+        placement: selectedPlacementFailure(failure.reason), phase: failure.phase } };
     }
     let machineStatus;
     try { machineStatus = parseJsonOutput(probe.stdout, "Herdr machine status"); }
     catch (error) { return { ...probe, passed: false, error: error.message,
-      remote_execution: { ...baseIdentity, placement: unavailablePlacement(error.message), phase: "machine_probe_failed" } }; }
+      remote_execution: { ...baseIdentity, placement: selectedPlacementFailure(error.message), phase: "machine_probe_failed" } }; }
     let capabilityProbe = null;
     let agentStatus = null;
     if (project.executor.kind === "claude") {
       const machineCapability = claudeMachineCapabilityProbe(machineStatus);
       if (!machineCapability.passed) return { ...probe, passed: false, error: machineCapability.reason,
-        remote_execution: { ...baseIdentity, placement: unavailablePlacement(machineCapability.reason, "missing_capability"), phase: machineCapability.phase, machine_status: correlation(machineStatus),
+        remote_execution: { ...baseIdentity, placement: selectedPlacementFailure(machineCapability.reason, "missing_capability"), phase: machineCapability.phase, machine_status: correlation(machineStatus),
           capability_probe: machineCapability } };
       const agentProbe = await runProcess([bin, "--machine", machine, "agent", "get", agent], {
         cwd: localCwd, timeout: project.timeout_ms, onStart,
@@ -374,14 +379,14 @@ export class HerdrRuntime {
       if (!agentProbe.passed) {
         const failure = agentProbeFailure(agentProbe, machine, agent);
         return { ...agentProbe, error: failure.reason,
-          remote_execution: { ...baseIdentity, placement: unavailablePlacement(failure.reason), phase: failure.phase, machine_status: correlation(machineStatus) } };
+          remote_execution: { ...baseIdentity, placement: selectedPlacementFailure(failure.reason), phase: failure.phase, machine_status: correlation(machineStatus) } };
       }
       try { agentStatus = parseJsonOutput(agentProbe.stdout, "Herdr agent status"); }
       catch (error) { return { ...agentProbe, passed: false, error: error.message,
-        remote_execution: { ...baseIdentity, placement: unavailablePlacement(error.message), phase: "agent_probe_failed", machine_status: correlation(machineStatus) } }; }
+        remote_execution: { ...baseIdentity, placement: selectedPlacementFailure(error.message), phase: "agent_probe_failed", machine_status: correlation(machineStatus) } }; }
       capabilityProbe = claudeCapabilityProbe(machineStatus, agentStatus);
       if (!capabilityProbe.passed) return { ...agentProbe, passed: false, error: capabilityProbe.reason,
-        remote_execution: { ...baseIdentity, placement: unavailablePlacement(capabilityProbe.reason, "missing_capability"), phase: capabilityProbe.phase, machine_status: correlation(machineStatus),
+        remote_execution: { ...baseIdentity, placement: selectedPlacementFailure(capabilityProbe.reason, "missing_capability"), phase: capabilityProbe.phase, machine_status: correlation(machineStatus),
           agent_status: correlation(agentStatus), capability_probe: capabilityProbe } };
     }
     const remoteExecution = { ...baseIdentity, phase: "prompting", machine_status: correlation(machineStatus),

@@ -241,6 +241,55 @@ test("e2e: safe provider failure falls back only at a new attempt boundary", asy
   assert.equal(job.attempts[1].provider_evidence.fallback.excluded_provider_ids[0], "a-primary");
 });
 
+function attemptPlacement(job, machine, rationale) {
+  const configurationIdentity = job.policy_hash;
+  const selection = { runtime: "herdr", machine, platform: "macos", tool: "command", agent: `${machine}-worker`,
+    matched_capabilities: [], rationale, source: "herdr_scheduler", configuration_identity: configurationIdentity };
+  return { authority: { control_plane: "roundhouse", placement: "herdr" },
+    configuration_identity: configurationIdentity, requirements: { authority: "roundhouse", configuration_identity: configurationIdentity,
+      runtime: "herdr", machine_selectors: ["studio-a", "studio-b"], platforms: ["macos"], tools: ["command"],
+      agents: ["studio-a-worker", "studio-b-worker"], capabilities: [], source: "roundhouse_project_policy" },
+    eligible: [], selection, hold: null, source: "herdr_scheduler", observed_at: new Date().toISOString() };
+}
+
+test("e2e: an active Herdr attempt cannot replace its durably selected placement", async () => {
+  const h = harness({ policy: { max_rework_attempts: 0 } });
+  Object.assign(h.config.projects[0], { runtime: "herdr", herdr: { placement: { machine_selectors: ["studio-a", "studio-b"],
+    platforms: ["macos"], tools: ["command"], agents: ["studio-a-worker", "studio-b-worker"] } } });
+  const runtime = { execute: async ({ job, onPlacement }) => {
+    await onPlacement(attemptPlacement(job, "studio-a", "Initial explicit selection."));
+    await onPlacement(attemptPlacement(job, "studio-b", "Silent replacement."));
+    return { passed: true, exit_code: 0 };
+  } };
+  h.engine = new Engine({ store: h.store, config: h.config, runtime });
+  h.submit("pin placement");
+  const job = Object.values((await h.engine.run()).jobs)[0];
+  assert.equal(job.state, "Blocked");
+  assert.equal(job.attempts.length, 1);
+  assert.equal(job.attempts[0].placement.selection.machine, "studio-a");
+  assert.match(job.attempts[0].failure, /cannot change within active attempt/);
+});
+
+test("e2e: Herdr rework performs a new explicit selection without changing prior attempt evidence", async () => {
+  const h = harness({ policy: { max_rework_attempts: 1 } });
+  Object.assign(h.config.projects[0], { runtime: "herdr", herdr: { placement: { machine_selectors: ["studio-a", "studio-b"],
+    platforms: ["macos"], tools: ["command"], agents: ["studio-a-worker", "studio-b-worker"] } } });
+  const runtime = { execute: async ({ job, workspace, run, onPlacement }) => {
+    const machine = run.attempt === 1 ? "studio-a" : "studio-b";
+    await onPlacement(attemptPlacement(job, machine, `Explicit selection for attempt ${run.attempt}.`));
+    if (run.attempt === 1) return { passed: false, exit_code: 1, error: "Retry on a new attempt." };
+    fs.appendFileSync(path.join(workspace, "feature.txt"), "implemented: placement retry\n");
+    return { passed: true, exit_code: 0 };
+  } };
+  h.engine = new Engine({ store: h.store, config: h.config, runtime });
+  h.submit("placement retry");
+  const job = Object.values((await h.engine.run()).jobs)[0];
+  assert.equal(job.state, "Shipped");
+  assert.deepEqual(job.attempts.map((entry) => entry.placement.selection.machine), ["studio-a", "studio-b"]);
+  assert.equal(job.attempts[0].placement.selection.rationale, "Explicit selection for attempt 1.");
+  assert.equal(job.attempts[1].placement.selection.rationale, "Explicit selection for attempt 2.");
+});
+
 test("e2e: live availability and confidence probes escalate through distinct durable attempts", async () => {
   const h = harness({ policy: { max_rework_attempts: 0 } });
   h.config.execution.capabilities = ["local"];
@@ -840,7 +889,10 @@ test("integration: interrupted non-code run retains identity, failure, and recon
     data.jobs["item-0"] = { id: "item-0", parent_id: "item", project_id: "research", state: "Executing", revision: 2,
       work: { title: "Research", repository_required: false }, history: [], processes: [], attempts: [{ number: 1,
         status: "executing", started_at: new Date().toISOString(), run: { id: "run-1", provider_id: "research-fixture",
-          status: "executing", inputs: { work: { title: "Research" } }, reconciliation: { required: false, status: "not_required" } } }] };
+          status: "executing", inputs: { work: { title: "Research" } }, reconciliation: { required: false, status: "not_required" } },
+        placement: { configuration_identity: "policy-hash-1", selection: { runtime: "herdr", machine: "studio",
+          platform: "macos", tool: "codex", agent: "worker", matched_capabilities: ["research"],
+          rationale: "Selected before launch.", source: "herdr_scheduler", configuration_identity: "policy-hash-1" } } }] };
   });
   store.acquireWorkerLease();
   const ownerFile = path.join(store.workerLock, "owner.json");
@@ -859,6 +911,8 @@ test("integration: interrupted non-code run retains identity, failure, and recon
   assert.equal(job.reconciliation.run_id, "run-1");
   assert.equal(job.reconciliation.intent, null);
   assert.equal(job.attempts[0].run.reconciliation.status, "required");
+  assert.equal(job.attempts[0].placement.selection.machine, "studio");
+  assert.equal(job.attempts[0].placement.selection.configuration_identity, "policy-hash-1");
   assert.equal(job.execution_outcome.classification, "failed_or_abandoned");
   assert.equal(job.execution_outcome.reason.code, "stale_worker");
 });

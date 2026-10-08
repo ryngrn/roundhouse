@@ -903,11 +903,30 @@ export class Engine {
         try {
           const providerJob = (await this.store.read()).jobs[id];
           assertProviderAuthorized(providerJob);
+          const correlatedAttempt = (data) => {
+            const recorded = data.jobs[id].attempts.find((entry) => entry.number === run.attempt && entry.run?.id === run.id);
+            if (!recorded) throw new Error(`Execution evidence does not match active attempt ${run.attempt}/${run.id}.`);
+            return recorded;
+          };
+          const recordPlacement = (data, placement) => {
+            const recorded = correlatedAttempt(data);
+            const selected = placement?.selection;
+            if (selected && placement.configuration_identity !== providerJob.policy_hash) {
+              throw new Error(`Herdr placement configuration does not match attempt ${recorded.number}.`);
+            }
+            if (recorded.placement?.selection && selected
+              && digest(recorded.placement.selection) !== digest(selected)) {
+              throw new Error(`Herdr placement cannot change within active attempt ${recorded.number}.`);
+            }
+            recorded.placement = structuredClone(placement);
+            recorded.run.placement = structuredClone(placement);
+            return recorded;
+          };
           const onProviderStart = async (invokedProvider = providerEvidence.selected) => {
             const invokedIdentity = { ...providerEvidence.selected, ...invokedProvider,
               kind: invokedProvider?.kind ?? providerEvidence.selected.kind };
             await this.store.change((data) => {
-              const recorded = data.jobs[id].attempts.at(-1);
+              const recorded = correlatedAttempt(data);
               const selectedId = recorded.provider_evidence?.selected?.id;
               if (selectedId !== invokedIdentity.id) {
                 throw new Error(`Execution provider cannot change within attempt ${recorded.number}: selected ${selectedId}, invoked ${invokedIdentity.id ?? "unknown"}.`);
@@ -924,16 +943,11 @@ export class Engine {
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
             previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id),
             onProviderStart,
-            onPlacement: (placement) => this.store.change((data) => {
-              const recorded = data.jobs[id].attempts.at(-1);
-              recorded.placement = structuredClone(placement);
-              recorded.run.placement = structuredClone(placement);
-            }),
+            onPlacement: (placement) => this.store.change((data) => { recordPlacement(data, placement); }),
             onRemoteStart: (remote_execution) => this.store.change((data) => {
               const j = data.jobs[id];
-              j.attempts.at(-1).placement = structuredClone(remote_execution.placement);
-              j.attempts.at(-1).run.placement = structuredClone(remote_execution.placement);
-              j.attempts.at(-1).execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
+              const recorded = recordPlacement(data, remote_execution.placement);
+              recorded.execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
               if (machineLocal) j.delivery_intent = { mode: "machine_local", working_directory: project.herdr.working_directory,
                 machine_selector: remote_execution.machine_selector, agent_target: remote_execution.agent_target, branch: executionBranch(project, j),
                 policy: project.policy.shipping, report_token: remote_execution.report_token,
@@ -952,14 +966,13 @@ export class Engine {
                 dependency: providerEvidence.selected.id, message, safe_to_retry: true, action_status: "completed_locally" } };
           }
           await this.store.change((data) => {
-            const recorded = data.jobs[id].attempts.at(-1);
+            const recorded = correlatedAttempt(data);
             if (execution.provider?.id && execution.provider.id !== recorded.provider_evidence?.selected?.id) {
               throw new Error(`Execution provider cannot change within attempt ${recorded.number}: selected ${recorded.provider_evidence?.selected?.id}, returned ${execution.provider.id}.`);
             }
             recorded.execution = execution;
             if (execution.remote_execution?.placement) {
-              recorded.placement = structuredClone(execution.remote_execution.placement);
-              recorded.run.placement = structuredClone(execution.remote_execution.placement);
+              recordPlacement(data, execution.remote_execution.placement);
             }
             if (execution.provider_probe) {
               recorded.provider_evidence.live_probe = structuredClone(execution.provider_probe);

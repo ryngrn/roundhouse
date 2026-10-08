@@ -110,7 +110,7 @@ test("Herdr placement evidence preserves Roundhouse policy authority and validat
     herdr: { machine: "Studio-iMac", agent: "general-worker", placement: {
       machine_selectors: ["Studio-iMac"], platforms: ["macos"], tools: ["claude"], agents: ["general-worker"], capabilities: ["browser"],
     } } };
-  const job = { work: { required_capabilities: ["repository", "visual-review"] } };
+  const job = { policy_hash: "approved-project-configuration", work: { required_capabilities: ["repository", "visual-review"] } };
   const requirements = herdrPlacementRequirements(project, job);
   assert.deepEqual(requirements.capabilities, ["repository", "visual-review", "browser"]);
   const selected = { runtime: "herdr", machine: "Studio-iMac", platform: "macos", tool: "claude", agent: "general-worker",
@@ -119,6 +119,8 @@ test("Herdr placement evidence preserves Roundhouse policy authority and validat
     rationale: "Machine advertises every required capability.", source: "herdr_scheduler", observed_at: "2026-10-08T00:00:00.000Z" });
   assert.deepEqual(evidence.authority, { control_plane: "roundhouse", placement: "herdr" });
   assert.deepEqual(evidence.selection.matched_capabilities, requirements.capabilities);
+  assert.equal(evidence.configuration_identity, "approved-project-configuration");
+  assert.equal(evidence.selection.configuration_identity, "approved-project-configuration");
   assert.equal(evidence.selection.source, "herdr_scheduler");
   assert.equal(evidence.hold, null);
   assert.throws(() => validateHerdrPlacement({ requirements, eligible: [selected],

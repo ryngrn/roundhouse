@@ -515,6 +515,13 @@ not consume the work-repair budget. An uncertain or started external action bloc
 for reconciliation; it is never replayed. Exhausting compatible providers produces
 a durable Blocked result naming the unavailable capability or dependency.
 
+Herdr placement follows the same attempt boundary. Before probing or dispatching a
+selected target, Roundhouse durably records its machine, platform, tool/agent,
+matched capabilities, rationale, source, and approved configuration identity. The
+placement cannot change within that attempt. A retry may select another eligible
+target only through a new attempt, and recovery retains every prior selection while
+blocking an interrupted launch for inspection.
+
 With the local adapter, state writes are atomic fsynced snapshots and recovery
 refuses live/remote filesystem owners. With PostgreSQL, nodes use expiring heartbeat
 leases; claims, dependencies, capacity, project limits, counted resources, and

@@ -1,4 +1,24 @@
+import { createHash } from "node:crypto";
+
 const identifier = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
+
+function configurationIdentity(project, job) {
+  if (typeof job?.policy_hash === "string" && job.policy_hash) return job.policy_hash;
+  const boundedConfiguration = {
+    runtime: project.runtime,
+    executor: project.executor?.kind,
+    required_capabilities: project.required_capabilities ?? [],
+    herdr: {
+      machine: project.herdr?.machine ?? null,
+      agent: project.herdr?.agent ?? null,
+      workspace_mode: project.herdr?.workspace_mode ?? "shared_worktree",
+      working_directory: project.herdr?.working_directory ?? null,
+      placement: project.herdr?.placement ?? null,
+    },
+    work_required_capabilities: job?.work?.required_capabilities ?? [],
+  };
+  return createHash("sha256").update(JSON.stringify(boundedConfiguration)).digest("hex");
+}
 
 function uniqueIdentifiers(value, label) {
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !identifier.test(entry))
@@ -35,6 +55,7 @@ export function herdrPlacementRequirements(project, job = null) {
   const workCapabilities = job?.work?.required_capabilities ?? [];
   return {
     authority: "roundhouse",
+    configuration_identity: configurationIdentity(project, job),
     runtime: "herdr",
     machine_selectors: configured.machine_selectors?.length
       ? uniqueNames(configured.machine_selectors, "Herdr placement machine_selectors")
@@ -96,7 +117,8 @@ export function validateHerdrPlacement({ requirements, eligible = [], selection 
   const observedAt = timestamp(observed_at, "Herdr placement observed_at");
   const holdReason = hold_reason == null ? null : nonempty(hold_reason, "Herdr placement hold reason");
   if (!selection) return {
-    authority: { control_plane: "roundhouse", placement: "herdr" }, requirements, eligible: candidates,
+    authority: { control_plane: "roundhouse", placement: "herdr" }, configuration_identity: requirements.configuration_identity,
+    requirements, eligible: candidates,
     selection: null, hold: herdrPlacementHold(requirements, candidates, holdReason), source: normalizedSource, observed_at: observedAt,
   };
   const selected = target(selection, "Herdr selected placement");
@@ -120,10 +142,12 @@ export function validateHerdrPlacement({ requirements, eligible = [], selection 
       .filter((capability) => !matchedCapabilities.includes(capability)).join(", ")}.`);
   }
   return {
-    authority: { control_plane: "roundhouse", placement: "herdr" }, requirements, eligible: candidates,
+    authority: { control_plane: "roundhouse", placement: "herdr" }, configuration_identity: requirements.configuration_identity,
+    requirements, eligible: candidates,
     selection: { runtime: selected.runtime, machine: selected.machine, platform: selected.platform, tool: selected.tool, agent: selected.agent,
       matched_capabilities: matchedCapabilities,
-      rationale: nonempty(rationale, "Herdr placement rationale"), source: normalizedSource },
+      rationale: nonempty(rationale, "Herdr placement rationale"), source: normalizedSource,
+      configuration_identity: requirements.configuration_identity },
     hold: null, source: normalizedSource, observed_at: observedAt,
   };
 }
