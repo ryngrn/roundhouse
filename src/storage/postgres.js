@@ -6,6 +6,7 @@ import pg from "pg";
 import { StorageRepository, digest } from "./repository.js";
 import { record, transition } from "../workflow/state.js";
 import { reservationAssessment } from "../workflow/scheduler.js";
+import { validateExecutionOutcome } from "../workflow/execution-outcome.js";
 
 const { Pool } = pg;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -17,6 +18,7 @@ const migrations = [
   { version: 5, name: "remote_commands", file: path.join(here, "migrations", "005_remote_commands.sql") },
   { version: 6, name: "scheduled_work", file: path.join(here, "migrations", "006_scheduled_work.sql") },
   { version: 7, name: "control_plane_health", file: path.join(here, "migrations", "007_control_plane_health.sql") },
+  { version: 8, name: "execution_outcomes", file: path.join(here, "migrations", "008_execution_outcomes.sql") },
 ];
 const snapshotLock = 714_209_533;
 
@@ -71,6 +73,9 @@ async function readSnapshot(client) {
       owning_node: row.owning_node_name ?? null,
       owning_node_identity: row.owning_node_id ? { id: row.owning_node_id, name: row.owning_node_name, capabilities: row.owning_node_capabilities ?? [] } : null };
   }
+  for (const row of await rows(client, "SELECT job_id, payload FROM roundhouse.execution_outcomes ORDER BY job_id")) {
+    if (data.jobs[row.job_id]) data.jobs[row.job_id].execution_outcome = row.payload;
+  }
   data.outbox = (await rows(client, "SELECT payload FROM roundhouse.outbox_events ORDER BY sequence")).map((row) => row.payload);
   const subscriptions = await rows(client, "SELECT id, payload FROM roundhouse.mcp_subscriptions ORDER BY id");
   const deliveries = await rows(client, "SELECT id, payload FROM roundhouse.mcp_deliveries ORDER BY id");
@@ -93,6 +98,7 @@ async function clearDomain(client) {
     roundhouse.mcp_subscriptions,
     roundhouse.mcp_event_state,
     roundhouse.deployments,
+    roundhouse.execution_outcomes,
     roundhouse.shipping_records,
     roundhouse.verification_checks,
     roundhouse.verification_results,
@@ -207,6 +213,16 @@ async function writeSnapshot(client, data) {
         await client.query(`INSERT INTO roundhouse.deployments(job_id,provider,environment,revision,status,url,payload) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
           [job.id, deployment.provider ?? null, deployment.environment ?? null, deployment.revision ?? null, deployment.status ?? null, deployment.url ?? null, deployment]);
       }
+    }
+    if (job.execution_outcome) {
+      const outcome = validateExecutionOutcome(job.execution_outcome, { job });
+      await client.query(`INSERT INTO roundhouse.execution_outcomes
+        (job_id,classification,historical_import,exception_reason_code,exception_reason_note,exception_expected,
+          human_intervention_required,human_intervention_count,human_minutes,recorded_at,recorded_by,execution_path,provenance,evidence_links,payload)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [job.id, outcome.classification, outcome.historical_import,
+        outcome.reason?.code ?? null, outcome.reason?.note ?? null, outcome.exception_expected, outcome.human_intervention_required,
+        outcome.human_intervention_count, outcome.human_minutes, date(outcome.recorded_at), outcome.recorded_by, outcome.execution_path,
+        outcome.provenance, outcome.evidence_links, outcome]);
     }
   }
 

@@ -52,7 +52,7 @@ test("storage: forward migrations normalize control-plane domains and contain no
   for (const table of ["system_metadata", "projects", "project_candidates", "depot_items", "depot_item_revisions", "decisions", "questions",
     "answers", "jobs", "job_dependencies", "job_attempts", "agent_role_refs", "execution_metadata", "verification_results",
     "verification_checks", "shipping_records", "deployments", "transition_audit", "outbox_events", "mcp_subscriptions",
-    "mcp_deliveries", "nodes", "resource_leases", "import_provenance", "control_plane_health"]) {
+    "mcp_deliveries", "nodes", "resource_leases", "import_provenance", "control_plane_health", "execution_outcomes"]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS roundhouse\\.${table}\\b`));
   }
   assert.doesNotMatch(sql, /state_blob|snapshot_blob|CREATE TABLE[^;]*state_json/is);

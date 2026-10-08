@@ -144,6 +144,15 @@ artifacts. PostgreSQL-backed nodes heartbeat their stable installation identitie
 only while safety-critical work owns a lease. The installed LaunchAgent keeps the
 local server alive; an HTTP wake stream and local mutations trigger worker cycles.
 
+Terminal execution outcomes use a separate, versioned contract. Its classifications
+are `native_success`, `recovered_success`, `exception_success`, and
+`failed_or_abandoned`; the record also retains the actual execution path, structured
+reason, exception expectation, intervention count and optional minutes, and evidence
+links. A native success is valid only with durable intake, dispatch, executor-owner,
+verification, and delivery evidence. A Shipped state by itself is never sufficient.
+Jobs without an outcome record are unclassified and excluded from outcome metrics,
+as are jobs explicitly marked as historical imports.
+
 Known isolated execution or verification exhaustion is held at job scope. The
 scheduler may pass that branch for a later Ready job only when no dependency edge
 connects them. Unknown remote outcomes, interrupted ownership, delivery uncertainty,

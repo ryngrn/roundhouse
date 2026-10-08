@@ -55,6 +55,11 @@ export async function importLocalStateToPostgres({ stateDirectory, connectionStr
       snapshot.project_candidates ??= {};
       snapshot.system_metadata ??= {};
       snapshot.outbox ??= [];
+      for (const job of Object.values(snapshot.jobs)) {
+        // A state.json cutover preserves history, but cannot retroactively prove
+        // the complete execution path. Keep it explicitly outside new KPIs.
+        if (!job.execution_outcome) job.execution_outcome_exclusion = "historical_import";
+      }
       snapshot.system_metadata.postgres_import = {
         source_digest: digest,
         source_file: filename,
