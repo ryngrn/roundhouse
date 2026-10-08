@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { fakeClaude, harness, provider } from "./support/harness.js";
+import { fakeClaude, fakeCodex, harness, provider } from "./support/harness.js";
 import { Engine } from "../src/workflow/engine.js";
 import { Store } from "../src/workflow/store.js";
 import { git } from "../src/workflow/delivery.js";
@@ -104,6 +104,35 @@ test("e2e: Claude decisions and execution remain under Roundhouse verification a
   assert.match(job.shipping.branch, /^claude\/roundhouse-/);
   assert.equal(git(h.remote, ["rev-parse", job.shipping.branch]), job.shipping.commit);
   assert.ok(job.shipping.verification.checks.every((check) => check.passed));
+});
+test("e2e: legacy Codex-only configuration retains decision, execution, and delivery behavior", async () => {
+  const h = harness({ decision: { kind: "codex", bin: fakeCodex }, executor: { kind: "codex", bin: fakeCodex } });
+  const item = h.submit("codex compatibility change");
+  const result = await h.engine.run();
+  const job = Object.values(result.jobs)[0];
+  assert.equal(job.state, "Shipped");
+  assert.equal(result.items[item.id].decision.provider_evidence.invoked.kind, "codex");
+  assert.equal(job.project_context.executor.kind, "codex");
+  assert.match(job.shipping.branch, /^codex\/roundhouse-/);
+  assert.equal(git(h.remote, ["rev-parse", job.shipping.branch]), job.shipping.commit);
+  assert.ok(job.shipping.verification.checks.every((check) => check.passed));
+});
+test("e2e: Codex and Claude can coexist at independent decision and execution boundaries", async () => {
+  const cases = [
+    { decision: { kind: "claude", bin: fakeClaude }, executor: { kind: "codex", bin: fakeCodex } },
+    { decision: { kind: "codex", bin: fakeCodex }, executor: { kind: "claude", bin: fakeClaude } },
+  ];
+  for (const [index, providers] of cases.entries()) {
+    const h = harness(providers);
+    const item = h.submit(`mixed provider change ${index}`);
+    const result = await h.engine.run();
+    const job = Object.values(result.jobs)[0];
+    assert.equal(job.state, "Shipped");
+    assert.equal(result.items[item.id].decision.provider_evidence.invoked.kind, providers.decision.kind);
+    assert.equal(job.project_context.executor.kind, providers.executor.kind);
+    assert.match(job.shipping.branch, new RegExp(`^${providers.executor.kind}/roundhouse-`));
+    assert.equal(git(h.remote, ["rev-parse", job.shipping.branch]), job.shipping.commit);
+  }
 });
 test("e2e: low confidence asks for clarification without creating work or shipping", async () => {
   const h = harness(); h.submit("ambiguous idea");

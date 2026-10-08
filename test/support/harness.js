@@ -9,6 +9,7 @@ import { Engine } from "../../src/workflow/engine.js";
 
 export const provider = fileURLToPath(new URL("./providers.mjs", import.meta.url));
 export const fakeClaude = fileURLToPath(new URL("./fake-claude.mjs", import.meta.url));
+export const fakeCodex = fileURLToPath(new URL("./fake-codex.mjs", import.meta.url));
 export function harness({ policy = {}, verification, executor, decision, deployment } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-flow-"));
   const repository = path.join(root, "repository");
