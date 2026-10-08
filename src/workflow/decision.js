@@ -5,6 +5,7 @@ import { claudeResult, runProcess } from "./runtime.js";
 import { normalizeSchedule } from "./scheduling.js";
 import { actionClasses, classifyAction } from "./actions.js";
 import { assertNotRemoteDesktopCommanderCommand } from "./remote-desktop-policy.js";
+import { complexityFactorIds, complexityFactorWeights, validateComplexityScore } from "./complexity-score.js";
 
 const string = { type: "string" };
 const strings = { type: "array", items: string };
@@ -18,6 +19,16 @@ const schedule = object({ not_before: { type: ["string", "null"] }, recurrence: 
   additionalProperties: recurrence.additionalProperties, properties: recurrence.properties, required: recurrence.required },
 wait_for: { type: ["object", "null"], additionalProperties: conditionWait.additionalProperties,
   properties: conditionWait.properties, required: conditionWait.required } });
+const complexityFactor = object({ id: { type: "string", enum: complexityFactorIds }, contribution: { type: "number" }, rationale: string });
+const eligibleExecutor = object({ id: string, explanation: string });
+const complexityRouting = object({ selected_tier: { type: "number" }, eligible_executors: { type: "array", items: eligibleExecutor },
+  selected_executor_id: { type: ["string", "null"] }, explanation: string });
+const predictedCost = object({ cost_usd: { type: ["number", "null"] }, basis: string });
+const actualOutcome = object({ status: string, cost_usd: { type: ["number", "null"] }, summary: string });
+const complexity = object({ score: { type: "number" }, factors: { type: "array", items: complexityFactor }, rationale: string,
+  routing: complexityRouting, predicted_cost: predictedCost,
+  actual_outcome: { type: ["object", "null"], additionalProperties: actualOutcome.additionalProperties,
+    properties: actualOutcome.properties, required: actualOutcome.required } });
 export const decisionSchema = object({
   project: { type: ["string", "null"] }, project_confidence: { type: "number" }, execution_confidence: { type: "number" },
   sufficient_context: { type: "boolean" }, safe_to_execute: { type: "boolean" }, approval_required: { type: "boolean" },
@@ -28,11 +39,15 @@ export const decisionSchema = object({
   question: { type: ["string", "null"] }, decision_key: { type: ["string", "null"] },
   dependencies: strings, executor: string, runtime: string, shipping_policy: string, should_decompose: { type: "boolean" },
   reconcile_with: { type: ["string", "null"] }, blocked_on: strings,
+  complexity: { type: ["object", "null"], additionalProperties: complexity.additionalProperties,
+    properties: complexity.properties, required: complexity.required },
   work_items: { type: "array", items: object({ title: string, outcome: string,
     repository_required: { type: "boolean" }, required_capabilities: strings,
     action_class: { type: "string", enum: actionClasses },
     schedule: { type: ["object", "null"], additionalProperties: schedule.additionalProperties,
       properties: schedule.properties, required: schedule.required },
+    complexity: { type: ["object", "null"], additionalProperties: complexity.additionalProperties,
+      properties: complexity.properties, required: complexity.required },
     acceptance_criteria: { type: "array", items: object({ description: string, verification_ids: strings }) } }) },
 });
 
@@ -46,12 +61,14 @@ export function validateDecision(value) {
     if (!Object.hasOwn(value, "decision_key")) value.decision_key = null;
     if (!Object.hasOwn(value, "reconcile_with")) value.reconcile_with = null;
     if (!Object.hasOwn(value, "blocked_on")) value.blocked_on = [];
+    if (!Object.hasOwn(value, "complexity")) value.complexity = null;
     for (const work of value.work_items ?? []) {
       if (!work || typeof work !== "object" || Array.isArray(work)) continue;
       if (!Object.hasOwn(work, "repository_required")) work.repository_required = undefined;
       if (!Object.hasOwn(work, "required_capabilities")) work.required_capabilities = [];
       work.action_class = classifyAction(work);
       if (!Object.hasOwn(work, "schedule")) work.schedule = null;
+      if (!Object.hasOwn(work, "complexity")) work.complexity = null;
     }
   }
   if (value && typeof value === "object" && !Array.isArray(value) && !Array.isArray(value.questions)) {
@@ -84,6 +101,10 @@ export function validateDecision(value) {
   }
   for (const field of ["project_confidence", "execution_confidence"]) {
     if (!Number.isFinite(value[field]) || value[field] < 0 || value[field] > 1) throw new Error("Confidence must be 0–1.");
+  }
+  if (value.complexity !== null) validateComplexityScore(value.complexity, "decision.complexity");
+  for (let index = 0; index < value.work_items.length; index += 1) {
+    if (value.work_items[index].complexity !== null) validateComplexityScore(value.work_items[index].complexity, `decision.work_items[${index}].complexity`);
   }
   if (value.work_items.length > 8) throw new Error("Decision exceeds eight work items; clarify scope.");
   if (value.questions.length > 12) throw new Error("Decision exceeds twelve focused questions; reduce scope.");
@@ -192,6 +213,7 @@ export class DecisionProvider {
     const packet = { input: item.input, clarifications: item.clarifications, resolved_decisions, related_work: item.related_work ?? [], projects,
       capability_contract: "Model repository_required independently from required_capabilities for every slice. Capabilities may describe research, integration, scheduling, artifact, external-action, human-task, or installation-specific work; do not assume every slice is software or requires Git.",
       action_contract: "Classify each slice as read_only, consequential, or human_task. external-action is always at least consequential and human-task is always human_task; Roundhouse enforces those floors and revision-bound approval independently of request instructions.",
+      complexity_contract: `Score the complete request and every work item with the same fixed integer contributions: ${Object.entries(complexityFactorWeights).map(([id, weight]) => `${id}=0-${weight}`).join(", ")}. The 0–100 score is their exact sum. Explain factor evidence, eligible executors, selected tier/executor, and the USD prediction basis. Set actual_outcome to null before execution. A score never expands authority or eligibility.`,
       scheduling_contract: "Use work.schedule only when the request explicitly declares deferred or recurring execution or an external condition. not_before and recurrence timestamps are absolute ISO timestamps. Recurrence uses a fixed positive interval_seconds and optional max_occurrences/end_at. wait_for uses a stable lowercase condition key and human-readable description. External-condition waits are not clarification questions or operational blocks.",
       import_context: item.provenance ? { provenance: item.provenance, legacy: item.legacy_depot ?? null,
         project_candidate_id: item.project_candidate_id ?? null } : null };
