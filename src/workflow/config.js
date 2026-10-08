@@ -215,7 +215,15 @@ export function validateWorkflowConfig(raw, filename) {
   const projects = normalizeProjects(raw, path.dirname(absolute), execution);
   const decision = raw.decision ?? { kind: "codex", bin: "codex" };
   check(["codex", "command"].includes(decision.kind), "Unknown decision provider.");
-  if (decision.kind === "command") check(commandValid(decision.command), "Decision provider requires an argv array.");
+  if (decision.kind === "command") {
+    check(commandValid(decision.command), "Decision provider requires an argv array.");
+    if (decision.fallback !== undefined) {
+      check(plainObject(decision.fallback) && decision.fallback.kind === "codex"
+        && (decision.fallback.bin === undefined || nonempty(decision.fallback.bin))
+        && Object.keys(decision.fallback).every((key) => ["kind", "bin"].includes(key)),
+      "Decision fallback must be a Codex provider with an optional bin.");
+    }
+  } else check(decision.fallback === undefined, "Only command decision providers support fallback.");
   const max_jobs_per_run = raw.max_jobs_per_run ?? 20;
   check(Number.isInteger(max_jobs_per_run) && max_jobs_per_run > 0 && max_jobs_per_run <= 1000, "max_jobs_per_run must be 1–1000.");
   check(raw.triage === undefined || (raw.triage && typeof raw.triage === "object" && !Array.isArray(raw.triage)), "triage must be an object.");

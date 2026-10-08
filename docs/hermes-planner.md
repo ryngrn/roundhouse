@@ -43,3 +43,43 @@ The adapter has no shell interpolation. It sends the complete packet as untruste
 Input and combined child stdout/stderr are limited to 256 KiB. Help times out at 10 seconds, inference at 90 seconds (inside Roundhouse’s 120-second command deadline); timed-out process groups are killed. Only a strictly schema-validated JSON object is printed. Markdown fences, logs mixed with JSON, unknown nested fields, omitted schema fields, provider failures and invalid confidence fail nonzero. Raw child diagnostics are discarded; the adapter emits a generic error on stderr so logs/keys cannot enter the decision stdout channel. No credentials are read by this adapter.
 
 If help fails, repair Hermes separately under operator authority; the adapter never installs or repairs it. If authentication/model selection fails, check the existing authenticated provider and supported model directly on iMac; do not paste credentials into packets. If SSH fails, check paths, BatchMode authentication and host-key verification without weakening them. If output fails validation, inspect synthetic runs privately and choose a model that reliably returns strict JSON. Roundhouse already makes invalid cleanup decisions fall back to an operator question; triage and cleanup-intent failures remain errors. Test with `node --test test/hermes-decision.test.js` and `npm check` without any model/network calls.
+
+
+## One-week Hermes-first trial (Oct 8–15, 2026)
+
+Primary decisioning lives on the authenticated iMac. Studio's authoritative
+`decision.kind: command` invokes it over SSH. When SSH is inaccessible
+(exit 255), or the Hermes process/model transport cannot run (exit 75),
+Studio calls Codex through the existing read-only decision interface.
+No fallback occurs for invalid decision JSON, low planning confidence, or an
+explicit Hermes planning block. The result reason records Codex fallback and
+the failed transport code. No retried Hermes invocation is dispatched by
+fallback, so each intake creates at most one accepted decision.
+
+Configure **the installed Studio configuration**, not the portable repository
+example, after code deployment and validation:
+
+```yaml
+decision:
+  kind: command
+  command: [/usr/bin/ssh, -T, -o, BatchMode=yes, -o, StrictHostKeyChecking=yes, -o, ConnectTimeout=10, ryngrn@192.168.4.59, /home/ryngrn/.local/bin/roundhouse-hermes-pilot]
+  fallback:
+    kind: codex
+    bin: /Users/ryngrn/.local/bin/codex
+```
+
+If Hermes deems a complex multi-feature request insufficiently scoped, too
+uncertain to plan (below 0.70 execution confidence), or reaches eight work
+slices, it returns `Blocked` with `blocked_on: [hermes:planning_capacity]`.
+Roundhouse retains the original Depot record and rationale but creates **zero**
+execution jobs. These Hermes planning holds are excluded from the automatic
+Unblocker cleanup pass so they are not mistaken for obsolete tasks.
+A later explicit retry or new operator direction can ask Hermes to refine them.
+Clearly scoped multi-slice plans instead enter Review for a guarded approval;
+simple ideas can proceed under configured project policy.
+
+At the end of the trial review: Hermes-first planning success, fraction held
+for more Hermes work, unnecessary questions, Codex fallback count, planning
+latency, manual rework and approved-plan quality. Reverting means setting
+`decision.kind: codex` in the Studio config and safely restarting the service.
+Changing provider affects future decisions only; do not replay active jobs.

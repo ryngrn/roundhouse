@@ -87,3 +87,74 @@ test('command-provider vertical slice and CLI failure emit validated JSON only',
   assert.equal(failed.stdout, '');
   assert.match(failed.stderr, /no decision emitted/);
 });
+
+test('Codex is used only when Hermes transport is unreachable, not for an invalid plan', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'roundhouse-hermes-fallback-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const codex = path.join(dir, 'codex');
+  const invocation = path.join(dir, 'codex-ran');
+  fs.writeFileSync(codex, `#!/usr/bin/env node
+const fs=require('node:fs');
+const a=process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(invocation)}, 'yes');
+fs.writeFileSync(a[a.indexOf('--output-last-message')+1], ${JSON.stringify(JSON.stringify(decision))});
+`, { mode: 0o700 });
+  const remote = path.join(dir, 'remote');
+  const args = { item: { input: { text: 'idea' }, clarifications: [] }, projects: [project], directory: dir };
+  for (const status of [255, 75]) {
+    fs.writeFileSync(remote, `#!/usr/bin/env node
+process.exit(${status});
+`, { mode: 0o700 });
+    fs.rmSync(invocation, { force: true });
+    const selected = await new DecisionProvider({ kind: 'command', command: [remote], fallback: { kind: 'codex', bin: codex } }).decide(args);
+    assert.equal(selected.decision, 'execute');
+    assert.match(selected.reason, /Codex fallback: Hermes unavailable/);
+    assert.equal(fs.readFileSync(invocation, 'utf8'), 'yes');
+  }
+  for (const [status, output] of [[1, ''], [0, 'not-json']]) {
+    fs.writeFileSync(remote, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(output)});
+process.exit(${status});
+`, { mode: 0o700 });
+    fs.rmSync(invocation, { force: true });
+    await assert.rejects(new DecisionProvider({ kind: 'command', command: [remote], fallback: { kind: 'codex', bin: codex } }).decide(args));
+    assert.equal(fs.existsSync(invocation), false, 'invalid plan or non-transport error must not use Codex');
+  }
+});
+
+test('oversized or uncertain multi-slice plans are blocked for Hermes without creating executable work', () => {
+  for (const changes of [
+    { should_decompose: true, execution_confidence: 0.5, work_items: [work, work] },
+    { should_decompose: true, sufficient_context: false, work_items: [work, work] },
+    { should_decompose: true, work_items: Array.from({ length: 8 }, (_, i) => ({ ...work, title: `Feature ${i}` })) },
+  ]) {
+    const value = gatePlan({ ...structuredClone(decision), ...changes }, { input: { text: 'ambitious project' } });
+    assert.equal(value.decision, 'block');
+    assert.equal(value.safe_to_execute, false);
+    assert.deepEqual(value.blocked_on, ['hermes:planning_capacity']);
+    assert.equal(routeDecision(value, [project]).state, 'Blocked');
+    assert.equal(value.questions.length, 0);
+    assert.match(value.reason, /Hermes planning required/);
+  }
+  const humanReview = gatePlan({ ...structuredClone(decision), should_decompose: true,
+    work_items: [work, { ...work, title: 'Another useful feature' }] }, { input: { text: 'clear plan' } });
+  assert.equal(routeDecision(humanReview, [project]).state, 'Review');
+});
+
+test('Hermes invocation failure returns unavailable status, not a model judgment', async t => {
+  const { spawnSync } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'roundhouse-hermes-exit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fake = path.join(dir, 'hermes');
+  fs.writeFileSync(fake, `#!/usr/bin/env node
+if (process.argv.includes('--help')) console.log(${JSON.stringify(flags)});
+else process.exit(2);
+`, { mode: 0o700 });
+  const wrapper = spawnSync(process.execPath, [path.resolve('scripts/hermes-decision.mjs')], {
+    input: JSON.stringify({ input: { text: 'idea' }, projects: [project] }),
+    env: { ...process.env, ROUNDHOUSE_HERMES_BIN: fake, ROUNDHOUSE_HERMES_PROVIDER: 'fake', ROUNDHOUSE_HERMES_MODEL: 'fake' },
+    encoding: 'utf8',
+  });
+  assert.equal(wrapper.status, 75);
+  assert.equal(wrapper.stdout, '');
+});

@@ -67,7 +67,10 @@ function possibleRelease(data, project) {
   return { jobs: diagnoses.map(x => ({ id: x.job.id, category: x.category })) };
 }
 
-const cleanupEligible = (entity) => ["Needs Clarification", "Blocked"].includes(entity?.state);
+// Retain decisions Hermes explicitly marked as requiring future planning.
+// Unblocker must not archive or repurpose these as generic stale blockers.
+const cleanupEligible = (entity) => ["Needs Clarification", "Blocked"].includes(entity?.state)
+  && !(entity?.triage?.blocked_on ?? []).includes("hermes:planning_capacity");
 
 const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
