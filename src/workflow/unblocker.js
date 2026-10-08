@@ -208,6 +208,17 @@ function fallbackOptions(packet) {
   ];
 }
 
+function startedWorkOptions(packet) {
+  return [
+    { id: "preserve-for-reconciliation", label: "Preserve it for reconciliation",
+      description: "Keep the existing attempt and identity so its external outcome can be inspected before any replacement work.",
+      effects: ["No work is deleted", "The existing attempt remains blocked and auditable"] },
+    { id: "delete-unverified-attempt", label: "Delete the unverified work",
+      description: "Permanently remove the blocked record without claiming that its attempt succeeded.",
+      effects: ["The blocked record is permanently deleted", `${packet.impact.descendants.length} downstream job${packet.impact.descendants.length === 1 ? "" : "s"} will be reevaluated`] },
+  ];
+}
+
 function tombstones(data) {
   data.system_metadata ??= {};
   data.system_metadata.cleanup_tombstones ??= [];
@@ -353,11 +364,14 @@ export class Unblocker {
         latency_ms: Date.now() - decisionStartedAt };
       const dependentById = new Map(decision.dependent_actions.map((entry) => [entry.id, entry]));
       const uncertainDependent = decision.action === "delete" && packet.dependents.some((entry) => (dependentById.get(entry.id)?.confidence ?? 0) < 0.7);
-      const effective = decision.calibrated_confidence < 0.7 || uncertainDependent
+      const startedRepurpose = decision.action === "repurpose" && root.kind === "job" && (root.entity.attempts?.length ?? 0) > 0;
+      const effective = decision.calibrated_confidence < 0.7 || uncertainDependent || startedRepurpose
         ? { ...decision, action: "ask",
-          reason: uncertainDependent ? "Deleting this work would require an uncertain change to dependent work." : decision.reason,
-          question: decision.question || `Should I delete “${packet.candidate.title}” and repurpose the useful work behind it, or preserve it for a smaller plan?`,
-          options: decision.options.length === 2 ? decision.options : fallbackOptions(packet) }
+          reason: startedRepurpose ? "This job already has an execution attempt, so changing its meaning requires an operator decision."
+            : uncertainDependent ? "Deleting this work would require an uncertain change to dependent work." : decision.reason,
+          question: startedRepurpose ? `Should I preserve “${packet.candidate.title}” for outcome reconciliation, or delete the unverified work?`
+            : decision.question || `Should I delete “${packet.candidate.title}” and repurpose the useful work behind it, or preserve it for a smaller plan?`,
+          options: startedRepurpose ? startedWorkOptions(packet) : decision.options.length === 2 ? decision.options : fallbackOptions(packet) }
         : decision;
       const at = new Date().toISOString();
       const commit = (change) => {
