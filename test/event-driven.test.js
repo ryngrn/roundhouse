@@ -58,6 +58,48 @@ test("duplicate wakes coalesce and a wake during an active cycle schedules one f
   worker.stop();
 });
 
+test("a sustained wake burst is rate limited after one coalesced follow-up", async () => {
+  const releases = [];
+  const timers = [];
+  let calls = 0;
+  const worker = new WorkerLoop({
+    service: { engine: {
+      runTriage: async () => {
+        calls += 1;
+        if (calls <= 2) await new Promise((resolve) => releases.push(resolve));
+        return { triaged: 0 };
+      },
+      runDispatch: async () => ({ executed: 0 }),
+    } },
+    setTimeoutFn: (callback, delay) => {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutFn: () => {},
+  });
+
+  const startup = worker.start();
+  await waitFor(() => calls === 1);
+  worker.wake();
+  releases.shift()();
+  await waitFor(() => calls === 2);
+  worker.wake();
+  worker.wake();
+  releases.shift()();
+  await startup;
+
+  assert.equal(calls, 2);
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 1_000);
+  assert.equal(worker.status().wake_pending, true);
+
+  timers[0].callback();
+  await waitFor(() => calls === 3);
+  assert.equal(worker.status().wake_pending, false);
+  await worker.stop();
+});
+
 test("scheduled one-shot wake is reconstructed from durable eligibility after restart", async () => {
   const now = Date.parse("2026-01-01T00:00:00Z");
   const wakeAt = "2026-01-01T01:00:00.000Z";
@@ -272,6 +314,44 @@ test("local worker processes relay commands without making relay authoritative",
   assert.equal(dispatch, 1);
   assert.equal(finished[0][0], "command-1");
   assert.equal(finished[0][1].result.item.id, "local-item");
+});
+
+test("one control-plane cycle caps remote command mutations", async () => {
+  const commands = Array.from({ length: 5 }, (_, index) => ({
+    id: `command-${index + 1}`, kind: "intake", payload: { content: `Idea ${index + 1}` },
+  }));
+  const finished = [];
+  const queue = {
+    claimRemoteCommand: async () => commands.shift() ?? null,
+    finishRemoteCommand: async (id) => finished.push(id),
+  };
+  let triage = 0;
+  let dispatch = 0;
+  const worker = new WorkerLoop({
+    service: {
+      addToDepot: async () => ({ item: { id: "item" } }),
+      engine: {
+        runTriage: async () => { triage += 1; return { triaged: 0 }; },
+        runDispatch: async () => { dispatch += 1; return { executed: 0 }; },
+      },
+    },
+    commandQueue: queue,
+    maxRemoteCommandsPerCycle: 2,
+  });
+
+  const first = await worker.tick();
+  assert.equal(first.remote_commands, 2);
+  assert.equal(first.remote_command_limit_reached, true);
+  assert.deepEqual(finished, ["command-1", "command-2"]);
+  assert.equal(commands.length, 3);
+  assert.equal(triage, 1);
+  assert.equal(dispatch, 1);
+
+  await worker.tick();
+  assert.deepEqual(finished, ["command-1", "command-2", "command-3", "command-4"]);
+  assert.equal(commands.length, 1);
+  assert.equal(triage, 2);
+  assert.equal(dispatch, 2);
 });
 
 test("relay outage never blocks local triage or dispatch", async () => {

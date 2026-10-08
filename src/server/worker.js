@@ -1,7 +1,8 @@
 export class WorkerLoop {
   constructor({ service, eventBroker = null, commandQueue = null, onCycle = async () => {}, onError = () => {},
     setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, now = () => Date.now(),
-    reconciliationIntervalMs = 5 * 60 * 1000 }) {
+    reconciliationIntervalMs = 5 * 60 * 1000, maxRemoteCommandsPerCycle = 20,
+    maxImmediateWakeCycles = 2, deferredWakeDelayMs = 1_000 }) {
     this.service = service;
     this.eventBroker = eventBroker;
     this.commandQueue = commandQueue;
@@ -15,6 +16,19 @@ export class WorkerLoop {
     this.stopped = false;
     this.wakeRequested = false;
     this.wakeDrain = null;
+    this.deferredWakeTimer = null;
+    this.deferredWakeDelayMs = deferredWakeDelayMs;
+    this.maxImmediateWakeCycles = maxImmediateWakeCycles;
+    this.maxRemoteCommandsPerCycle = maxRemoteCommandsPerCycle;
+    if (!Number.isInteger(this.maxImmediateWakeCycles) || this.maxImmediateWakeCycles < 1) {
+      throw new Error("maxImmediateWakeCycles must be a positive integer.");
+    }
+    if (!Number.isInteger(this.maxRemoteCommandsPerCycle) || this.maxRemoteCommandsPerCycle < 1) {
+      throw new Error("maxRemoteCommandsPerCycle must be a positive integer.");
+    }
+    if (!Number.isFinite(this.deferredWakeDelayMs) || this.deferredWakeDelayMs < 1) {
+      throw new Error("deferredWakeDelayMs must be positive.");
+    }
     this.lastRun = null;
     this.lastError = null;
     this.lastTriage = null;
@@ -50,7 +64,7 @@ export class WorkerLoop {
       let processed = 0;
       let lastError;
       try {
-        while (true) {
+        while (processed < this.maxRemoteCommandsPerCycle) {
           const command = await queue.claimRemoteCommand();
           if (!command) break;
           processed += 1;
@@ -79,7 +93,9 @@ export class WorkerLoop {
         this.onError(error);
       }
       if (!processed && !lastError) this.commandError = null;
-      return { remote_commands: processed, ...(lastError ? { remote_command_error: lastError } : {}) };
+      return { remote_commands: processed,
+        remote_command_limit_reached: processed >= this.maxRemoteCommandsPerCycle,
+        ...(lastError ? { remote_command_error: lastError } : {}) };
     })();
     try { return await this.commandRunning; }
     finally { this.commandRunning = null; }
@@ -156,22 +172,34 @@ export class WorkerLoop {
   wake() {
     if (this.stopped) return Promise.resolve();
     this.wakeRequested = true;
+    if (this.deferredWakeTimer) return this.wakeDrain ?? Promise.resolve();
     if (!this.wakeDrain) {
       this.wakeDrain = Promise.resolve().then(async () => {
-        while (this.wakeRequested && !this.stopped) {
+        let cycles = 0;
+        while (this.wakeRequested && !this.stopped && cycles < this.maxImmediateWakeCycles) {
           this.wakeRequested = false;
           // A signal received while any cycle is active must cause a distinct
           // cycle after that work finishes; awaiting the active promise alone
           // would otherwise consume and lose the signal.
           if (this.cycleRunning) await this.cycleRunning;
           await this.tick();
+          cycles += 1;
         }
       }).catch(this.onError).finally(() => {
         this.wakeDrain = null;
-        if (this.wakeRequested && !this.stopped) this.wake();
+        if (this.wakeRequested && !this.stopped) this.scheduleDeferredWake();
       });
     }
     return this.wakeDrain;
+  }
+
+  scheduleDeferredWake() {
+    if (this.stopped || this.deferredWakeTimer) return;
+    this.deferredWakeTimer = this.setTimeoutFn(() => {
+      this.deferredWakeTimer = null;
+      if (!this.stopped && this.wakeRequested) this.wake();
+    }, this.deferredWakeDelayMs);
+    this.deferredWakeTimer.unref?.();
   }
 
   scheduleReconciliation() {
@@ -203,6 +231,8 @@ export class WorkerLoop {
   stop() {
     this.stopped = true;
     this.wakeRequested = false;
+    if (this.deferredWakeTimer) this.clearTimeoutFn(this.deferredWakeTimer);
+    this.deferredWakeTimer = null;
     if (this.scheduledWakeTimer) this.clearTimeoutFn(this.scheduledWakeTimer);
     this.scheduledWakeTimer = null;
     this.nextScheduledWakeAt = null;
@@ -229,6 +259,7 @@ export class WorkerLoop {
       last_command: this.lastCommand,
       next_scheduled_wake_at: this.nextScheduledWakeAt,
       next_reconciliation_at: this.nextReconciliationAt,
+      wake_pending: this.wakeRequested,
     };
   }
 }
