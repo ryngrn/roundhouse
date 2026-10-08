@@ -11,12 +11,12 @@ import { git } from "../src/workflow/delivery.js";
 
 const provider = fileURLToPath(new URL("./support/acceptance-provider.mjs", import.meta.url));
 
-function request(base, pathname, { method = "GET", body, host = "roundhouse" } = {}) {
+function request(base, pathname, { method = "GET", body, host } = {}) {
   const url = new URL(pathname, base);
   return new Promise((resolve, reject) => {
     const req = http.request(url, {
       method,
-      headers: { host, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { ...(host ? { host } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
     }, (response) => {
       let text = "";
       response.setEncoding("utf8");

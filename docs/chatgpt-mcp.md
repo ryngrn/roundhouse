@@ -96,14 +96,15 @@ causes reevaluation.
 npm ci
 ROUNDHOUSE_STATE_DIR=/absolute/path/to/roundhouse-state \
 ROUNDHOUSE_CONFIG=/absolute/path/to/autonomy.yaml \
-npm run mcp
+npm start
 ```
 
-The defaults are `127.0.0.1:8787` and `http://127.0.0.1:8787/mcp`. Override them
-with `ROUNDHOUSE_MCP_HOST` and `ROUNDHOUSE_MCP_PORT`. The server rejects unexpected
+The combined engine defaults to `127.0.0.1:8787`, with MCP at
+`http://127.0.0.1:8787/mcp`. Override the listener with `ROUNDHOUSE_HOST` and
+`ROUNDHOUSE_PORT`. The server rejects unexpected
 HTTP Host values to protect the local endpoint from DNS rebinding. If a development
 tunnel preserves its public host header, add that hostname (without scheme or path)
-to comma-separated `ROUNDHOUSE_MCP_ALLOWED_HOSTS`.
+to comma-separated `ROUNDHOUSE_ALLOWED_HOSTS`.
 
 Test the transport independently with the official MCP Inspector:
 

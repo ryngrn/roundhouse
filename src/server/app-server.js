@@ -3,23 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import YAML from "yaml";
 import { RoundhouseService } from "../workflow/service.js";
-import { handleMcpRequest } from "../mcp/http-server.js";
+import { handleMcpRequest } from "../mcp/http-handler.js";
 import { McpEventBroker, McpEventDrainScheduler } from "../mcp/events.js";
 import { WorkerLoop } from "./worker.js";
 import { HttpWakeSource } from "./wake-source.js";
 import { openPostgresRelay, RelayProjectionPublisher } from "../relay/postgres-relay.js";
 import { openStorage } from "../storage/open.js";
 
-const webRoot = fileURLToPath(new URL("../web/", import.meta.url));
-const assets = new Map([
-  ["/", ["index.html", "text/html; charset=utf-8"]],
-  ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
-  ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
-  ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
-]);
+const hostedDashboard = "https://roundhouse.ryan.green";
 
 export function defaultLocalPaths(home = os.homedir()) {
   const root = path.join(home, "Library", "Application Support", "Roundhouse");
@@ -104,6 +98,7 @@ export async function startRoundhouseServer({
   wakeSource,
   remoteRelay,
   relayConnectionString,
+  eventBroker,
 } = {}) {
   const defaults = defaultLocalPaths();
   const state = stateDirectory ?? defaults.stateDirectory;
@@ -116,7 +111,7 @@ export async function startRoundhouseServer({
     ? (relayConnectionString ? openPostgresRelay({ connectionString: relayConnectionString }) : null)
     : remoteRelay;
   const ownsRelay = remoteRelay === undefined && Boolean(relay);
-  const events = new McpEventBroker({ service: roundhouse });
+  const events = eventBroker ?? new McpEventBroker({ service: roundhouse });
   const eventDrain = new McpEventDrainScheduler({ broker: events, onError: (error) => process.stderr.write(`MCP event delivery: ${error.message}\n`) });
   const loop = worker ?? new WorkerLoop({ service: roundhouse, eventBroker: eventDrain, commandQueue: relay,
     onError: (error) => process.stderr.write(`Worker: ${error.message}\n`) });
@@ -171,9 +166,8 @@ export async function startRoundhouseServer({
   await refreshLocalSnapshot();
   projectionPublisher.trigger();
   const wakes = wakeSource ?? new HttpWakeSource({ url: wakeSubscribeUrl, wake: () => loop.wake() });
-  const allowed = new Set([host, "roundhouse", ...(host === "127.0.0.1" ? ["localhost", "::1"] : []), ...allowedHosts].map((value) => value.toLowerCase()));
+  const allowed = new Set([host, ...(host === "127.0.0.1" ? ["localhost", "::1"] : []), ...allowedHosts].map((value) => value.toLowerCase()));
   const origins = new Set([
-    "http://roundhouse",
     `http://${host}:${port}`,
     `http://localhost:${port}`,
     ...allowedHosts.flatMap((allowedHost) => [`http://${allowedHost.toLowerCase()}`, `http://${allowedHost.toLowerCase()}:${port}`]),
@@ -186,9 +180,9 @@ export async function startRoundhouseServer({
         if (!["POST", "GET", "DELETE", "OPTIONS"].includes(request.method ?? "")) return send(response, 405, { error: "Method Not Allowed" });
         return await handleMcpRequest(request, response, roundhouse, events, { onMutation: () => loop.wake() });
       }
-      if (request.method === "GET" && assets.has(url.pathname)) {
-        const [filename, type] = assets.get(url.pathname);
-        return send(response, 200, fs.readFileSync(path.join(webRoot, filename), "utf8"), type);
+      if (request.method === "GET" && url.pathname === "/") {
+        response.writeHead(302, { location: hostedDashboard, "cache-control": "no-store" }).end();
+        return;
       }
       if (request.method === "GET" && url.pathname === "/health") {
         return send(response, 200, { status: "ok", service: "roundhouse", storage: localStorageIdentity(roundhouse.store), worker: loop.status(), mcp: "/mcp" });

@@ -2,7 +2,7 @@
   "name": "roundhouse",
   "version": "0.1.0",
   "private": true,
-  "description": "PostgreSQL-backed control plane for policy-controlled autonomous work",
+  "description": "Local-first control plane for policy-controlled autonomous work with an Aiven relay",
   "type": "module",
   "bin": {
     "roundhouse": "./src/cli.js"
@@ -10,15 +10,13 @@
   "scripts": {
     "check": "node scripts/check.mjs",
     "start": "node src/server/app-server.js",
-    "mcp": "node src/mcp/http-server.js",
     "test": "node --test test/*.test.js",
-    "test:unit": "node --test test/intake.test.js test/codex-executor.test.js test/workflow-unit.test.js test/notion-depot-migration.test.js",
+    "test:unit": "node --test test/codex-executor.test.js test/workflow-unit.test.js test/notion-depot-migration.test.js",
     "test:e2e": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
     "test:postgres": "node --test test/storage-unit.test.js test/postgres-storage.test.js",
     "acceptance": "node --test test/workflow-e2e.test.js test/acceptance.test.js",
     "acceptance:live": "node --test test/acceptance-live.test.js",
-    "demo": "node scripts/demo.mjs",
-    "visual": "node scripts/visual-gates.mjs"
+    "demo": "node scripts/demo.mjs"
   },
   "engines": {
     "node": ">=20.11"

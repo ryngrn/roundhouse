@@ -1,39 +1,41 @@
-# Unblocker — isolation-first recovery
+# Unblocker — intent-aware cleanup
 
-Unblocker is a dedicated control-plane recovery worker, not a project executor. Its sole goal is to prevent safely independent Ready work from getting trapped behind unrelated blocked work. It uses deterministic evidence rules before considering model-assisted follow-up.
+Unblocker is a control-plane agent that keeps useful work moving without inventing intent. It evaluates only work in **Blocked** or **Needs Clarification**. Ready, executing, verification, review, rework, and shipped work are outside cleanup scope.
 
-## What happens when a job blocks?
+At each worker wake, Unblocker reads the preserved request, immutable conversation snapshot, optional live conversation reference, decisions, history, attempt evidence, project policy, and dependency graph. Candidates are ranked by transitive queue impact, ready descendants, age, available conversation evidence, and new operator guidance. It handles the highest-value bottleneck first instead of relying on storage order.
 
-At worker wake, Unblocker reads durable failure evidence, attempts, shipping records, project policy, dependencies, and project-wide holds before triage and dispatch. After a dispatch attempt, it inspects new blocks again. It does not use a recurring timer or generate token-consuming prompts.
+Cleanup has two model stages. The first persists a compact intent brief containing the desired outcome, non-goals, constraints, superseded scope, unresolved assumptions, blocker category, and cited evidence. The second receives that brief plus a deterministic transitive dependency-impact simulation and returns delete, repurpose, ask, or keep. This keeps transcript interpretation separate from queue mutation.
 
-- Repair: For a never-started stale context job, call the Engine's existing execution-authority guard. Refresh only non-authority context; leave changed permissions, executors, runtimes, shipping policies, or verification requirements blocked for a human.
-- Isolate: For verified local Codex work that failed configured verification, with no remote or delivery uncertainty and branch-only/commit-only shipping, keep the failed job Blocked and its dependents held, but lift the obsolete project-wide hold so independent Ready work can depart.
-- Escalate: Remote/Herdr uncertainty, command executors, credential/security changes, deployment uncertainty, interrupted work, and unknown failure categories retain project-wide quarantine. Report the precise blocker for human review; do not guess.
+## Confidence gate
 
-Operator stop and review gates always outrank Unblocker. Never mutate dependencies, replay failed work, grant approvals, delete a lock, claim a shipped outcome, or mark a job Shipped.
+Delete and repurpose require calibrated confidence of at least 0.70. Effective confidence combines the model estimate with cited-evidence completeness, dependency-plan coverage, historical operator agreement, and an irreversibility penalty. Below the threshold Unblocker pauses the item and asks one concise contextual question. The dashboard presents exactly two consequence-oriented answers, including their queue effects, plus a third **Take my own path** choice with free-form input. The answer is revision-guarded and returned to the worker as an `issue_resolution` command.
 
-## Observability and operation
+## Delete and dependency handling
 
-Worker status includes the Unblocker running flag, last run, result, and error. Releasing a project hold records a project-level audit event with isolated job IDs and timestamp. The affected jobs retain their recorded failures and Blocked states.
+Delete permanently removes the work instead of changing its state. Roundhouse retains only a brief tombstone containing the deleted identity, title, timestamp, reason, and evidence references. The original request is not copied into the tombstone.
 
-To run one pass manually from the production code checkout:
+If other work depends on a deleted prerequisite, Unblocker evaluates whether the remaining intent is still useful. A repurposed dependent keeps its ID and history, removes the dead dependency, records active scope, and records removed scope for a visible crossed-out presentation. Unstarted repurposed work returns through normal readiness and safety gates; it is never declared successful or allowed to bypass approvals.
 
-    node src/cli.js depot unblock --state-dir "$HOME/Library/Application Support/Roundhouse/state" --config "$HOME/Library/Application Support/Roundhouse/projects.yaml"
+## Conversation context
 
-The existing event-driven worker invokes the same pass on wake. For CLI-only execution cycles, call this command before selecting new work; background dispatcher integration must be installed so missed wake signals do not recreate global logjams.
+Intake may include a `conversation` object with:
 
-## Acceptance
+- `snapshot`: immutable transcript text captured with the request
+- `link`: stable live conversation URL or identifier
+- `live_context`: optional newer context supplied by an authorized connector
 
-A local verification failure isolates only that job. An independent Ready job executes and ships normally; a dependent Ready job does not. Changed authority, remote uncertainty, operator stops, and review gates cannot be cleared. A second Unblocker run performs no duplicate release, and a worker wake reports its action without adding polling.
+The snapshot persists even when the live link becomes unavailable. Roundhouse stores and projects this metadata but does not scrape private chat transcripts; the authorized intake client or connector must supply it.
 
-## Recovery questions in chat and the web portal
+## Safety and operation
 
-A blocked root job or unplanned blocked item receives one small follow-up intake item with a single focused question. The new item appears in **Needs a signal** on the local and hosted Roundhouse portal. It preserves the original job ID, blocker category, failure evidence, and known conversation correlation. It does not replay the blocked job.
+Operator stops, approval gates, and execution safety policies still outrank cleanup. Unblocker never marks a job Shipped, fabricates evidence, grants approval, or replays side effects. Its delete/repurpose authority is limited to Blocked and Needs Clarification records. Every proposed mutation is compare-and-swap guarded by the entity revision, semantic evidence fingerprint, affected dependency-subgraph fingerprint, and project-policy fingerprint. Any concurrent change invalidates the proposal and requires reevaluation.
 
-- In the web portal, open the recovery item, answer its decision question, and submit. The existing revision-guarded decision-session endpoint evaluates the answer and may plan a new repair. Stale or duplicate answers fail without modifying the original attempt.
-- In ChatGPT, Roundhouse's get_needs_human MCP tool lists the same durable question IDs, and answer_question records a current answer for evaluation. The normal Roundhouse outbox emits a Needs Clarification event for connected notification consumers.
-- Automatically posting an unsolicited message into the original ChatGPT thread is not supported by the existing transport: correlation metadata is preserved when present, but an approved thread-addressable delivery connector is required to actually push into a specific existing conversation.
+Worker status exposes the last run, result, error, and cleanup metrics. Metrics cover decisions by action, downstream work released, operator answers and proposed-option acceptance, invalidated concurrent decisions, deleted identities later recreated, repurposed jobs later shipped, calibrated/model confidence, blocker category, dependency impact, and decision latency. A keep records its evidence fingerprint and reconsideration condition, so it is revisited only after meaningful evidence changes. Cleanup remains bounded to one candidate per wake so each mutation is durable and auditable before another candidate is considered.
 
-Generation is bounded to three new root-blocker questions per worker wake and deduplicated by original entity ID. Dependency-held Ready descendants receive no redundant questions; already answered/repeated decisions and prior recovery follow-ups do not recursively create questions. No state write occurs on an idle pass with nothing to create.
+Run one local pass with:
 
-Answers never directly mark the original job Shipped or clear uncertain remote execution holds. The ordinary Roundhouse policy, verification and approval gates still apply to any newly proposed repair.
+```sh
+node src/cli.js depot unblock --state-dir "$HOME/Library/Application Support/Roundhouse/state" --config "$HOME/Library/Application Support/Roundhouse/projects.yaml"
+```
+
+Tests cover permanent deletion and tombstones, dependent identity preservation, crossed-out removed scope, the 70% question gate, transcript persistence, remote answers, and the strict Blocked/Needs Clarification boundary.

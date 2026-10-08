@@ -70,4 +70,7 @@ test("installer reports success only after direct engine health and never reinst
   assert.match(menuBuild, /bootout/);
   assert.match(menuBuild, /bootstrap/);
   assert.match(menuBuild, /menu-rollbacks/);
+  assert.equal(fs.existsSync("src/server/front-door.js"), false);
+  assert.equal(fs.existsSync("src/web/index.html"), false);
+  assert.equal(fs.existsSync("src/mcp/http-server.js"), false);
 });

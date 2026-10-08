@@ -13,6 +13,7 @@ const jobSchema = z.object({
   id: z.string(), title: z.string(), state: z.string(), reason: z.string().nullable(), attempts: z.number(), agent_role: z.string(), shipping: z.unknown().nullable(),
   latest_run: z.unknown().nullable(), latest_failure: z.string().nullable(), reconciliation: z.unknown().nullable(),
   allocation: z.unknown().nullable(), allocation_history: z.array(z.unknown()),
+  scope_revision: z.unknown().nullable(), cleanup_intent: z.unknown().nullable(), issue_resolution: z.unknown().nullable(),
 });
 const completionReportSchema = z.object({
   summary: z.string(), design_decisions: z.array(z.string()),
@@ -71,6 +72,11 @@ const addToDepotInput = z.object({
     media_type: z.string().min(1).max(200).optional(),
   }).strict()).max(20).optional().describe("References to attachments already reachable by Roundhouse; file upload is not provided by this tool."),
   metadata: z.record(z.string(), z.unknown()).optional().describe("Channel-neutral correlation metadata; do not place secrets here."),
+  conversation: z.object({
+    link: nonblank(2_048),
+    snapshot: z.unknown(),
+    live_context: z.unknown().optional(),
+  }).strict().optional().describe("Immutable conversation snapshot plus a live conversation reference/context for later intent recovery."),
   idempotency_key: nonblank(500).optional().describe("Stable caller key for safe retry deduplication."),
 }).strict();
 const answerQuestionInput = z.object({

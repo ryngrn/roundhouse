@@ -60,12 +60,25 @@ export class Store extends StorageRepository {
         if (digest(data.items[id].input) !== digest(input)) throw new Error("Submission key already exists with different content. Use clarify or a new key.");
         return data.items[id];
       }
+      if ((data.system_metadata?.cleanup_tombstones ?? []).some((entry) => entry.id === id)) {
+        data.system_metadata.cleanup_metrics ??= { decisions: 0, deleted: 0, repurposed: 0, asked: 0, kept: 0,
+          work_released: 0, operator_answers: 0, operator_accepted: 0, invalidated: 0, deleted_recreated: 0,
+          repurposed_shipped: 0, decision_latency_ms: 0, decision_log: [] };
+        data.system_metadata.cleanup_metrics.deleted_recreated = (data.system_metadata.cleanup_metrics.deleted_recreated ?? 0) + 1;
+      }
       data.items[id] = record(id, { input, clarifications: [], questions: [], decision: null, job_ids: [] });
       return data.items[id];
     });
   }
   move(data, entity, state, reason) {
     transition(entity, state, reason);
+    if (state === "Shipped" && entity.scope_revision?.source === "roundhouse-unblocker") {
+      data.system_metadata ??= {};
+      data.system_metadata.cleanup_metrics ??= { decisions: 0, deleted: 0, repurposed: 0, asked: 0, kept: 0,
+        work_released: 0, operator_answers: 0, operator_accepted: 0, invalidated: 0, deleted_recreated: 0,
+        repurposed_shipped: 0, decision_latency_ms: 0, decision_log: [] };
+      data.system_metadata.cleanup_metrics.repurposed_shipped = (data.system_metadata.cleanup_metrics.repurposed_shipped ?? 0) + 1;
+    }
     const item = entity.parent_id ? data.items[entity.parent_id] : entity;
     data.outbox.push({ id: randomUUID(), entity_id: entity.id, item_id: item.id,
       source: item.input.source ?? null, state, reason, at: new Date().toISOString(), delivered: false });

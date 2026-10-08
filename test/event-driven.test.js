@@ -110,9 +110,7 @@ test("health is local-only and polling guardrails remain absent", async (t) => {
   assert.equal(health.status, "ok");
   assert.equal(health.storage.checked, false);
 
-  const web = fs.readFileSync(new URL("../src/web/app.js", import.meta.url), "utf8");
-  const mcp = fs.readFileSync(new URL("../src/mcp/http-server.js", import.meta.url), "utf8");
-  assert.doesNotMatch(web, /setInterval\s*\(\s*load/);
+  const mcp = fs.readFileSync(new URL("../src/mcp/http-handler.js", import.meta.url), "utf8");
   assert.doesNotMatch(mcp, /setInterval/);
 });
 test("local worker processes relay commands without making relay authoritative", async () => {
