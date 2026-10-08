@@ -13,6 +13,7 @@ function executorSignatures(projects, providers = []) {
   const signatures = [];
   for (const project of projects ?? []) {
     if (project.executor?.kind === "codex") signatures.push(commandText([project.executor.bin ?? "codex", "exec"]));
+    if (project.executor?.kind === "claude") signatures.push(commandText([project.executor.bin ?? "claude", "-p"]));
     if (project.executor?.kind === "command" && project.executor.command?.length) signatures.push(commandText(project.executor.command));
     if (project.runtime === "herdr") signatures.push(commandText([project.herdr?.bin ?? "herdr", "--machine"]));
   }

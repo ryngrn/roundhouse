@@ -79,6 +79,23 @@ export async function runProcess(command, { cwd, input = "", timeout = 120000, o
     passed: exit_code === 0 && !timed_out && !overflow, timed_out, overflow, stdout, stderr };
 }
 
+// Claude Code gets file tools only unless the operator explicitly adds narrower
+// rules. Roundhouse still owns verification and delivery after the process exits.
+export const claudeDefaultTools = Object.freeze(["Read", "Edit", "Write", "Glob", "Grep"]);
+
+export function claudeExecutorArgs(executor) {
+  return [executor.bin ?? "claude", "-p", "--output-format", "json", "--no-session-persistence",
+    "--permission-mode", "acceptEdits", "--allowedTools", (executor.allowed_tools ?? claudeDefaultTools).join(",")];
+}
+
+export function claudeResult(stdout) {
+  try {
+    const envelope = JSON.parse(stdout);
+    return { is_error: envelope.is_error === true, summary: typeof envelope.result === "string" ? envelope.result : "",
+      structured_output: envelope.structured_output };
+  } catch { return { is_error: true, summary: "", structured_output: undefined }; }
+}
+
 export class LocalRuntime {
   async execute({ project, job, workspace, directory, previous_failure, run, onStart }) {
     const boundedProjectContext = { ...job.project_context };
@@ -99,6 +116,12 @@ export class LocalRuntime {
       ? "current isolated worktree"
       : "provided output workspace; return a JSON object describing the outcome and write any referenced artifact files inside that workspace";
     const prompt = localExecutionPrompt(job, destination, previous_failure, run);
+    if (executor.kind === "claude") {
+      const result = await runProcess(claudeExecutorArgs(executor), { cwd: workspace, input: prompt, timeout: project.timeout_ms, onStart });
+      const { is_error, summary } = claudeResult(result.stdout);
+      const passed = result.passed && !is_error;
+      return { ...result, passed, stdout: summary.slice(0, 20_000), stderr: passed ? "" : "Claude Code execution failed; see exit/timeout metadata." };
+    }
     const command = [executor.bin ?? "codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "-C", workspace];
     assertNotRemoteDesktopCommanderCommand(command, `Project ${project.id} executor`);
     if (!project.repository) command.push("--skip-git-repo-check");

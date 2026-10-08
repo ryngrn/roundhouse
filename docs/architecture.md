@@ -8,19 +8,20 @@ Notion prototype is available only through the one-time archive importer.
 | --- | --- | --- |
 | Depot source | Roundhouse browser/API, CLI JSON/text, and ChatGPT MCP | Submit immutable normalized input with a stable key |
 | Project/context store | Private YAML/JSON manifest plus local context files | Validated project policy and context snapshot |
-| Decision provider | Structured Codex response or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
+| Decision provider | Structured Codex or Claude Code response, or command JSON protocol | `decide({item, projects, directory, onStart})` returns validated decision |
+| Conversation provider | Optional Codex or Claude provider contract without workflow authority or tools | Carry bounded human-facing interaction without deciding readiness or delivery |
 | Agent-role composer | Role manifest plus bounded Markdown skills and project context | General or Designer execution context and required evidence |
 | Durable workflow | PostgreSQL repository (shared) or explicit local repository, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
 | Scheduled eligibility | Persisted absolute timestamps, recurrence cursors, and condition signals | Explain waiting/due transitions and release each occurrence at most once |
 | Triage control plane | Independent bounded worker pass with durable attempts/backoff | Release imported work safely, classify, reconcile exact identities, slice, question, block, or make Ready |
-| Execution runtime | Capability-selected provider over local Codex, project command, or registered command adapters | Providers declare stable IDs/capabilities; `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
+| Execution runtime | Capability-selected provider over local Codex, Claude Code, project command, or registered command adapters | Providers declare stable IDs/capabilities; `execute({project, job, workspace, previous_failure, onStart})` returns operational result |
 | Execution-tool interface | Centrally supplied AXI preference with existing Git/GitHub CLI and Playwright/browser fallbacks | Let an executor choose an efficient supported tool without changing its runtime or authority |
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | Batched browser decision sessions, CLI approval/clarification, durable questions, and MCP answers | Revision-bound atomic response set, durable audit record, exactly one readiness reevaluation |
 | Status adapters | Explicit/lifecycle browser reads, local cached menu status, MCP status tools, and MCP Events webhooks | Project/item-scoped projection of durable outbox transitions |
 
-The Engine imports no Notion SDK and contains no Codex command-line flags. Runtime state is distinct from product state: a process exiting
+The Engine imports no Notion SDK and contains no Codex or Claude Code command-line flags. Runtime state is distinct from product state: a process exiting
 does not decide that work is Shipped or needs Review.
 
 ## Control plane, runtime, and execution tools
@@ -28,7 +29,7 @@ does not decide that work is Shipped or needs Review.
 Roundhouse is the control plane. It owns intake, policy, project and provider
 selection, claims, approval gates, configured verification requirements, delivery
 intent, lifecycle state, and reconciliation. The selected execution runtime owns
-only the bounded implementation attempt. Local Codex or a configured command is the
+only the bounded implementation attempt. Local Codex, Claude Code, or a configured command is the
 default software-project path; when work must run on a fleet machine, Herdr remains
 the preferred runtime because it supplies the configured machine and agent boundary.
 
@@ -57,6 +58,14 @@ the remote agent runs the exact configured checks and performs only the configur
 `commit_only` or `push_branch` action; Roundhouse validates and records its
 nonce-correlated attestation as not independently verified. Roundhouse remains the
 authority for both paths and alone advances the durable job to Shipped.
+
+Provider configuration uses the common `decision`, `conversation`, and `execution`
+capability vocabulary. Existing `decision.kind` and project `executor.kind` settings
+remain migration-compatible and retain their Codex defaults. Codex and Claude Code
+may serve the three model-facing capabilities; command providers remain limited to
+decision and execution boundaries. Provider fallback is deliberately unsupported:
+failure remains attached to the selected attempt so Roundhouse can apply policy,
+durable recovery, verification, and shipping without an implicit provider switch.
 
 `RoundhouseService` is the reusable external-adapter boundary. It normalizes intake,
 queries work/questions, and submits guarded human answers to the Engine. The MCP

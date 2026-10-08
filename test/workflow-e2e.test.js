@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { harness, provider } from "./support/harness.js";
+import { fakeClaude, harness, provider } from "./support/harness.js";
 import { Engine } from "../src/workflow/engine.js";
 import { Store } from "../src/workflow/store.js";
 import { git } from "../src/workflow/delivery.js";
@@ -85,6 +85,15 @@ test("e2e: autonomous Depot request creates actual change, verifies exact commit
   const persisted = new Store(h.store.directory).read();
   assert.equal(persisted.jobs[job.id].shipping.commit, job.shipping.commit);
   assert.equal((await h.engine.run()).executed, 0);
+});
+test("e2e: Claude decisions and execution remain under Roundhouse verification and shipping", async () => {
+  const h = harness({ decision: { kind: "claude", bin: fakeClaude }, executor: { kind: "claude", bin: fakeClaude } });
+  h.submit("claude useful change");
+  const job = Object.values((await h.engine.run()).jobs)[0];
+  assert.equal(job.state, "Shipped");
+  assert.match(job.shipping.branch, /^claude\/roundhouse-/);
+  assert.equal(git(h.remote, ["rev-parse", job.shipping.branch]), job.shipping.commit);
+  assert.ok(job.shipping.verification.checks.every((check) => check.passed));
 });
 test("e2e: low confidence asks for clarification without creating work or shipping", async () => {
   const h = harness(); h.submit("ambiguous idea");

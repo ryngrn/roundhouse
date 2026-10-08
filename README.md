@@ -9,9 +9,9 @@ work Ready. A separate dispatcher claims eligible work, executes, verifies, ship
 and optionally continues the project's queue.
 
 The complete vertical slice can run locally or across nodes, with a durable workflow and replaceable
-decision, execution, verification, shipping/deployment, and source adapters. The
+decision, conversation, execution, verification, shipping/deployment, and source adapters. The
 browser control room, JSON API, MCP endpoint, and background worker run in one
-loopback service. Codex and trusted command executors are supported. Model-agent
+loopback service. Codex, Claude Code, and trusted command executors are supported. Model-agent
 prompts prefer low-token AXI interfaces for supported GitHub and browser operations,
 with the existing tools as bounded fallbacks; AXI is an execution-tool preference,
 not a control plane or runtime. Deployments use an explicit fixture or

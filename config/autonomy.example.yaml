@@ -1,8 +1,13 @@
 # Copy outside the source checkout, e.g. to ~/.config/roundhouse/autonomy.yaml.
 # All relative file paths resolve against the configuration file's directory.
 decision:
-  kind: codex
+  kind: codex # or claude; provider fallback is intentionally not supported
   bin: codex
+# Optional conversation adapters use the same provider contract but never receive
+# execution tools or workflow authority.
+# conversation:
+#   kind: claude
+#   bin: claude
 max_jobs_per_run: 20
 execution:
   # Global execution slots default to one when this block is omitted.
@@ -38,7 +43,7 @@ projects:
       workspace: 1
     runtime: local
     executor:
-      kind: codex
+      kind: codex # or claude; Claude may declare allowed_tools explicitly
       bin: codex
     timeout_ms: 7200000
     policy:

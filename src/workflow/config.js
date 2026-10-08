@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import { agentRoleIds } from "./roles.js";
 import { assertNotRemoteDesktopCommanderCommand } from "./remote-desktop-policy.js";
+import { assertProviderRuntime, validateProviderSelection } from "./provider-contract.js";
 
 export const shippingModes = ["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy", "durable_output", "artifact"];
 const check = (value, message) => { if (!value) throw new Error(message); };
@@ -98,13 +99,14 @@ function normalizeProjects(raw, root, execution) {
       check(rule.evidence_ids === undefined || (Array.isArray(rule.evidence_ids) && rule.evidence_ids.every(nonempty)), "Verification evidence_ids must be strings.");
     }
     const executor = project.executor ?? { kind: "codex", bin: "codex" };
-    check(["codex", "command"].includes(executor.kind), "Unknown executor.");
+    validateProviderSelection(executor, "execution", `Project ${project.id} executor`);
+    assertProviderRuntime(executor, runtime, `Project ${project.id} executor`);
     if (executor.kind === "command") {
       check(commandValid(executor.command), "Executor requires an argv array.");
       assertNotRemoteDesktopCommanderCommand(executor.command, `Project ${project.id} executor`);
     } else {
-      check(executor.bin === undefined || nonempty(executor.bin), "Codex executor bin must be nonempty.");
-      assertNotRemoteDesktopCommanderCommand([executor.bin ?? "codex"], `Project ${project.id} executor`);
+      if (executor.kind === "claude" && executor.allowed_tools !== undefined) check(commandValid(executor.allowed_tools), "Claude executor allowed_tools must be a nonempty list of tool rules.");
+      assertNotRemoteDesktopCommanderCommand([executor.bin ?? executor.kind], `Project ${project.id} executor`);
     }
     if (runtime === "herdr") {
       check(plainObject(project.herdr), `Project ${project.id} requires herdr configuration.`);
@@ -218,13 +220,19 @@ export function validateWorkflowConfig(raw, filename) {
   check(Number.isInteger(execution.capacity) && execution.capacity > 0 && execution.capacity <= 256, "execution.capacity must be 1–256.");
   const projects = normalizeProjects(raw, path.dirname(absolute), execution);
   const decision = raw.decision ?? { kind: "codex", bin: "codex" };
-  check(["codex", "command"].includes(decision.kind), "Unknown decision provider.");
+  validateProviderSelection(decision, "decision", "Decision provider");
   if (decision.kind === "command") {
     check(commandValid(decision.command), "Decision provider requires an argv array.");
     assertNotRemoteDesktopCommanderCommand(decision.command, "Decision provider");
   } else {
-    check(decision.bin === undefined || nonempty(decision.bin), "Codex decision provider bin must be nonempty.");
-    assertNotRemoteDesktopCommanderCommand([decision.bin ?? "codex"], "Decision provider");
+    check(decision.allowed_tools === undefined, "Decision providers cannot configure allowed_tools; decisions never receive tools.");
+    assertNotRemoteDesktopCommanderCommand([decision.bin ?? decision.kind], "Decision provider");
+  }
+  const conversation = raw.conversation;
+  if (conversation !== undefined) {
+    validateProviderSelection(conversation, "conversation", "Conversation provider");
+    check(conversation.allowed_tools === undefined, "Conversation providers cannot configure allowed_tools; conversation does not grant execution tools.");
+    assertNotRemoteDesktopCommanderCommand([conversation.bin ?? conversation.kind], "Conversation provider");
   }
   const max_jobs_per_run = raw.max_jobs_per_run ?? 20;
   check(Number.isInteger(max_jobs_per_run) && max_jobs_per_run > 0 && max_jobs_per_run <= 1000, "max_jobs_per_run must be 1–1000.");
@@ -241,7 +249,7 @@ export function validateWorkflowConfig(raw, filename) {
   check(Number.isInteger(triage.max_concurrent) && triage.max_concurrent > 0 && triage.max_concurrent <= 8, "triage.max_concurrent must be 1–8.");
   check(Number.isInteger(triage.base_backoff_ms) && triage.base_backoff_ms > 0, "triage.base_backoff_ms must be positive.");
   check(Number.isInteger(triage.max_backoff_ms) && triage.max_backoff_ms >= triage.base_backoff_ms, "triage.max_backoff_ms must be at least the base backoff.");
-  return { projects, decision, execution, max_jobs_per_run, triage, filename: absolute };
+  return { projects, decision, ...(conversation ? { conversation } : {}), execution, max_jobs_per_run, triage, filename: absolute };
 }
 
 export function loadWorkflowConfig(filename) {

@@ -41,7 +41,7 @@ export class GitDelivery {
     const shouldPush = project.policy.shipping === "push_branch" || (project.policy.shipping === "deploy" && project.deployment.push_branch);
     const remote = shouldPush ? git(project.repository, ["remote", "get-url", "--push", project.remote]) : null;
     const commit = git(project.repository, ["rev-parse", "--verify", `${base ?? project.base_ref}^{commit}`]);
-    const branch = `codex/roundhouse-${job.id}`;
+    const branch = `${project.executor?.kind === "claude" ? "claude" : "codex"}/roundhouse-${job.id}`;
     const workspace = path.join(directory, job.id);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     git(project.repository, ["worktree", "add", "-b", branch, workspace, commit]);

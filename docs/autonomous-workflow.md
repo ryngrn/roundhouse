@@ -52,7 +52,7 @@ project context, and job attempts remain on disk. Each question has a stable ID 
 revision. Answering one records the response and immediately repeats decision and
 readiness evaluation; execution remains separately owned by the worker.
 
-The Codex decision provider returns structured JSON: likely project, project and
+The Codex or Claude Code decision provider returns structured JSON: likely project, project and
 execution confidence, context sufficiency, safety/approval judgments, dependencies,
 outcomes, executable acceptance criteria, runtime, executor, shipping policy, and
 an optional stable `decision_key` for a clarification or review decision.
@@ -60,7 +60,16 @@ Confidence is a model judgment, not a statistical guarantee. Deterministic polic
 enforces configurable thresholds, project matching, approval requirements, and
 permitted runtime/delivery choices. Neither input text nor an imported legacy Ready flag can
 override project policy. Only concise decision metadata is stored; Codex reasoning
-traces are discarded, and sessions use ephemeral mode.
+traces are discarded, and sessions use ephemeral/no-persistence mode.
+
+Provider selection has explicit decision, conversation, and execution capabilities.
+Legacy Codex-only manifests and the existing `kind: claude` decision/executor shape
+keep their defaults. An optional conversation provider is interaction-only and does
+not receive execution tools or authority. Unsupported kinds, declared capabilities,
+runtimes, Claude tool settings, and fallback combinations fail configuration with a
+boundary-specific error. Roundhouse never changes providers implicitly after a
+failure; its policy, durable claims, verification, recovery, and shipping authority
+remain outside every provider.
 
 Answered questions are sent back to later decision passes as `resolved_decisions`,
 including the original prompt, answer, kind, and `decision_key`. Matching resolved
