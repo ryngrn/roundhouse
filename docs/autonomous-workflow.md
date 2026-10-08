@@ -27,6 +27,56 @@ Review means a human decision is required. Successful execution does not itself
 create Review. `review_after_shipping` can separately pause the project's queue
 for human continuation approval while the delivered job remains Shipped.
 
+## Text planning sessions
+
+A text planning session is a read-only projection of the authoritative durable
+`items` and `jobs` records. `planningSessionView` in
+`src/workflow/planning-session.js` implements the contract; it does not use dashboard
+labels, legacy Notion status fields, or process observations as authority.
+
+An item enters planning before it has jobs when its durable state is `Imported
+Pending`, `Depot`, `Needs Clarification`, `Review`, or `Blocked`. Once jobs exist,
+the jobs are the planning records: only `Review` and `Blocked` jobs enter. `Ready`
+is explicitly excluded because it belongs to dispatch. `Decision`, `Executing`,
+`Verification`, and `Rework` are excluded because work is active. `Imported
+History`, `Archived`, `Reconciled`, and `Shipped` are terminal and excluded. The
+projection returns excluded records with a stable code and explanation, so the
+boundary is observable rather than implicit.
+
+Unresolved human need is observed from current durable open questions, incomplete
+human tasks, review holds, reconciliation requirements, and current clarification,
+review, or blocked state. Historical `Decisions Needed` text may be preserved as
+provenance, but it becomes a planning signal only when import created a current
+open question. Every included record exposes both its eligibility reason and these
+human-need signals.
+
+The two order modes use complete deterministic keys:
+
+- `project`: assigned project (then project candidate, then unassigned), priority
+  rank, creation time, item ID, and entity ID.
+- `priority`: priority rank, assigned project (then project candidate, then
+  unassigned), creation time, item ID, and entity ID.
+
+Each entry exposes its one-based position, exact key values, and an ordering
+explanation. Missing priority sorts as rank 100 and missing/invalid creation time
+sorts last. Failed and blocked jobs, including all retained attempts, are read only:
+the projection may use them to plan replacement work but cannot replay, transition,
+reconcile, rewrite, or describe them as delivered. Delivery remains owned by the
+configured shipping policy after independent verification.
+
+The contract is mapped to project checks as follows:
+
+| Acceptance behavior | Machine-verifiable check |
+| --- | --- |
+| Durable eligibility, human-need signals, and explicit Ready/active/terminal exclusions | `unit: planning sessions explain durable eligibility, exclusions, and deterministic order` under `npm test` |
+| Project-first and priority-first order, exact position keys, and stable tie-breakers | The same unit contract under `npm test` |
+| Failed-job attempts remain deeply unchanged, non-replayable, and not delivered | `acceptance: failed job remains immutable planning provenance and is never represented as replayed or delivered` under both `npm test` and `npm run acceptance` |
+| JavaScript syntax and repository formatting | `npm run check` and `git diff --check` |
+
+These checks only establish the read contract. They do not grant shipping authority;
+Roundhouse still performs independent configured verification and applies the
+project's delivery policy.
+
 Scheduled work remains `Ready` but carries a separate durable eligibility gate.
 A time gate stores its absolute, timezone-qualified `eligible_at` timestamp; the
 service installs only a one-shot wake for the earliest future timestamp and

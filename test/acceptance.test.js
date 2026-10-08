@@ -14,6 +14,7 @@ import { git } from "../src/workflow/delivery.js";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { correlateExecutionActivity } from "../src/workflow/execution-activity.js";
 import { REMOTE_DESKTOP_COMMANDER_PERMITTED_USES } from "../src/workflow/remote-desktop-policy.js";
+import { planningSessionView } from "../src/workflow/planning-session.js";
 import { harness } from "./support/harness.js";
 
 const provider = fileURLToPath(new URL("./support/acceptance-provider.mjs", import.meta.url));
@@ -119,6 +120,34 @@ async function waitFor(predicate, message) {
   }
   assert.fail(message);
 }
+
+test("acceptance: failed job remains immutable planning provenance and is never represented as replayed or delivered", () => {
+  const failedJobId = "notion-eb625048c60c41b628a73c55-1";
+  const item = { id: "failed-source-item", state: "Ready", project_id: "roundhouse", priority: "P1", priority_rank: 1,
+    created_at: "2026-10-01T00:00:00.000Z", input: { text: "Original failed request" }, questions: [],
+    job_ids: [failedJobId], history: [] };
+  const job = { id: failedJobId, parent_id: item.id, project_id: "roundhouse", state: "Blocked",
+    created_at: "2026-10-01T00:00:01.000Z", work: { title: "Original failed work" },
+    hold: { requires_review: true, reason: "Retained failed work requires inspection." },
+    attempts: [{ number: 1, status: "failed", failure: "Original provider failure", execution: { report: { summary: "Failed" } } }],
+    history: [{ from: "Executing", to: "Blocked", reason: "Original provider failure", at: "2026-10-01T00:01:00.000Z" }] };
+  const data = { items: { [item.id]: item }, jobs: { [job.id]: job } };
+  const original = structuredClone(data);
+
+  const session = planningSessionView(data, { mode: "priority" });
+
+  assert.deepEqual(data, original);
+  assert.equal(session.entries.length, 1);
+  assert.equal(session.entries[0].job_id, failedJobId);
+  assert.equal(session.entries[0].eligibility.code, "blocked_job");
+  assert.equal(session.entries[0].audit.attempts_retained, 1);
+  assert.equal(session.entries[0].audit.latest_attempt.failure, "Original provider failure");
+  assert.equal(session.entries[0].audit.disposition, "read_only_provenance");
+  assert.equal(session.entries[0].audit.replay_permitted, false);
+  assert.equal(session.entries[0].audit.mutation_permitted, false);
+  assert.equal(session.entries[0].audit.represented_as_delivered, false);
+  assert.equal(session.entries[0].audit.delivery_evidence_present, false);
+});
 
 function gatedMachineLocalHerdr(root) {
   const filename = path.join(root, "acceptance-herdr.mjs");

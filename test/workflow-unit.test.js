@@ -8,6 +8,7 @@ import { validateDecision, routeDecision } from "../src/workflow/decision.js";
 import { Store, acquireLock } from "../src/workflow/store.js";
 import { runProcess } from "../src/workflow/runtime.js";
 import { actionPolicy, assertProviderAuthorized, classifyAction } from "../src/workflow/actions.js";
+import { planningSessionView } from "../src/workflow/planning-session.js";
 
 const project = { id: "example", status: "active", executor: { kind: "command" }, runtime: "local",
   verification: [{ id: "tests" }], policy: { project_confidence: 0.8, execution_confidence: 0.9, allow_autonomous: true, shipping: "push_branch" } };
@@ -51,6 +52,37 @@ test("unit: slice contracts preserve explicit repository and capability requirem
   assert.throws(() => validateDecision({ ...structuredClone(decision), work_items: [{
     ...decision.work_items[0], repository_required: false, required_capabilities: ["Human Task"],
   }] }), /stable lowercase/);
+});
+test("unit: planning sessions explain durable eligibility, exclusions, and deterministic order", () => {
+  const item = (id, state, projectId, rank, createdAt) => ({ id, state, project_id: projectId, priority_rank: rank,
+    created_at: createdAt, input: { text: id }, questions: [], job_ids: [], history: [] });
+  const data = { items: {
+    "alpha-low": item("alpha-low", "Depot", "alpha", 2, "2026-01-02T00:00:00Z"),
+    "alpha-high": item("alpha-high", "Needs Clarification", "alpha", 0, "2026-01-03T00:00:00Z"),
+    "beta-high": item("beta-high", "Review", "beta", 0, "2026-01-01T00:00:00Z"),
+    ready: item("ready", "Ready", "alpha", 0, "2026-01-01T00:00:00Z"),
+    active: item("active", "Decision", "alpha", 0, "2026-01-01T00:00:00Z"),
+    executing: { ...item("executing", "Ready", "beta", 0, "2026-01-01T00:00:00Z"), job_ids: ["executing-job"] },
+    shipped: { ...item("shipped", "Ready", "beta", 0, "2026-01-01T00:00:00Z"), job_ids: ["shipped-job"] },
+  }, jobs: {
+    "executing-job": { id: "executing-job", parent_id: "executing", project_id: "beta", state: "Executing", attempts: [] },
+    "shipped-job": { id: "shipped-job", parent_id: "shipped", project_id: "beta", state: "Shipped", attempts: [] },
+  } };
+  data.items["alpha-high"].questions.push({ id: "question-1", revision: 3, status: "open", prompt: "Choose the target." });
+
+  const before = structuredClone(data);
+  const byProject = planningSessionView(data, { mode: "project" });
+  const byPriority = planningSessionView(data, { mode: "priority" });
+
+  assert.deepEqual(data, before);
+  assert.deepEqual(byProject.entries.map((entry) => entry.entity_id), ["alpha-high", "alpha-low", "beta-high"]);
+  assert.deepEqual(byPriority.entries.map((entry) => entry.entity_id), ["alpha-high", "beta-high", "alpha-low"]);
+  assert.deepEqual(byProject.entries.map((entry) => entry.ordering.position), [1, 2, 3]);
+  assert.equal(byProject.entries[0].eligibility.human_need[0].question_id, "question-1");
+  assert.deepEqual(Object.fromEntries(byProject.excluded.map((entry) => [entry.entity_id, entry.code])), {
+    ready: "ready_for_dispatch", active: "active_work", "executing-job": "active_work", "shipped-job": "terminal_state",
+  });
+  assert.throws(() => planningSessionView(data, { mode: "recent" }), /project or priority/);
 });
 test("unit: trusted action classification can be elevated but not downgraded", () => {
   assert.equal(classifyAction({ action_class: "consequential", required_capabilities: ["research"] }), "consequential");
