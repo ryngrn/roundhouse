@@ -22,7 +22,9 @@ function uncertainAttempt(attempt) {
 }
 
 export function diagnoseBlocker(job, project) {
-  const reason = job?.history?.at(-1)?.reason ?? "";
+  // Cleanup bookkeeping must not replace the originating failure diagnosis.
+  const reason = [...(job?.history ?? [])].reverse()
+    .find((entry) => !String(entry.reason ?? "").startsWith("Unblocker retained this work:"))?.reason ?? "";
   if (!job || job.state !== "Blocked") return { category: "not_blocked", action: "none" };
   if (!project) return { category: "unknown_project", action: "human_review" };
   if (project.runtime !== "local" || !SAFE_SHIPPING.has(project.policy?.shipping)) {
@@ -186,7 +188,7 @@ function metrics(data) {
 
 function recordMetric(data, { action, root, packet, decision, brief, at }) {
   const value = metrics(data);
-  const counter = { delete: "deleted", repurpose: "repurposed", ask: "asked", archive: "archived" }[action];
+  const counter = { delete: "deleted", repurpose: "repurposed", ask: "asked", archive: "archived", keep: "kept" }[action];
   value.decisions += 1; value[counter] = (value[counter] ?? 0) + 1;
   value.work_released += action === "delete" || action === "repurpose" ? packet.impact.ready_descendants.length : 0;
   value.decision_latency_ms += decision.latency_ms ?? 0;
@@ -402,6 +404,15 @@ export class Unblocker {
             : decision.question || `Should I delete “${packet.candidate.title}” and repurpose the useful work behind it, or preserve it for a smaller plan?`,
           options: startedRepurpose ? startedWorkOptions(packet) : decision.options.length === 2 ? decision.options : fallbackOptions(packet) }
         : decision;
+      // A model proposal never overrides the archival/deletion guards.
+      // Invalid archival of attempted work used to throw and abort the worker
+      // cycle, even when unrelated Ready work could proceed independently.
+      const unsafeArchive = effective.action === "archive" &&
+        (root.kind !== "item" || (root.entity.job_ids ?? []).some((id) => beforeCleanup.jobs?.[id]));
+      const unsafeDelete = effective.action === "delete" &&
+        (root.kind === "item" && (root.entity.job_ids ?? []).some((id) => beforeCleanup.jobs?.[id]) ||
+          (root.entity.processes ?? []).length > 0 || Boolean(root.entity.owning_node_id));
+      const preserveUnsafe = unsafeArchive || unsafeDelete;
       const at = new Date().toISOString();
       const commit = (change) => {
         try { return this.store.change(change); }
@@ -410,7 +421,28 @@ export class Unblocker {
           throw error;
         }
       };
-      if (effective.action === "ask") {
+      if (preserveUnsafe) {
+        cleanup = await commit(data => {
+          const current = assertCleanupGuard(data, root, packet, this.config);
+          const entity = current.entity;
+          const response = entity.issue_resolution?.response;
+          const reason = unsafeArchive
+            ? "Proposed archival is invalid for attempted or dependent work."
+            : "Proposed deletion is invalid while dependent or active work is retained.";
+          entity.cleanup_intent = { ...intentBrief, distilled_at: at, evidence_fingerprint: packet.guard.evidence_fingerprint };
+          entity.issue_resolution = {
+            status: "kept", confidence: effective.calibrated_confidence, model_confidence: effective.confidence,
+            reason, evidence_fingerprint: packet.guard.evidence_fingerprint,
+            reconsider_when: "request, operator response, failure evidence, dependencies, or blocker state changes",
+            ...(response ? { response } : {}), at,
+          };
+          entity.revision += 1;
+          entity.updated_at = at;
+          entity.history.push({ from: entity.state, to: entity.state, reason: `Unblocker retained this work: ${reason}`, at });
+          recordMetric(data, { action: "keep", root, packet, decision: effective, brief: intentBrief, at });
+          return { action: "keep", id: entity.id, reason };
+        });
+      } else if (effective.action === "ask") {
         cleanup = await commit(data => {
           const current = assertCleanupGuard(data, root, packet, this.config);
           const entity = current.entity;
