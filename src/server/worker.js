@@ -1,6 +1,7 @@
 export class WorkerLoop {
   constructor({ service, eventBroker = null, commandQueue = null, onCycle = async () => {}, onError = () => {},
-    setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, now = () => Date.now() }) {
+    setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, now = () => Date.now(),
+    reconciliationIntervalMs = 5 * 60 * 1000 }) {
     this.service = service;
     this.eventBroker = eventBroker;
     this.commandQueue = commandQueue;
@@ -24,6 +25,9 @@ export class WorkerLoop {
     this.lastCommand = null;
     this.scheduledWakeTimer = null;
     this.nextScheduledWakeAt = null;
+    this.reconciliationTimer = null;
+    this.nextReconciliationAt = null;
+    this.reconciliationIntervalMs = reconciliationIntervalMs;
     this.setTimeoutFn = setTimeoutFn;
     this.clearTimeoutFn = clearTimeoutFn;
     this.now = now;
@@ -170,10 +174,29 @@ export class WorkerLoop {
     return this.wakeDrain;
   }
 
+  scheduleReconciliation() {
+    if (this.reconciliationTimer) this.clearTimeoutFn(this.reconciliationTimer);
+    this.reconciliationTimer = null;
+    this.nextReconciliationAt = null;
+    if (this.stopped || !this.commandQueue || this.reconciliationIntervalMs <= 0) return;
+    this.nextReconciliationAt = new Date(this.now() + this.reconciliationIntervalMs).toISOString();
+    this.reconciliationTimer = this.setTimeoutFn(() => {
+      this.reconciliationTimer = null;
+      this.nextReconciliationAt = null;
+      if (this.stopped) return;
+      // Re-arm before inspecting PostgreSQL so this fallback remains independent
+      // of both the wake subscription and a slow or failed reconciliation cycle.
+      this.scheduleReconciliation();
+      this.wake();
+    }, this.reconciliationIntervalMs);
+    this.reconciliationTimer.unref?.();
+  }
+
   start() {
     if (this.started) return this.wakeDrain;
     this.started = true;
     this.stopped = false;
+    this.scheduleReconciliation();
     return this.wake();
   }
 
@@ -183,6 +206,9 @@ export class WorkerLoop {
     if (this.scheduledWakeTimer) this.clearTimeoutFn(this.scheduledWakeTimer);
     this.scheduledWakeTimer = null;
     this.nextScheduledWakeAt = null;
+    if (this.reconciliationTimer) this.clearTimeoutFn(this.reconciliationTimer);
+    this.reconciliationTimer = null;
+    this.nextReconciliationAt = null;
     return Promise.allSettled([this.wakeDrain, this.cycleRunning].filter(Boolean));
   }
 
@@ -202,6 +228,7 @@ export class WorkerLoop {
       command_error: this.commandError,
       last_command: this.lastCommand,
       next_scheduled_wake_at: this.nextScheduledWakeAt,
+      next_reconciliation_at: this.nextReconciliationAt,
     };
   }
 }

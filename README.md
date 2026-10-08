@@ -28,7 +28,8 @@ workflow state. The former Notion Roundhouse Depot is archive/reference only; ne
 For shared/multi-node installs, PostgreSQL is authoritative; Neon is the intended
 hosted provider. Local JSON storage is only for explicit single-node development,
 tests, and pre-cutover bootstrap. See the [PostgreSQL control-plane and cutover
-guide](docs/postgresql-control-plane.md). The idle control plane is event-driven;
+guide](docs/postgresql-control-plane.md). The idle control plane uses disposable
+wakes with a five-minute PostgreSQL relay reconciliation fallback;
 see the [wake, read, and execution boundaries](docs/event-driven-control-plane.md).
 
 ## Install on one Mac
@@ -78,8 +79,8 @@ when Codex is unavailable.
 Start from [the autonomy configuration](config/autonomy.example.yaml), saved outside
 your repository, or use the control room's validated private configuration editor.
 Configure its repository, context, checks, and delivery policy. The installed
-background worker runs on startup, local mutations, and disposable wake messages
-rather than polling PostgreSQL. CLI operation
+background worker runs on startup, local mutations, and disposable wake messages,
+with a five-minute PostgreSQL relay reconciliation fallback. CLI operation
 remains available:
 
 ```sh

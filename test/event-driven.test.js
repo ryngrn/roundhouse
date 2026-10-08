@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import { harness } from "./support/harness.js";
 import { RoundhouseService } from "../src/workflow/service.js";
@@ -116,6 +118,102 @@ test("wake stream ignores open/keepalive events and reconnects without creating 
   await waitFor(() => cycles === 1);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(cycles, 1);
+});
+
+test("wake stream errors and closures use one bounded exponential retry with jitter", async (t) => {
+  let connections = 0;
+  const timers = [];
+  const source = new HttpWakeSource({
+    url: "https://wake.example/topic/json",
+    minimumBackoffMs: 1_000,
+    maximumBackoffMs: 2_000,
+    random: () => 0,
+    get: () => {
+      connections += 1;
+      const request = new EventEmitter();
+      request.destroy = () => {};
+      queueMicrotask(() => {
+        if (connections === 1) request.emit("error", new Error("socket closed"));
+        else {
+          const response = new PassThrough();
+          response.statusCode = 200;
+          request.emit("response", response);
+          if (connections === 2) response.end('{"event":"open"}\n');
+        }
+      });
+      return request;
+    },
+    setTimeoutFn: (callback, delay) => {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+  });
+  t.after(() => source.stop());
+
+  source.start();
+  await waitFor(() => timers.length === 1);
+  assert.equal(timers[0].delay, 500);
+  source.disconnected();
+  assert.equal(timers.length, 1);
+
+  timers[0].callback();
+  await waitFor(() => timers.length === 2);
+  assert.equal(timers[1].delay, 1_000);
+
+  timers[1].callback();
+  await waitFor(() => connections === 3);
+  source.connect();
+  assert.equal(connections, 3);
+  assert.equal(source.reconnectTimer, null);
+});
+
+test("five-minute relay reconciliation survives wake failure and worker restart", async () => {
+  const timers = [];
+  const cleared = [];
+  const commands = [];
+  const finished = [];
+  const queue = {
+    claimRemoteCommand: async () => commands.shift() ?? null,
+    finishRemoteCommand: async (id, result) => finished.push([id, result]),
+  };
+  const service = {
+    addToDepot: async (payload) => ({ item: { id: payload.id } }),
+    engine: {
+      runTriage: async () => ({ triaged: 0 }),
+      runDispatch: async () => ({ executed: 0 }),
+    },
+  };
+  const timerOptions = {
+    setTimeoutFn: (callback, delay) => {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutFn: (timer) => cleared.push(timer),
+    now: () => Date.parse("2026-01-01T00:00:00.000Z"),
+  };
+
+  const first = new WorkerLoop({ service, commandQueue: queue, ...timerOptions });
+  await first.start();
+  assert.equal(timers[0].delay, 5 * 60 * 1000);
+  assert.equal(first.status().next_reconciliation_at, "2026-01-01T00:05:00.000Z");
+
+  commands.push({ id: "during-outage", kind: "intake", payload: { id: "pending-1" } });
+  timers[0].callback();
+  await waitFor(() => finished.length === 1);
+  assert.equal(finished[0][0], "during-outage");
+  assert.equal(timers[1].delay, 5 * 60 * 1000);
+  await first.stop();
+  assert.ok(cleared.includes(timers[1]));
+
+  commands.push({ id: "after-restart", kind: "intake", payload: { id: "pending-2" } });
+  const restarted = new WorkerLoop({ service, commandQueue: queue, ...timerOptions });
+  await restarted.start();
+  assert.equal(finished[1][0], "after-restart");
+  assert.equal(timers[2].delay, 5 * 60 * 1000);
+  await restarted.stop();
+  assert.ok(cleared.includes(timers[2]));
 });
 
 test("programmatic servers do not inherit the production relay environment", async (t) => {
