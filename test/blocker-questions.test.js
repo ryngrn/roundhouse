@@ -151,3 +151,21 @@ test("a kept blocker is reconsidered only after its evidence changes", async () 
   });
   assert.equal((await h.engine.runUnblocker()).cleanup.action, "keep");
 });
+
+test("repurposing previously attempted work becomes one durable operator decision instead of an error loop", async () => {
+  const h = harness();
+  const item = h.submit("cleanup repurpose attempted work", "attempted-repurpose");
+  await h.engine.runTriage();
+  const jobId = h.store.read().items[item.id].job_ids[0];
+  h.store.change((data) => {
+    data.jobs[jobId].attempts = [{ number: 1, execution: { passed: false } }];
+    h.store.move(data, data.jobs[jobId], "Blocked", "Attempt outcome is unresolved.");
+  });
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup.action, "ask");
+  const issue = h.store.read().jobs[jobId].issue_resolution;
+  assert.equal(issue.status, "waiting");
+  assert.match(issue.question, /reconciliation|delete/i);
+  assert.deepEqual(issue.options.slice(0, 2).map((option) => option.id), ["preserve-for-reconciliation", "delete-unverified-attempt"]);
+  assert.equal((await h.engine.runUnblocker()).cleanup, null);
+});
