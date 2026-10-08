@@ -13,9 +13,26 @@ const jsonSize = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
 
 function validateFilters(filters) {
   if (!filters || typeof filters !== "object" || Array.isArray(filters)) throw new Error("Filters must be an object.");
-  for (const key of Object.keys(filters)) if (!["item_id", "project_id"].includes(key)) throw new Error(`Unknown filter: ${key}`);
-  for (const key of ["item_id", "project_id"]) if (filters[key] !== undefined && !nonempty(filters[key])) throw new Error(`${key} must be nonempty.`);
+  for (const key of Object.keys(filters)) if (!["item_id", "project_id", "source", "thread_id", "correlation_id"].includes(key)) throw new Error(`Unknown filter: ${key}`);
+  for (const key of ["item_id", "project_id", "source", "thread_id", "correlation_id"]) if (filters[key] !== undefined && !nonempty(filters[key])) throw new Error(`${key} must be nonempty.`);
+  if ((filters.thread_id !== undefined || filters.correlation_id !== undefined) && filters.source !== "claude") {
+    throw new Error("Claude conversation filters require source=claude.");
+  }
   return filters;
+}
+
+function normalizeClaudeOrigin(origin) {
+  if (!origin || typeof origin !== "object" || Array.isArray(origin)) throw new Error("Claude origin must be an object.");
+  const allowed = new Set(["source", "actor", "project_id", "thread_id", "correlation_id"]);
+  for (const key of Object.keys(origin)) if (!allowed.has(key)) throw new Error(`Unknown Claude origin field: ${key}`);
+  if (origin.source !== "claude") throw new Error("Claude origin source must be claude.");
+  for (const key of ["actor", "thread_id", "correlation_id"]) {
+    if (!nonempty(origin[key]) || origin[key].length > 500) throw new Error(`Claude origin ${key} must be a nonempty string of at most 500 characters.`);
+  }
+  if (origin.project_id !== undefined && (!nonempty(origin.project_id) || origin.project_id.length > 200)) {
+    throw new Error("Claude origin project_id must be a nonempty string of at most 200 characters.");
+  }
+  return structuredClone(origin);
 }
 
 export function normalizeIntake(input, adapter = {}) {
@@ -35,13 +52,21 @@ export function normalizeIntake(input, adapter = {}) {
   if (input.metadata !== undefined && (!input.metadata || typeof input.metadata !== "object" || Array.isArray(input.metadata))) throw new Error("metadata must be an object.");
   if (input.metadata !== undefined && jsonSize(input.metadata) > 100_000) throw new Error("metadata exceeds 100,000 encoded bytes.");
   if (input.idempotency_key !== undefined && (!nonempty(input.idempotency_key) || input.idempotency_key.length > 500)) throw new Error("idempotency_key must be a nonempty string of at most 500 characters.");
+  const origin = input.origin === undefined ? null : normalizeClaudeOrigin(input.origin);
   return normalizeDepotIntake({
     content: input.content,
     ...(input.project_hint === undefined ? {} : { project_hint: input.project_hint }),
     ...(input.context === undefined ? {} : { context: structuredClone(input.context) }),
     ...(input.attachments === undefined ? {} : { attachments: structuredClone(input.attachments) }),
     ...(input.metadata === undefined ? {} : { metadata: structuredClone(input.metadata) }),
-  }, adapter);
+    ...(origin ? {
+      source: origin.source,
+      actor: origin.actor,
+      ...(origin.project_id === undefined ? {} : { project_id: origin.project_id }),
+      thread_id: origin.thread_id,
+      correlation_id: origin.correlation_id,
+    } : {}),
+  }, origin ? { source: origin.source, actor: origin.actor } : adapter);
 }
 
 export class RoundhouseService {
@@ -64,7 +89,10 @@ export class RoundhouseService {
 
   addToDepot(input, adapter = { source: "external", actor: "external-user" }) {
     const normalized = normalizeIntake(input, adapter);
-    const key = nonempty(input.idempotency_key) ? `external:${input.idempotency_key}` : `external:${randomUUID()}`;
+    const origin = input.origin === undefined ? null : normalizeClaudeOrigin(input.origin);
+    const key = origin
+      ? `claude:${JSON.stringify([origin.thread_id, origin.correlation_id])}`
+      : nonempty(input.idempotency_key) ? `external:${input.idempotency_key}` : `external:${randomUUID()}`;
     return mapResult(submitToDepot(this.store, normalized, key, adapter), (item) =>
       mapResult(this.store.read(), (data) => ({ item: itemView(data, item), durable: true })));
   }
@@ -120,9 +148,10 @@ export class RoundhouseService {
       mapResult(this.store.read(), (data) => ({ item: itemView(data, data.items[job.parent_id]), human_task: job.human_task, completed: true })));
   }
 
-  async answerQuestion({ id, answer, expected_revision, actor = "chatgpt-user" }) {
+  async answerQuestion({ id, answer, expected_revision, actor = "chatgpt-user", origin }) {
     if (!this.engine) throw new Error("Roundhouse configuration is required to re-evaluate an answer.");
-    const item = await this.engine.answerQuestion(id, answer, actor, expected_revision);
+    const claudeOrigin = origin === undefined ? null : normalizeClaudeOrigin(origin);
+    const item = await this.engine.answerQuestion(id, answer, claudeOrigin?.actor ?? actor, expected_revision, claudeOrigin);
     return { item: itemView(await this.store.read(), item), answer_recorded: true, reevaluated: true };
   }
 

@@ -3,6 +3,14 @@ import { assessJobEligibility } from "./scheduling.js";
 
 const activeJobStates = new Set(["Executing", "Verification", "Rework"]);
 
+function matchesFilters(item, filters) {
+  return (!filters.item_id || item.id === filters.item_id)
+    && (!filters.project_id || item.project_id === filters.project_id || item.input.project_id === filters.project_id || item.input.project_hint === filters.project_id)
+    && (!filters.source || item.input.source === filters.source)
+    && (!filters.thread_id || item.input.thread_id === filters.thread_id)
+    && (!filters.correlation_id || item.input.correlation_id === filters.correlation_id);
+}
+
 function remoteRunIdentity(remoteExecution) {
   if (!remoteExecution) return null;
   return remoteExecution.execution_id ?? remoteExecution.run_id ?? remoteExecution.remote_run_id ?? null;
@@ -178,11 +186,11 @@ export function itemView(data, item) {
 
 export function statusView(data, filters = {}, executionActivity = null) {
   const items = Object.values(data.items)
-    .filter((item) => !filters.item_id || item.id === filters.item_id)
-    .filter((item) => !filters.project_id || item.project_id === filters.project_id || item.input.project_hint === filters.project_id)
+    .filter((item) => matchesFilters(item, filters))
     .map((item) => itemView(data, item))
     .sort((a, b) => (data.items[a.id].priority_rank ?? 100) - (data.items[b.id].priority_rank ?? 100)
       || String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")) || a.id.localeCompare(b.id));
+  const visibleItemIds = new Set(items.map((item) => item.id));
   const nextJob = Object.values(data.jobs)
     .filter((job) => job.state === "Ready" && job.project_context?.status === "active"
       && !data.projects?.[job.project_id]?.blocked && !data.projects?.[job.project_id]?.stop && !data.projects?.[job.project_id]?.review_required
@@ -203,6 +211,7 @@ export function statusView(data, filters = {}, executionActivity = null) {
     .filter((decision) => !filters.item_id || data.jobs[decision.job_id]?.parent_id === filters.item_id);
   const active_jobs = Object.values(data.jobs)
     .filter((job) => activeJobStates.has(job.state))
+    .filter((job) => !filters.source && !filters.thread_id && !filters.correlation_id || visibleItemIds.has(job.parent_id))
     .filter((job) => !filters.project_id || job.project_id === filters.project_id)
     .filter((job) => !filters.item_id || job.parent_id === filters.item_id)
     .map(jobView)
@@ -235,8 +244,7 @@ export function statusView(data, filters = {}, executionActivity = null) {
 
 export function needsHumanView(data, filters = {}) {
   const questions = Object.values(data.items)
-    .filter((item) => !filters.item_id || item.id === filters.item_id)
-    .filter((item) => !filters.project_id || item.project_id === filters.project_id || item.input.project_hint === filters.project_id)
+    .filter((item) => matchesFilters(item, filters))
     .flatMap((item) => (item.questions ?? [])
       .filter((question) => question.status === "open")
       .map((question) => ({

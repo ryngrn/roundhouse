@@ -108,6 +108,7 @@ Herdr executor and requires no per-project manifest setting.
 - [PostgreSQL operations, migration, backup, and recovery](docs/postgresql-control-plane.md)
 - [Notion Depot archive and one-time cutover](docs/chatgpt-rdc-bridge.md)
 - [ChatGPT MCP adapter setup and testing](docs/chatgpt-mcp.md)
+- [Claude conversation MCP contract](docs/claude-mcp.md)
 
 The local adapter reserves configured execution slots inside one worker lease and
 uses an independent triage lease. PostgreSQL workers atomically reserve compatible

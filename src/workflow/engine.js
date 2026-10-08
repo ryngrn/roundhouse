@@ -466,7 +466,7 @@ export class Engine {
       return item;
     });
   }
-  async answerQuestion(id, answer, actor, expectedRevision) {
+  async answerQuestion(id, answer, actor, expectedRevision, origin = null) {
     if (!id?.trim() || !answer?.trim() || !actor?.trim()) throw new Error("Answer requires an id, answer, and actor.");
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new Error("Answer requires a positive expected revision.");
     const release = this.store.shared ? () => {} : this.store.acquireWorkerLease();
@@ -488,15 +488,22 @@ export class Engine {
         );
         if (matches.length !== 1) throw new Error("Question or decision id does not identify one durable question.");
         const { item, question } = matches[0];
+        if (origin && (item.input.source !== origin.source || item.input.thread_id !== origin.thread_id
+          || item.input.correlation_id !== origin.correlation_id
+          || (origin.project_id !== undefined && item.input.project_id !== origin.project_id))) {
+          throw new Error("Question does not belong to the originating Claude conversation.");
+        }
         if (question.status !== "open" || question.revision !== expectedRevision) throw new Error("Answer is stale or this question was already resolved.");
         const importedDecision = item.state === "Imported Pending" && question.kind === "imported_decision" && item.requires_reevaluation;
         if ((!importedDecision && !["Needs Clarification", "Review"].includes(item.state)) || item.job_ids.length) throw new Error("Question cannot be answered in the item's current state.");
         const now = new Date().toISOString();
-        question.answer = { text: answer, actor, at: now };
+        question.answer = { text: answer, actor, at: now,
+          ...(origin ? { source: origin.source, thread_id: origin.thread_id, correlation_id: origin.correlation_id } : {}) };
         question.status = "answered";
         question.revision += 1;
         question.updated_at = now;
-        item.clarifications.push({ text: answer, actor, question_id: question.id, decision_id: question.decision_id, decision_key: question.decision_key ?? null, at: now });
+        item.clarifications.push({ text: answer, actor, question_id: question.id, decision_id: question.decision_id, decision_key: question.decision_key ?? null, at: now,
+          ...(origin ? { source: origin.source, thread_id: origin.thread_id, correlation_id: origin.correlation_id } : {}) });
         if (importedDecision) {
           item.reevaluation = { actor, at: now, trigger: "imported_decision_answer" };
           item.requires_reevaluation = false;

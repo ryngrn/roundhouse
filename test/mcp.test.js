@@ -112,6 +112,56 @@ test("service: intake validation and idempotency conflicts stay in the normalize
   assert.throws(() => service.getWorkStatus({ unknown: "filter" }), /Unknown filter/);
 });
 
+test("Claude conversation intake, clarification, and status retain durable origin contracts", async () => {
+  const h = harness();
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const origin = {
+    source: "claude", actor: "claude-user-7", project_id: "example",
+    thread_id: "thread-42", correlation_id: "turn-9",
+  };
+  const request = { content: "ambiguous Claude idea", origin, metadata: { transport: "remote-mcp" } };
+  const submitted = await callRoundhouseTool(service, "add_to_depot", request);
+  const duplicate = await callRoundhouseTool(service, "add_to_depot", request);
+  assert.equal(duplicate.structuredContent.item.id, submitted.structuredContent.item.id);
+  const itemId = submitted.structuredContent.item.id;
+  let stored = h.store.read().items[itemId];
+  assert.deepEqual({
+    source: stored.input.source, actor: stored.input.actor, project_id: stored.input.project_id,
+    thread_id: stored.input.thread_id, correlation_id: stored.input.correlation_id,
+  }, origin);
+  assert.deepEqual(stored.input.metadata, { transport: "remote-mcp" });
+  await assert.rejects(() => callRoundhouseTool(service, "add_to_depot", { content: "changed", origin }), /different content/);
+
+  await h.engine.run();
+  const pending = await callRoundhouseTool(service, "get_needs_human", {
+    source: "claude", thread_id: origin.thread_id, correlation_id: origin.correlation_id,
+  });
+  assert.equal(pending.structuredContent.questions.length, 1);
+  const question = pending.structuredContent.questions[0];
+  await assert.rejects(() => callRoundhouseTool(service, "answer_question", {
+    id: question.id, answer: "wrong thread", expected_revision: question.revision,
+    origin: { ...origin, thread_id: "other-thread" },
+  }), /originating Claude conversation/);
+  const answered = await callRoundhouseTool(service, "answer_question", {
+    id: question.id, answer: "Use Example and append a feature entry.", expected_revision: question.revision, origin,
+  });
+  assert.equal(answered.structuredContent.item.state, "Ready");
+  stored = h.store.read().items[itemId];
+  assert.equal(stored.questions[0].answer.source, "claude");
+  assert.equal(stored.questions[0].answer.thread_id, origin.thread_id);
+  assert.equal(stored.clarifications[0].correlation_id, origin.correlation_id);
+
+  const before = JSON.stringify(h.store.read());
+  const status = await callRoundhouseTool(service, "get_work_status", {
+    source: "claude", thread_id: origin.thread_id, correlation_id: origin.correlation_id,
+  });
+  assert.equal(status.structuredContent.items[0].id, itemId);
+  assert.equal(JSON.stringify(h.store.read()), before);
+  await assert.rejects(() => callRoundhouseTool(service, "get_work_status", {
+    source: "claude", thread_id: origin.thread_id, policy: { shipping: "deploy" },
+  }), /Unrecognized key/);
+});
+
 test("ChatGPT implementation intake persists before Roundhouse triage and claimed dispatch select an internal executor", async () => {
   const h = harness();
   let runtimeCalls = 0;
