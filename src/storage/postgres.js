@@ -16,6 +16,7 @@ const migrations = [
   { version: 4, name: "attempt_node_identity", file: path.join(here, "migrations", "004_attempt_node_identity.sql") },
   { version: 5, name: "remote_commands", file: path.join(here, "migrations", "005_remote_commands.sql") },
   { version: 6, name: "scheduled_work", file: path.join(here, "migrations", "006_scheduled_work.sql") },
+  { version: 7, name: "control_plane_health", file: path.join(here, "migrations", "007_control_plane_health.sql") },
 ];
 const snapshotLock = 714_209_533;
 
@@ -524,6 +525,26 @@ export class PostgresStorageRepository extends StorageRepository {
       return { kind: this.kind, shared: true, authoritative: true, connected: false, read_only: true,
         error: "PostgreSQL unavailable", ...(error.code ? { error_code: error.code } : {}),
         node: { id: this.node.id, name: this.node.name, capabilities: this.node.capabilities } };
+    }
+  }
+
+  async getControlPlaneHealthEvidence() {
+    const result = await this.pool.query(`SELECT last_success_at
+      FROM roundhouse.control_plane_health WHERE check_name = 'daily-read-only'`);
+    return result.rowCount ? { last_success_at: result.rows[0].last_success_at.toISOString() } : null;
+  }
+
+  async runControlPlaneHealthCheck() {
+    const client = await this.pool.connect();
+    try {
+      const checked = await client.query("SELECT clock_timestamp() AS checked_at");
+      const checkedAt = checked.rows[0].checked_at;
+      await client.query(`INSERT INTO roundhouse.control_plane_health(check_name,last_success_at)
+        VALUES ('daily-read-only',$1)
+        ON CONFLICT (check_name) DO UPDATE SET last_success_at=EXCLUDED.last_success_at`, [checkedAt]);
+      return { last_success_at: checkedAt.toISOString() };
+    } finally {
+      client.release();
     }
   }
 

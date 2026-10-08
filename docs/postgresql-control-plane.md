@@ -80,6 +80,43 @@ process liveness and does not wake PostgreSQL; an explicit overview/status read
 reports storage connectivity. Restoring database connectivity is required before
 work continues.
 
+## Daily control-plane health check
+
+When PostgreSQL is the configured authority, the always-on Roundhouse service also
+owns a lightweight control-plane check. At startup it reads the last successful
+check timestamp and arms a one-shot timer for approximately 24 hours after that
+success. If the timestamp is missing or overdue, it checks immediately. This is an
+event-driven service timer: it does not create a Depot item, invoke a model, use a
+ChatGPT automation, or run a frequent polling loop. A service or Mac restart
+reconstructs the remaining delay from PostgreSQL.
+
+The probe is `SELECT clock_timestamp()` through the repository's existing pool.
+After that read succeeds, Roundhouse upserts only the resulting timestamp in
+`roundhouse.control_plane_health`; credentials and connection details are never
+copied into evidence or logs. Cached operational evidence is exposed at
+`worker.control_plane_health` in `/health` and `/api/overview`, including
+`last_success_at`, `next_check_at`, and any current error. `/health` itself remains
+a local liveness read and does not issue a database query.
+
+Failures use the service's existing `Worker:` stderr path and appear in the cached
+health status. Retries begin after five minutes, double after each failure, and are
+capped at six hours. A success clears the failure state and restores the daily
+interval, so an outage cannot produce a tight database retry loop.
+
+Installation follows the existing PostgreSQL upgrade procedure: back up the
+database, stop the user service, install the verified application revision, and
+restart it once. Startup applies migration 007 transactionally before the scheduler
+starts. The macOS service wrapper continues to load `DATABASE_URL` only from the
+private service environment; no new secret or plist setting is required. Do not
+reconfigure a running Studio service unless the deployment policy for that service
+explicitly authorizes it.
+
+For rollback, stop the service and restore the prior application revision. The
+additive `control_plane_health` table may safely remain for a prior version that
+does not use it; avoid reversing an applied migration. Restart the prior revision
+and verify `/health`. Removing the table is optional cleanup only after confirming
+that no installed revision uses the scheduler.
+
 ## Backup, restore, and integration tests
 
 Use provider snapshots plus standard logical backups. Example:

@@ -69,6 +69,19 @@ test("postgres: migrations, normalized restart projection, provenance, and outbo
   await restarted.close();
 });
 
+test("postgres: daily health success evidence survives repository restart", { skip: !enabled }, async () => {
+  await reset();
+  const first = await open("health-first");
+  const checked = await first.runControlPlaneHealthCheck();
+  assert.match(checked.last_success_at, /^\d{4}-\d{2}-\d{2}T/);
+  await first.close();
+
+  const restarted = await open("health-restart");
+  assert.deepEqual(await restarted.getControlPlaneHealthEvidence(), checked);
+  assert.equal(Number((await restarted.pool.query("SELECT count(*) AS count FROM roundhouse.control_plane_health")).rows[0].count), 1);
+  await restarted.close();
+});
+
 test("postgres: two nodes racing claim exactly one job and expose its owner", { skip: !enabled }, async () => {
   await reset();
   const first = await open("one");

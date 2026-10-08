@@ -1,8 +1,10 @@
+import { ControlPlaneHealthScheduler } from "./control-plane-health.js";
+
 export class WorkerLoop {
   constructor({ service, eventBroker = null, commandQueue = null, onCycle = async () => {}, onError = () => {},
     setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, now = () => Date.now(),
     reconciliationIntervalMs = 5 * 60 * 1000, maxRemoteCommandsPerCycle = 20,
-    maxImmediateWakeCycles = 2, deferredWakeDelayMs = 1_000 }) {
+    maxImmediateWakeCycles = 2, deferredWakeDelayMs = 1_000, healthScheduler } = {}) {
     this.service = service;
     this.eventBroker = eventBroker;
     this.commandQueue = commandQueue;
@@ -45,6 +47,7 @@ export class WorkerLoop {
     this.setTimeoutFn = setTimeoutFn;
     this.clearTimeoutFn = clearTimeoutFn;
     this.now = now;
+    this.healthScheduler = healthScheduler ?? new ControlPlaneHealthScheduler({ store: service?.store, onError, now, setTimeoutFn, clearTimeoutFn });
   }
 
   handleError(plane, error) {
@@ -225,7 +228,8 @@ export class WorkerLoop {
     this.started = true;
     this.stopped = false;
     this.scheduleReconciliation();
-    return this.wake();
+    const wake = this.wake();
+    return Promise.all([wake, this.healthScheduler.start()]).then(() => undefined);
   }
 
   stop() {
@@ -239,7 +243,7 @@ export class WorkerLoop {
     if (this.reconciliationTimer) this.clearTimeoutFn(this.reconciliationTimer);
     this.reconciliationTimer = null;
     this.nextReconciliationAt = null;
-    return Promise.allSettled([this.wakeDrain, this.cycleRunning].filter(Boolean));
+    return Promise.allSettled([this.wakeDrain, this.cycleRunning, this.healthScheduler.stop()].filter(Boolean));
   }
 
   status() {
@@ -260,6 +264,7 @@ export class WorkerLoop {
       next_scheduled_wake_at: this.nextScheduledWakeAt,
       next_reconciliation_at: this.nextReconciliationAt,
       wake_pending: this.wakeRequested,
+      control_plane_health: this.healthScheduler.status(),
     };
   }
 }

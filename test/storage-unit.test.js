@@ -52,7 +52,7 @@ test("storage: forward migrations normalize control-plane domains and contain no
   for (const table of ["system_metadata", "projects", "project_candidates", "depot_items", "depot_item_revisions", "decisions", "questions",
     "answers", "jobs", "job_dependencies", "job_attempts", "agent_role_refs", "execution_metadata", "verification_results",
     "verification_checks", "shipping_records", "deployments", "transition_audit", "outbox_events", "mcp_subscriptions",
-    "mcp_deliveries", "nodes", "resource_leases", "import_provenance"]) {
+    "mcp_deliveries", "nodes", "resource_leases", "import_provenance", "control_plane_health"]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS roundhouse\\.${table}\\b`));
   }
   assert.doesNotMatch(sql, /state_blob|snapshot_blob|CREATE TABLE[^;]*state_json/is);
@@ -70,4 +70,29 @@ test("storage: a disconnected PostgreSQL authority reports read-only health inst
   assert.equal(status.read_only, true);
   assert.equal(status.authoritative, true);
   assert.equal(status.node.name, "offline-node");
+});
+
+test("storage: daily health uses the configured pool and persists only its successful timestamp", async () => {
+  const queries = [];
+  const client = {
+    query: async (sql, parameters = []) => {
+      queries.push({ sql, parameters });
+      if (/clock_timestamp/.test(sql)) return { rows: [{ checked_at: new Date("2026-06-01T00:00:00.000Z") }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    },
+    release() {},
+  };
+  const store = new PostgresStorageRepository({
+    pool: { connect: async () => client },
+    directory: os.tmpdir(),
+    node: { id: "00000000-0000-4000-8000-000000000001", name: "health-node", capabilities: [] },
+  });
+
+  const evidence = await store.runControlPlaneHealthCheck();
+
+  assert.deepEqual(evidence, { last_success_at: "2026-06-01T00:00:00.000Z" });
+  assert.match(queries[0].sql, /^SELECT clock_timestamp/);
+  assert.match(queries[1].sql, /control_plane_health/);
+  assert.deepEqual(queries[1].parameters, [new Date("2026-06-01T00:00:00.000Z")]);
+  assert.equal(queries.length, 2);
 });
