@@ -142,21 +142,27 @@ export async function startRoundhouseServer({
   };
   const notificationPositions = new Map();
   let cachedNotifications = [];
-  const refreshLocalSnapshot = async () => {
-    try {
-      const previousCursor = localSnapshot.cursor;
-      const [overview, notices] = await Promise.all([overviewFor(roundhouse, loop), roundhouse.getNotifications({ after: previousCursor ?? undefined })]);
-      if (previousCursor) notificationPositions.set(previousCursor, cachedNotifications.length);
-      for (const notice of notices.notifications) {
-        cachedNotifications.push(notice);
-        notificationPositions.set(notice.id, cachedNotifications.length);
+  // Advance the shared notification cursor once per refresh, even when reads overlap.
+  let refreshTail = Promise.resolve();
+  const refreshLocalSnapshot = () => {
+    const refresh = refreshTail.then(async () => {
+      try {
+        const previousCursor = localSnapshot.cursor;
+        const [overview, notices] = await Promise.all([overviewFor(roundhouse, loop), roundhouse.getNotifications({ after: previousCursor ?? undefined })]);
+        if (previousCursor) notificationPositions.set(previousCursor, cachedNotifications.length);
+        for (const notice of notices.notifications) {
+          cachedNotifications.push(notice);
+          notificationPositions.set(notice.id, cachedNotifications.length);
+        }
+        if (notices.cursor) notificationPositions.set(notices.cursor, cachedNotifications.length);
+        localSnapshot = { ...overview, notifications: cachedNotifications, cursor: notices.cursor, captured_at: new Date().toISOString() };
+      } catch (error) {
+        localSnapshot = { ...localSnapshot, captured_at: new Date().toISOString(), snapshot_error: error.message,
+          connection: { ...localSnapshot.connection, worker: loop.status() } };
       }
-      if (notices.cursor) notificationPositions.set(notices.cursor, cachedNotifications.length);
-      localSnapshot = { ...overview, notifications: cachedNotifications, cursor: notices.cursor, captured_at: new Date().toISOString() };
-    } catch (error) {
-      localSnapshot = { ...localSnapshot, captured_at: new Date().toISOString(), snapshot_error: error.message,
-        connection: { ...localSnapshot.connection, worker: loop.status() } };
-    }
+    });
+    refreshTail = refresh;
+    return refresh;
   };
   const projectionPublisher = new RelayProjectionPublisher({
     relay,
@@ -199,6 +205,7 @@ export async function startRoundhouseServer({
         return send(response, 200, { status: "ok", service: "roundhouse", storage: localStorageIdentity(roundhouse.store), worker: loop.status(), mcp: "/mcp" });
       }
       if (request.method === "GET" && url.pathname === "/api/local-snapshot") {
+        await refreshLocalSnapshot();
         const after = url.searchParams.get("after");
         const notifications = after ? localSnapshot.notifications.slice(notificationPositions.get(after) ?? localSnapshot.notifications.length) : localSnapshot.notifications;
         return send(response, 200, { ...localSnapshot, notifications });

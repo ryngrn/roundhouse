@@ -7,7 +7,9 @@ import { harness } from "./support/harness.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { startRoundhouseServer } from "../src/server/app-server.js";
 import { startFrontDoor } from "../src/server/front-door.js";
+import { WorkerLoop } from "../src/server/worker.js";
 import { record } from "../src/workflow/state.js";
+import { Store } from "../src/workflow/store.js";
 import { statusView } from "../src/workflow/views.js";
 
 function request(base, pathname, { method = "GET", body, host = "roundhouse" } = {}) {
@@ -133,6 +135,44 @@ test("local server: protected UI, health, API, worker, evidence, config, and not
   const saved = await request(running.url, "/api/config", { method: "PUT", body: { configuration: config.configuration } });
   assert.equal(saved.status, 200);
   assert.equal(saved.json().configuration.projects[0].weight, 3);
+});
+
+test("local snapshot explicitly refreshes external durable changes without waking the worker", async (t) => {
+  const h = harness();
+  const item = h.submit("Observe an external durable update", "local-snapshot-refresh");
+  h.store.change((data) => {
+    h.store.move(data, data.items[item.id], "Decision", "Ready for an external decision.");
+    h.store.move(data, data.items[item.id], "Needs Clarification", "An initial signal is needed.");
+  });
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const worker = new WorkerLoop({ service });
+  let wakeCount = 0;
+  const wake = worker.wake.bind(worker);
+  worker.wake = (...args) => {
+    wakeCount += 1;
+    return wake(...args);
+  };
+  const running = await startRoundhouseServer({ service, worker, port: 0, autoStartWorker: false });
+  t.after(() => running.close());
+
+  const first = (await request(running.url, "/api/local-snapshot")).json();
+  assert.equal(first.items[0].state, "Needs Clarification");
+  assert.equal(first.notifications.at(-1).state, "Needs Clarification");
+  assert.ok(first.cursor);
+
+  const externalStore = new Store(h.store.directory);
+  externalStore.change((data) => {
+    externalStore.move(data, data.items[item.id], "Blocked", "External durable state changed.");
+  });
+
+  const second = (await request(running.url, `/api/local-snapshot?after=${encodeURIComponent(first.cursor)}`)).json();
+  assert.equal(second.items[0].state, "Blocked");
+  assert.deepEqual(second.notifications.map((notice) => ({ state: notice.state, message: notice.message })), [
+    { state: "Blocked", message: "External durable state changed." },
+  ]);
+  assert.notEqual(second.cursor, first.cursor);
+  assert.equal(wakeCount, 0);
+  assert.equal(worker.status().last_run, null);
 });
 
 test("local front door proxies only the canonical roundhouse host", async (t) => {
