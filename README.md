@@ -105,6 +105,7 @@ Herdr executor and requires no per-project manifest setting.
 
 - [Behavior, configuration, approvals, recovery, and test contracts](docs/autonomous-workflow.md)
 - [Architecture and adapter extension guide](docs/architecture.md)
+- [Relay health states, budgets, safeguards, and recovery](docs/relay-operations.md)
 - [Execution-path outcome classifications, evidence, and KPI semantics](docs/execution-outcome-telemetry.md)
 - [Event-driven control-plane wake and read boundaries](docs/event-driven-control-plane.md)
 - [PostgreSQL operations, migration, backup, and recovery](docs/postgresql-control-plane.md)

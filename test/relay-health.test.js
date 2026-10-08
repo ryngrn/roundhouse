@@ -321,3 +321,143 @@ test("stopping an in-flight channel check prevents late reconciliation", async (
   assert.equal(reconciliations, 0);
   assert.equal(verifier.status().next_check_at, null);
 });
+
+test("end-to-end relay lifecycle recovers durable work once within a bounded query budget", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-relay-lifecycle-"));
+  const expectedUrl = "https://wake.example/operator-topic/json?token=private";
+  let now = base;
+  let wakeRun;
+  let workExecutions = 0;
+  let claimQueries = 0;
+  const finished = new Set();
+  const pending = [{ id: "command-1", kind: "intake", payload: { text: "durable work" } }];
+  const commandQueue = {
+    claimRemoteCommand: async () => {
+      claimQueries += 1;
+      return pending.shift() ?? null;
+    },
+    finishRemoteCommand: async (id) => { finished.add(id); },
+  };
+  const service = {
+    addToDepot: async () => {
+      workExecutions += 1;
+      return { item: { id: "item-1" } };
+    },
+    engine: {
+      runTriage: async () => ({ triaged: 0 }),
+      runDispatch: async () => ({ executed: 0 }),
+    },
+  };
+  const healthScheduler = { status: () => ({}), start: async () => {}, stop: async () => {} };
+  const timers = [];
+  const setTimeoutFn = (callback, delay) => {
+    const timer = { callback, delay, active: true, unref() {} };
+    timers.push(timer);
+    return timer;
+  };
+  const clearTimeoutFn = (timer) => { timer.active = false; };
+  const requests = [];
+  const get = () => {
+    const request = new EventEmitter();
+    request.destroy = () => {};
+    requests.push(request);
+    return request;
+  };
+  const responseFor = (request) => {
+    const response = new EventEmitter();
+    response.statusCode = 200;
+    response.setEncoding = () => {};
+    response.destroy = () => {};
+    response.resume = () => {};
+    request.emit("response", response);
+    return response;
+  };
+  const flushObservations = () => new Promise((resolve) => setImmediate(resolve));
+  const monitorOptions = {
+    now: () => now,
+    queryBudget: 10,
+    derivation: { wakeFreshMs: 10 * minute, verificationFreshMs: 20 * minute,
+      syncFreshMs: 5 * minute, driftAlertMs: 30 * minute },
+  };
+
+  const firstMonitor = new RelayHealthMonitor({ store: new Store(directory), ...monitorOptions });
+  const firstLoop = new WorkerLoop({ service, commandQueue, relayHealth: firstMonitor, healthScheduler,
+    now: () => now, setTimeoutFn, clearTimeoutFn });
+  const firstSource = new HttpWakeSource({ url: expectedUrl, health: firstMonitor,
+    wake: () => { wakeRun = firstLoop.wake(); }, get, setTimeoutFn, clearTimeoutFn, random: () => 0 });
+  await firstMonitor.start();
+  firstSource.start();
+  const firstResponse = responseFor(requests[0]);
+  firstResponse.emit("data", `${JSON.stringify({ event: "message" })}\n`);
+  await wakeRun;
+  await flushObservations();
+
+  assert.equal(firstMonitor.status().state, RELAY_STATES.CONNECTED, "a delivered wake and sync are healthy");
+  assert.equal(workExecutions, 1);
+  assert.deepEqual([...finished], ["command-1"]);
+  assert.equal(claimQueries, 2, "one command and the empty queue sentinel each cost one claim query");
+
+  now += 21 * minute;
+  await firstLoop.tick();
+  assert.equal(firstMonitor.status().state, RELAY_STATES.HEARTBEAT_ONLY,
+    "a successful fallback sync remains visible when wake proof expires");
+
+  now += 10 * minute;
+  await firstLoop.tick();
+  firstSource.url = new URL("https://wake.example/drifted-topic/json");
+  const firstVerifier = new WakeChannelVerifier({ source: firstSource,
+    configuration: verifiedWakeConfiguration(expectedUrl), health: firstMonitor,
+    probe: async () => ({ verified: true }), intervalMs: 6 * 60 * minute,
+    setTimeoutFn, clearTimeoutFn, now: () => now });
+  const reconciliation = await firstVerifier.start();
+  await flushObservations();
+  assert.deepEqual(reconciliation, { checked: true, verified: true, mismatch: true, reconciled: true });
+  assert.equal(firstSource.matches(new URL(expectedUrl)), true, "only the verified startup URL is restored");
+  assert.equal(firstMonitor.status().state, RELAY_STATES.WAKE_VERIFIED);
+  assert.equal(firstMonitor.status().alert?.code, "persistent_relay_drift");
+  assert.equal(firstMonitor.status().evidence.wake_verification.configuration, "mismatched");
+
+  requests.at(-1).emit("error", new Error("subscription disconnected"));
+  await flushObservations();
+  assert.equal(firstMonitor.status().evidence.reconnect.status, "backoff");
+  now += 31 * minute;
+  assert.equal(firstMonitor.status().state, RELAY_STATES.DISCONNECTED);
+  assert.equal(firstMonitor.status().alert?.code, "persistent_relay_drift");
+  await firstVerifier.stop();
+  firstSource.stop();
+  await firstLoop.stop();
+
+  const restartedMonitor = new RelayHealthMonitor({ store: new Store(directory), ...monitorOptions });
+  await restartedMonitor.start();
+  assert.equal(restartedMonitor.status().state, RELAY_STATES.DISCONNECTED,
+    "restart preserves stale sync, drift, retry, and budget evidence");
+  assert.equal(restartedMonitor.status().evidence.query_usage.used, 4);
+
+  const restartedLoop = new WorkerLoop({ service, commandQueue, relayHealth: restartedMonitor, healthScheduler,
+    now: () => now, setTimeoutFn, clearTimeoutFn });
+  const restartedSource = new HttpWakeSource({ url: expectedUrl, health: restartedMonitor,
+    wake: () => { wakeRun = restartedLoop.wake(); }, get, setTimeoutFn, clearTimeoutFn, random: () => 0 });
+  const restartedVerifier = new WakeChannelVerifier({ source: restartedSource,
+    configuration: verifiedWakeConfiguration(expectedUrl), health: restartedMonitor,
+    probe: async () => ({ verified: true }), intervalMs: 6 * 60 * minute,
+    setTimeoutFn, clearTimeoutFn, now: () => now });
+  restartedSource.start();
+  assert.equal((await restartedVerifier.start()).mismatch, false);
+  const recoveryResponse = responseFor(requests.at(-1));
+  recoveryResponse.emit("data", `${JSON.stringify({ event: "message" })}\n`);
+  await wakeRun;
+  await flushObservations();
+
+  const recovered = restartedMonitor.status();
+  assert.equal(recovered.state, RELAY_STATES.CONNECTED);
+  assert.equal(recovered.alert, null);
+  assert.equal(recovered.evidence.reconnect.consecutive_failures, 0);
+  assert.equal(workExecutions, 1, "restart and recovery never execute the durable command twice");
+  assert.equal(claimQueries, 5, "one claimed command and four bounded empty-queue checks are sufficient");
+  assert.deepEqual(recovered.evidence.query_usage, {
+    window_started_at: at(0), used: 5, budget: 10, exhausted: false,
+  });
+  await restartedVerifier.stop();
+  restartedSource.stop();
+  await restartedLoop.stop();
+});

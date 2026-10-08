@@ -47,3 +47,7 @@ bypass revision-bound approval, configured routing, ownership, or verification.
 The private dashboard publishes to `ROUNDHOUSE_WAKE_PUBLISH_URL` only after its
 remote-command insert commits. Publishing uses an opaque payload and a short
 timeout. Failure is reported but never rolls back or fails the durable command.
+
+See [Relay health operations](relay-operations.md) for state semantics, shipped
+cadences and thresholds, query-cost accounting, reconciliation safeguards, and the
+operator recovery checklist.
