@@ -10,6 +10,7 @@ import { handleMcpRequest } from "../mcp/http-server.js";
 import { McpEventBroker, McpEventDrainScheduler } from "../mcp/events.js";
 import { WorkerLoop } from "./worker.js";
 import { HttpWakeSource } from "./wake-source.js";
+import { RelayHealthMonitor } from "./relay-health.js";
 import { openPostgresRelay, RelayProjectionPublisher } from "../relay/postgres-relay.js";
 import { openStorage } from "../storage/open.js";
 
@@ -130,10 +131,12 @@ export async function startRoundhouseServer({
   const ownsRelay = remoteRelay === undefined && Boolean(relay);
   const events = new McpEventBroker({ service: roundhouse });
   const eventDrain = new McpEventDrainScheduler({ broker: events, onError: (error) => process.stderr.write(`MCP event delivery: ${error.message}\n`) });
-  const loop = worker ?? new WorkerLoop({ service: roundhouse, eventBroker: eventDrain, commandQueue: relay,
+  const relayHealth = new RelayHealthMonitor({ store: roundhouse.store, enabled: Boolean(relay) });
+  const loop = worker ?? new WorkerLoop({ service: roundhouse, eventBroker: eventDrain, commandQueue: relay, relayHealth,
     onError: (error) => process.stderr.write(`Worker: ${error.message}\n`) });
   loop.eventBroker ??= eventDrain;
   loop.commandQueue ??= relay;
+  loop.relayHealth ??= relayHealth;
   let localSnapshot = {
     captured_at: null,
     items: [], active_jobs: [], untracked_activity: [], needs_you: [], counts: { needs_you: 0, active: 0, queued: 0, completed: 0, blocked: 0 },
@@ -181,7 +184,8 @@ export async function startRoundhouseServer({
   };
   await refreshLocalSnapshot();
   projectionPublisher.trigger();
-  const wakes = wakeSource ?? new HttpWakeSource({ url: wakeSubscribeUrl, wake: () => loop.wake() });
+  const wakes = wakeSource ?? new HttpWakeSource({ url: wakeSubscribeUrl, wake: () => loop.wake(), health: relayHealth });
+  wakes.health ??= relayHealth;
   const allowed = new Set([host, "roundhouse", ...(host === "127.0.0.1" ? ["localhost", "::1"] : []), ...allowedHosts].map((value) => value.toLowerCase()));
   const origins = new Set([
     "http://roundhouse",

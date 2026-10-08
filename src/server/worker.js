@@ -4,10 +4,11 @@ export class WorkerLoop {
   constructor({ service, eventBroker = null, commandQueue = null, onCycle = async () => {}, onError = () => {},
     setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, now = () => Date.now(),
     reconciliationIntervalMs = 5 * 60 * 1000, maxRemoteCommandsPerCycle = 20,
-    maxImmediateWakeCycles = 2, deferredWakeDelayMs = 1_000, healthScheduler } = {}) {
+    maxImmediateWakeCycles = 2, deferredWakeDelayMs = 1_000, healthScheduler, relayHealth = null } = {}) {
     this.service = service;
     this.eventBroker = eventBroker;
     this.commandQueue = commandQueue;
+    this.relayHealth = relayHealth;
     this.onCycle = onCycle;
     this.onError = onError;
     this.triageRunning = null;
@@ -69,6 +70,7 @@ export class WorkerLoop {
       try {
         while (processed < this.maxRemoteCommandsPerCycle) {
           const command = await queue.claimRemoteCommand();
+          await this.relayHealth?.recordSuccessfulSync({ queries: 1 }).catch((error) => this.onError(error));
           if (!command) break;
           processed += 1;
           try {
@@ -223,13 +225,14 @@ export class WorkerLoop {
     this.reconciliationTimer.unref?.();
   }
 
-  start() {
+  async start() {
     if (this.started) return this.wakeDrain;
     this.started = true;
     this.stopped = false;
+    await this.relayHealth?.start().catch((error) => this.onError(error));
     this.scheduleReconciliation();
     const wake = this.wake();
-    return Promise.all([wake, this.healthScheduler.start()]).then(() => undefined);
+    await Promise.all([wake, this.healthScheduler.start()]);
   }
 
   stop() {
@@ -265,6 +268,7 @@ export class WorkerLoop {
       next_reconciliation_at: this.nextReconciliationAt,
       wake_pending: this.wakeRequested,
       control_plane_health: this.healthScheduler.status(),
+      relay_health: this.relayHealth?.status() ?? null,
     };
   }
 }

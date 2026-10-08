@@ -35,6 +35,14 @@ export class Store extends StorageRepository {
       warning: "Local storage is single-node only.",
       node: { id: this.node.id, name: this.node.name, capabilities: this.node.capabilities } };
   }
+  getRelayHealthEvidence() { return structuredClone(this.read().system_metadata?.relay_health ?? null); }
+  saveRelayHealthEvidence(evidence) {
+    return this.change((data) => {
+      data.system_metadata ??= {};
+      data.system_metadata.relay_health = structuredClone(evidence);
+      return data.system_metadata.relay_health;
+    });
+  }
   acquireWorkerLease() { return acquireLock(this.workerLock); }
   acquireTriageLease() { return acquireLock(this.triageLock); }
   read() {

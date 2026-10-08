@@ -5,7 +5,7 @@ const clients = { "http:": http, "https:": https };
 
 export class HttpWakeSource {
   constructor({ url, wake, minimumBackoffMs = 1_000, maximumBackoffMs = 30_000,
-    setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, random = Math.random, get } = {}) {
+    setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, random = Math.random, get, health = null } = {}) {
     try { this.url = url ? new URL(url) : null; }
     catch { throw new Error("Invalid wake subscribe URL."); }
     if (this.url && !clients[this.url.protocol]) throw new Error("Wake subscribe URL must use HTTP or HTTPS.");
@@ -16,12 +16,16 @@ export class HttpWakeSource {
     this.clearTimeoutFn = clearTimeoutFn;
     this.random = random;
     this.get = get;
+    this.health = health;
     this.request = null;
     this.response = null;
     this.reconnectTimer = null;
     this.backoffMs = minimumBackoffMs;
+    this.failureCount = 0;
     this.stopped = true;
   }
+
+  observe(operation) { Promise.resolve(operation).catch(() => {}); }
 
   start() {
     if (!this.url || !this.stopped) return;
@@ -38,17 +42,19 @@ export class HttpWakeSource {
         ? this.get(this.url, { headers: { accept: "application/x-ndjson, application/json" } })
         : client.get(this.url, { headers: { accept: "application/x-ndjson, application/json" } });
     } catch {
+      this.observe(this.health?.recordWakeVerification({ verified: false, failure: "connection_error" }));
       this.scheduleReconnect();
       return;
     }
     this.request = request;
-    request.once("error", () => this.disconnected(request));
+    request.once("error", () => this.disconnected(request, "connection_error"));
     request.once("response", (response) => {
       if (this.request !== request || this.stopped) { response.destroy(); return; }
       this.response = response;
       if (response.statusCode < 200 || response.statusCode >= 300) {
+        this.observe(this.health?.recordWakeVerification({ verified: false, failure: "http_status" }));
         response.resume();
-        this.disconnected(request);
+        this.disconnected(request, null);
         return;
       }
       response.setEncoding("utf8");
@@ -67,18 +73,20 @@ export class HttpWakeSource {
               // accepted connection may close immediately, so it must not reset
               // a failure streak.
               this.backoffMs = this.minimumBackoffMs;
+              this.failureCount = 0;
+              this.observe(this.health?.recordWakeReceived());
               this.wake?.();
             }
           } catch {}
         }
       });
-      response.once("end", () => this.disconnected(request));
-      response.once("error", () => this.disconnected(request));
-      response.once("close", () => this.disconnected(request));
+      response.once("end", () => this.disconnected(request, "connection_error"));
+      response.once("error", () => this.disconnected(request, "connection_error"));
+      response.once("close", () => this.disconnected(request, "connection_error"));
     });
   }
 
-  disconnected(request = this.request) {
+  disconnected(request = this.request, failure = null) {
     // end, error and close commonly arrive for the same stream. Events from an
     // older stream must not tear down a replacement subscription.
     if (this.stopped || request !== this.request) return;
@@ -88,6 +96,7 @@ export class HttpWakeSource {
     this.request = null;
     response?.destroy();
     activeRequest?.destroy();
+    if (failure) this.observe(this.health?.recordWakeVerification({ verified: false, failure }));
     this.scheduleReconnect();
   }
 
@@ -98,6 +107,10 @@ export class HttpWakeSource {
     // watchers from reconnecting in lockstep. The ceiling remains bounded.
     const delay = Math.floor((ceiling / 2) + (this.random() * ceiling / 2));
     this.backoffMs = Math.min(this.maximumBackoffMs, this.backoffMs * 2);
+    this.failureCount += 1;
+    this.observe(this.health?.recordBackoff({
+      consecutiveFailures: this.failureCount, backoffMs: delay,
+    }));
     this.reconnectTimer = this.setTimeoutFn(() => {
       this.reconnectTimer = null;
       this.connect();

@@ -552,6 +552,20 @@ export class PostgresStorageRepository extends StorageRepository {
     return result.rowCount ? { last_success_at: result.rows[0].last_success_at.toISOString() } : null;
   }
 
+  async getRelayHealthEvidence() {
+    const result = await this.pool.query("SELECT value FROM roundhouse.system_metadata WHERE key = 'relay_health'");
+    return result.rowCount ? result.rows[0].value : null;
+  }
+
+  async saveRelayHealthEvidence(evidence) {
+    return tx(this.pool, async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
+      await client.query(`INSERT INTO roundhouse.system_metadata(key,value) VALUES ('relay_health',$1)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [evidence]);
+      return evidence;
+    });
+  }
+
   async runControlPlaneHealthCheck() {
     const client = await this.pool.connect();
     try {
