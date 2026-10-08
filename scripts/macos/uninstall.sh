@@ -2,8 +2,9 @@
 set -euo pipefail
 agents="$HOME/Library/LaunchAgents"
 launchctl bootout "gui/$UID/io.roundhouse.menu" 2>/dev/null || true
+launchctl bootout "gui/$UID/io.roundhouse.dispatch" 2>/dev/null || true
 launchctl bootout "gui/$UID/io.roundhouse.service" 2>/dev/null || true
-rm -f "$agents/io.roundhouse.menu.plist" "$agents/io.roundhouse.service.plist"
+rm -f "$agents/io.roundhouse.menu.plist" "$agents/io.roundhouse.dispatch.plist" "$agents/io.roundhouse.service.plist"
 sudo launchctl bootout system/io.roundhouse.front-door 2>/dev/null || true
 sudo rm -f /Library/LaunchDaemons/io.roundhouse.front-door.plist
 temp="$(mktemp)"

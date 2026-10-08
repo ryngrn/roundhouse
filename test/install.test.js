@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { menuLaunchAgent, serviceLaunchAgent } from "../src/install/macos.js";
+import { dispatchLaunchAgent, menuLaunchAgent, serviceLaunchAgent } from "../src/install/macos.js";
 
 test("macOS install configuration is loopback-local, durable, reversible, and path-safe", () => {
   const input = { node: "/opt/homebrew/bin/node", repository: "/Users/Test & Dev/roundhouse", home: "/Users/Test & Dev" };
   const service = serviceLaunchAgent(input);
+  const dispatch = dispatchLaunchAgent({ home: input.home });
   const menu = menuLaunchAgent({ executable: "/Applications/Roundhouse Menu.app/Contents/MacOS/RoundhouseMenu", home: input.home });
   assert.match(service, /io\.roundhouse\.service/);
   assert.match(service, /Application Support\/Roundhouse\/projects\.yaml/);
@@ -13,6 +14,10 @@ test("macOS install configuration is loopback-local, durable, reversible, and pa
   assert.doesNotMatch(service, /DATABASE_URL/);
   assert.match(service, /Test &amp; Dev/);
   assert.match(menu, /io\.roundhouse\.menu/);
+  assert.match(dispatch, /io\.roundhouse\.dispatch/);
+  assert.match(dispatch, /api\/worker\/tick/);
+  assert.match(dispatch, /StartInterval/);
+  assert.doesNotMatch(dispatch, /git\/roundhouse|src\/cli\.js|dispatch-once/);
 });
 
 test("menu bar companion remains a thin native HTTP client with service controls", () => {
@@ -50,6 +55,8 @@ test("installer reports success only after direct engine health and never reinst
   assert.match(installer, /wait_for_health "app service"/);
   assert.doesNotMatch(installer, /front-door|http:\/\/roundhouse/);
   assert.match(installer, /Initial user service bootstrap failed/);
+  assert.match(installer, /io\.roundhouse\.dispatch\.plist/);
+  assert.match(installer, /Initial dispatcher bootstrap failed/);
   assert.match(installer, /install\|repair\|smoke/);
   assert.match(service, /repair\)/);
   assert.match(service, /smoke\)/);

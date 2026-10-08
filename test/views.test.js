@@ -65,10 +65,11 @@ test("dashboard projection is job-level and counts blocked, held, queued, and sh
   assert.deepEqual(projection.overview.items.map((item) => item.id).sort(), ["blocked", "clarification", "held", "history", "queued", "shipped"]);
   assert.ok(!projection.overview.items.some((item) => item.id === "parent"));
   assert.deepEqual(projection.overview.counts, {
-    needs_review: 3, needs_you: 3, active: 0, queued: 1, completed: 2, blocked: 1,
+    needs_review: 4, needs_you: 4, active: 0, queued: 0, completed: 2, blocked: 1,
   });
   assert.equal(projection.overview.items.find((item) => item.id === "held").review_kind, "blocked");
-  assert.equal(projection.overview.items.find((item) => item.id === "queued").review_required, false);
+  assert.equal(projection.overview.items.find((item) => item.id === "queued").review_required, true);
+  assert.match(projection.overview.items.find((item) => item.id === "queued").review_reason, /blocked \(Blocked\)/);
   assert.equal(projection.overview.projection_revision, projection.projection_revision);
   assert.equal(dashboardProjection(structuredClone(data), config).projection_revision, projection.projection_revision);
 });

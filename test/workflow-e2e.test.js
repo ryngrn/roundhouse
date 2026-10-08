@@ -132,6 +132,20 @@ test("e2e: human approval stops execution; current-revision approval resumes", a
   assert.equal(result.items[item.id].questions[0].status, "answered");
   assert.equal(Object.values(result.jobs)[0].state, "Shipped");
 });
+test("e2e: an unrelated review item does not stop an independently Ready job", async () => {
+  const h = harness();
+  const review = h.submit("requires approval");
+  const ready = h.submit("independent ready work");
+  await h.engine.runTriage({ limit: Infinity });
+  const before = h.store.read();
+  assert.equal(before.items[review.id].state, "Review");
+  assert.equal(before.items[ready.id].state, "Ready");
+
+  const result = await h.engine.runDispatch();
+  assert.equal(result.items[review.id].state, "Review");
+  assert.equal(result.jobs[result.items[ready.id].job_ids[0]].state, "Shipped");
+  assert.equal(result.executed, 1);
+});
 test("e2e: continue-project ships two jobs exactly once, chains their output and stops", async () => {
   const h = harness(); h.submit("first"); h.submit("second");
   const result = await h.engine.run();

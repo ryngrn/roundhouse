@@ -122,13 +122,26 @@ export function itemView(data, item) {
   };
 }
 
+function dependencyHoldReason(job, data, seen = new Set()) {
+  if (!job || seen.has(job.id)) return "Dependency cycle requires review.";
+  const visited = new Set(seen).add(job.id);
+  const dependencyId = (job.dependencies ?? []).find((id) => data.jobs?.[id]?.state !== "Shipped");
+  if (!dependencyId) return null;
+  const dependency = data.jobs?.[dependencyId];
+  if (dependency?.state === "Ready") {
+    const nested = dependencyHoldReason(dependency, data, visited);
+    if (nested) return `Waiting for prerequisite ${dependencyId} (Ready); ${nested}`;
+  }
+  return `Waiting for prerequisite ${dependencyId} (${dependency?.state ?? "missing"}).`;
+}
+
 function dispatchHoldReason(job, data, config) {
   if (job?.state !== "Ready") return null;
   const project = config?.projects?.find((candidate) => candidate.id === job.project_id);
   if (!project) return "Project is missing from the execution configuration.";
   if (project.status !== "active") return "Project is not active.";
-  const dependencyId = (job.dependencies ?? []).find((id) => data.jobs?.[id]?.state !== "Shipped");
-  if (dependencyId) return `Waiting for prerequisite ${dependencyId} (${data.jobs?.[dependencyId]?.state ?? "missing"}).`;
+  const dependencyHold = dependencyHoldReason(job, data);
+  if (dependencyHold) return dependencyHold;
   const projectState = data.projects?.[job.project_id];
   if (projectState?.blocked) return "Project is blocked by an earlier execution failure.";
   if (projectState?.stop) return "Project was stopped by an operator.";

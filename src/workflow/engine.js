@@ -920,7 +920,7 @@ export class Engine {
       const stopped = new Set();
       while (executed < this.config.max_jobs_per_run) {
         const state = await this.store.read();
-        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review")
+        const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required
           && (isMachineLocal(p) || (this.shipping.canDispatch?.(p) ?? true))
           && Object.values(state.jobs).filter((job) => job.project_id === p.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < p.max_concurrent_runs);
         // Weighted turns across projects; each project's own order is preserved.
@@ -964,7 +964,6 @@ export class Engine {
       const candidates = this.config.projects.filter((project) => (!projectId || project.id === projectId)
         && project.status === "active" && !stopped.has(project.id) && !snapshot.projects[project.id]?.blocked
         && !snapshot.projects[project.id]?.stop && !snapshot.projects[project.id]?.review_required
-        && !Object.values(snapshot.items).some((item) => item.project_id === project.id && item.state === "Review")
         && (isMachineLocal(project) || (this.shipping.canDispatch?.(project) ?? true))
         && Object.values(snapshot.jobs).filter((job) => job.project_id === project.id && ["Executing", "Verification", "Rework"].includes(job.state)).length < project.max_concurrent_runs);
       candidates.sort((a, b) => ((snapshot.projects[a.id]?.turns ?? 0) / a.weight) - ((snapshot.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));

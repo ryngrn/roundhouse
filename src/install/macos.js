@@ -23,6 +23,22 @@ ${strings(["/bin/zsh", `${repository}/scripts/macos/service-wrapper.sh`, node, r
 </dict></plist>\n`;
 }
 
+export function dispatchLaunchAgent({ home }) {
+  const support = `${home}/Library/Application Support/Roundhouse`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>io.roundhouse.dispatch</string>
+  <key>ProgramArguments</key><array>
+${strings(["/usr/bin/curl", "--noproxy", "*", "--fail", "--silent", "--show-error", "--connect-timeout", "5", "--max-time", "7500", "--request", "POST", "--header", "Origin: http://127.0.0.1:8787", "--header", "Content-Type: application/json", "--data", "{}", "http://127.0.0.1:8787/api/worker/tick"])}
+  </array>
+  <key>RunAtLoad</key><true/><key>StartInterval</key><integer>300</integer>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>${escapeXml(`${support}/dispatch.log`)}</string>
+  <key>StandardErrorPath</key><string>${escapeXml(`${support}/dispatch-error.log`)}</string>
+</dict></plist>\n`;
+}
+
 export function menuLaunchAgent({ executable, home }) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
