@@ -80,27 +80,15 @@ async function overviewFor(roundhouse, loop) {
   const storage = await roundhouse.getStorageStatus();
   if (!storage.connected) return { items: [], needs_you: [], counts: {},
     connection: { local_service: "connected", storage, worker: loop.status() } };
-  const status = await roundhouse.getWorkStatus();
-  const needs = await roundhouse.getNeedsHuman();
-  return {
-    ...status,
-    needs_you: needs.questions,
-    counts: {
-      needs_you: status.items.filter((item) => item.needs_you).length,
-      active: status.items.filter((item) => ["Executing", "Verification", "Rework"].includes(item.state)).length,
-      queued: status.items.filter((item) => item.state === "Ready").length,
-      completed: status.items.filter((item) => ["Shipped", "Imported History", "Archived", "Reconciled"].includes(item.state)).length,
-      blocked: status.items.filter((item) => item.state === "Blocked").length,
-    },
-    connection: {
-      local_service: "connected",
-      mcp: "available",
-      endpoint: "/mcp",
-      chatgpt: "managed externally; local connection state is not observable",
-      worker: loop.status(),
-      storage,
-    },
-  };
+  const projection = await roundhouse.getDashboardProjection({ connection: {
+    local_service: "connected",
+    mcp: "available",
+    endpoint: "/mcp",
+    chatgpt: "managed externally; local connection state is not observable",
+    worker: loop.status(),
+    storage,
+  } });
+  return projection.overview;
 }
 
 export async function startRoundhouseServer({
@@ -167,7 +155,8 @@ export async function startRoundhouseServer({
   const projectionPublisher = new RelayProjectionPublisher({
     relay,
     project: async () => ({
-      schema_version: 1,
+      schema_version: 2,
+      projection_revision: localSnapshot.projection_revision,
       overview: localSnapshot,
       configuration: roundhouse.getConfiguration().configuration,
     }),
@@ -206,6 +195,7 @@ export async function startRoundhouseServer({
       }
       if (request.method === "GET" && url.pathname === "/api/local-snapshot") {
         await refreshLocalSnapshot();
+        projectionPublisher.trigger();
         const after = url.searchParams.get("after");
         const notifications = after ? localSnapshot.notifications.slice(notificationPositions.get(after) ?? localSnapshot.notifications.length) : localSnapshot.notifications;
         return send(response, 200, { ...localSnapshot, notifications });
@@ -337,7 +327,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       host, port, allowedHosts,
       relayConnectionString: process.env.ROUNDHOUSE_RELAY_DATABASE_URL,
     });
-    process.stderr.write(`Roundhouse listening at ${running.url}; canonical URL http://roundhouse\n`);
+    process.stderr.write(`Roundhouse local engine listening at ${running.url}; dashboard https://roundhouse.ryan.green\n`);
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 64;

@@ -8,10 +8,10 @@ duplicates, slices broad work, asks only decision-changing questions, and makes 
 work Ready. A separate dispatcher claims eligible work, executes, verifies, ships,
 and optionally continues the project's queue.
 
-The complete vertical slice can run locally or across nodes, with a durable workflow and replaceable
+The Mac Studio is the authoritative hub, with a durable workflow and replaceable
 decision, execution, verification, shipping/deployment, and source adapters. The
-browser control room, JSON API, MCP endpoint, and background worker run in one
-loopback service. Codex and trusted command executors are supported; deployments
+JSON API, MCP endpoint, and background worker run in one loopback service. The
+hosted dashboard reads a job-level projection from Aiven. Codex, Herdr, and trusted command executors are supported; deployments
 use an explicit fixture or operator-owned command provider.
 
 The control room is project-first: dense work rows expose operational state at a
@@ -22,22 +22,21 @@ Roundhouse is the authoritative system for Depot intake and every downstream
 workflow state. The former Notion Roundhouse Depot is archive/reference only; new
 “add to Depot” requests go directly to Roundhouse.
 
-For shared/multi-node installs, PostgreSQL is authoritative; Neon is the intended
-hosted provider. Local JSON storage is only for explicit single-node development,
-tests, and pre-cutover bootstrap. See the [PostgreSQL control-plane and cutover
-guide](docs/postgresql-control-plane.md). The idle control plane is event-driven;
+The Mac Studio's local state is authoritative. Aiven carries only the hosted
+dashboard projection and remote commands; it is not a second workflow authority.
+The idle control plane is event-driven;
 see the [wake, read, and execution boundaries](docs/event-driven-control-plane.md).
 
 ## Install on one Mac
 
 ```sh
 ./scripts/macos/install.sh
-open http://roundhouse
+open https://roundhouse.ryan.green
 ./scripts/macos/menu-bar.sh install
 ```
 
-The explicit installer creates the durable, reversible local hostname/front-door
-setup. Normal use is at exactly `http://roundhouse`; no port is required. See
+The local engine remains bound to `127.0.0.1:8787`; browser use goes through the
+hosted dashboard. See
 [local setup, operation, project configuration, and uninstall](docs/local-control-room.md).
 
 ## Run the complete demonstration

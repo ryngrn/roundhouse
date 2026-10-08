@@ -14,11 +14,7 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 
 app_health() {
-  /usr/bin/curl --noproxy '*' --fail --silent --show-error --max-time 2 -H 'Host: roundhouse' http://127.0.0.1:8787/health | /usr/bin/grep -q '"status":"ok"'
-}
-
-front_health() {
-  /usr/bin/curl --noproxy '*' --fail --silent --show-error --max-time 2 http://roundhouse/health | /usr/bin/grep -q '"status":"ok"'
+  /usr/bin/curl --noproxy '*' --fail --silent --show-error --max-time 2 http://127.0.0.1:8787/health | /usr/bin/grep -q '"status":"ok"'
 }
 
 wait_for_health() {
@@ -33,8 +29,7 @@ wait_for_health() {
 
 if [[ "$action" == "smoke" ]]; then
   app_health || { print -u2 "Roundhouse app service is unavailable."; exit 1; }
-  front_health || { print -u2 "Roundhouse front door is unavailable."; exit 1; }
-  print "Roundhouse app and front door are healthy."
+  print "Roundhouse local engine is healthy."
   exit 0
 fi
 if [[ "$action" != "install" && "$action" != "repair" ]]; then
@@ -61,20 +56,5 @@ if ! launchctl bootstrap "gui/$UID" "$agents/io.roundhouse.service.plist"; then
 fi
 launchctl kickstart -k "gui/$UID/io.roundhouse.service"
 
-sudo cp "$stage/io.roundhouse.front-door.plist" /Library/LaunchDaemons/io.roundhouse.front-door.plist
-sudo chown root:wheel /Library/LaunchDaemons/io.roundhouse.front-door.plist
-sudo chmod 644 /Library/LaunchDaemons/io.roundhouse.front-door.plist
-if ! grep -q '^# BEGIN ROUNDHOUSE$' /etc/hosts; then
-  print '# BEGIN ROUNDHOUSE\n127.0.0.1 roundhouse\n# END ROUNDHOUSE' | sudo tee -a /etc/hosts >/dev/null
-fi
-sudo launchctl bootout system/io.roundhouse.front-door 2>/dev/null || true
-if ! sudo launchctl bootstrap system /Library/LaunchDaemons/io.roundhouse.front-door.plist; then
-  print -u2 "Initial front-door bootstrap failed; clearing the stale registration and retrying once."
-  sudo launchctl bootout system/io.roundhouse.front-door 2>/dev/null || true
-  sudo launchctl bootstrap system /Library/LaunchDaemons/io.roundhouse.front-door.plist
-fi
-sudo launchctl kickstart -k system/io.roundhouse.front-door
-
 wait_for_health "app service" app_health
-wait_for_health "front door" front_health
-print "Roundhouse installed and healthy. Open http://roundhouse"
+print "Roundhouse local engine installed and healthy. Open https://roundhouse.ryan.green"

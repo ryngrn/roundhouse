@@ -203,3 +203,26 @@ test("projection publisher coalesces changes while a remote write is in flight",
   publisher.stop();
 });
 
+test("local snapshot and relay publish identical canonical IDs, counts, and projection revision", async (t) => {
+  const h = harness();
+  const item = h.submit("Project one job identically everywhere", "projection-parity");
+  await h.engine.decide(item.id);
+  const published = [];
+  const relay = {
+    publishProjection: async (payload) => { published.push(structuredClone(payload)); return { revision: published.length }; },
+    claimRemoteCommand: async () => null,
+    finishRemoteCommand: async () => {},
+    close: async () => {},
+  };
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const running = await startRoundhouseServer({ service, remoteRelay: relay, port: 0, autoStartWorker: false });
+  t.after(() => running.close());
+  await waitFor(() => published.length > 0);
+  const local = await (await fetch(`${running.url}/api/local-snapshot`)).json();
+  await waitFor(() => published.at(-1)?.projection_revision === local.projection_revision);
+  const remote = published.at(-1).overview;
+  assert.deepEqual(remote.items.map((entry) => entry.id).sort(), local.items.map((entry) => entry.id).sort());
+  assert.deepEqual(remote.counts, local.counts);
+  assert.equal(remote.projection_revision, local.projection_revision);
+  assert.ok(local.items.every((entry) => entry.id !== item.id));
+});

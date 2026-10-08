@@ -92,7 +92,7 @@
           </g>
           <g class="node adapters">
             <rect x="28" y="78" width="210" height="114" rx="4"/><text x="52" y="111" class="cap">ADAPTERS</text><text x="52" y="146">ChatGPT MCP</text><text x="52" y="170" class="muted">Email / Slack planned</text>
-            <rect x="28" y="213" width="210" height="74" rx="4"/><text x="52" y="247">Local browser</text><text x="52" y="271" class="muted">http://roundhouse</text>
+            <rect x="28" y="213" width="210" height="74" rx="4"/><text x="52" y="247">Hosted dashboard</text><text x="52" y="271" class="muted">Aiven projection</text>
             <rect x="28" y="308" width="210" height="114" rx="4"/><text x="52" y="341" class="cap">OPERATOR</text><text x="52" y="376">Menu bar helper</text><text x="52" y="400" class="muted">Status + service controls</text>
           </g>
           <g class="node core">
@@ -127,12 +127,12 @@
 <span>$</span> npm test
 <span>$</span> npm run check
 <span>$</span> ./scripts/macos/install.sh
-<span>$</span> open http://roundhouse
+<span>$</span> open https://roundhouse.ryan.green
 <span>$</span> ./scripts/macos/menu-bar.sh install</code></pre>
       </div>
       <div class="walkthrough">
         <article><span>1</span><h3>Configure a project</h3><p>Copy an example autonomy configuration or use the control room editor. Set repository, context, checks, executor, and shipping policy.</p></article>
-        <article><span>2</span><h3>Add a first task</h3><p>Open <code>http://roundhouse</code>, describe the outcome in ordinary language, and add it to the Depot.</p></article>
+        <article><span>2</span><h3>Add a first task</h3><p>Open <code>roundhouse.ryan.green</code>, describe the outcome in ordinary language, and add it to the Depot.</p></article>
         <article><span>3</span><h3>Watch the durable state</h3><p>The background worker routes and executes ready work. The menu bar helper shows status and gives quick service controls.</p></article>
         <article><span>4</span><h3>Respond only when needed</h3><p>If policy or missing context requires a decision, answer the revision-bound question in Needs You. Otherwise, work continues.</p></article>
         <article><span>5</span><h3>Inspect the outcome</h3><p>Roundhouse reports checks, commit and branch evidence, and deployment results when the project is actually shipped.</p></article>
@@ -169,7 +169,7 @@
         <article>
           <h3><span class="lamp green"></span> Working</h3>
           <ul>
-            <li>Local browser control room and <code>http://roundhouse</code> front door</li>
+            <li>Hosted dashboard backed by the canonical Aiven relay projection</li>
             <li>Menu bar status and service helper</li>
             <li>ChatGPT MCP intake, questions, polling, and MCP Events callbacks</li>
             <li>Durable local state, outbox transitions, restart recovery, and no silent replay</li>

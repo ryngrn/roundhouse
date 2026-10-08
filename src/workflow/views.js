@@ -1,4 +1,9 @@
 import { displayState } from "./presentation.js";
+import { digest } from "../storage/repository.js";
+
+const activeStates = new Set(["Decision", "Executing", "Verification", "Rework"]);
+const queuedStates = new Set(["Depot", "Ready", "Imported Pending"]);
+const completedStates = new Set(["Shipped", "Imported History", "Archived", "Reconciled"]);
 
 function aggregateState(item, jobs) {
   if (!jobs.length) return item.state;
@@ -114,6 +119,130 @@ export function itemView(data, item) {
       allocation: job.allocation ?? null,
       allocation_history: job.allocation_history ?? [],
     })),
+  };
+}
+
+function dispatchHoldReason(job, data, config) {
+  if (job?.state !== "Ready") return null;
+  const project = config?.projects?.find((candidate) => candidate.id === job.project_id);
+  if (!project) return "Project is missing from the execution configuration.";
+  if (project.status !== "active") return "Project is not active.";
+  const dependencyId = (job.dependencies ?? []).find((id) => data.jobs?.[id]?.state !== "Shipped");
+  if (dependencyId) return `Waiting for prerequisite ${dependencyId} (${data.jobs?.[dependencyId]?.state ?? "missing"}).`;
+  const projectState = data.projects?.[job.project_id];
+  if (projectState?.blocked) return "Project is blocked by an earlier execution failure.";
+  if (projectState?.stop) return "Project was stopped by an operator.";
+  if (projectState?.review_required) return "Project needs review approval.";
+  if (!["local", "herdr"].includes(project.runtime ?? "local")) return `Configured runtime ${project.runtime} is unavailable.`;
+  return null;
+}
+
+function reviewFor(entity, dispatchHold = null) {
+  if (entity?.state === "Blocked") return { required: true, kind: "blocked",
+    reason: entity.history?.at(-1)?.reason ?? "Work is blocked and needs investigation." };
+  if (entity?.state === "Needs Clarification") return { required: true, kind: "clarification",
+    reason: entity.history?.at(-1)?.reason ?? "An answer is needed before proceeding." };
+  if (entity?.state === "Review") return { required: true, kind: "approval",
+    reason: entity.history?.at(-1)?.reason ?? "Approval or a decision is required." };
+  // A Ready dependency directly behind another Ready job is normal queueing. Any
+  // other deterministic hold needs attention and must not be counted as ready.
+  if (entity?.state === "Ready" && dispatchHold && !/^Waiting for prerequisite .+ \(Ready\)\.$/.test(dispatchHold)) {
+    return { required: true, kind: "blocked", reason: dispatchHold };
+  }
+  return { required: false, kind: null, reason: null };
+}
+
+function projectedJob(data, job, config) {
+  const parent = data.items[job.parent_id];
+  const parentView = parent ? itemView(data, parent) : {};
+  const attempt = job.attempts?.at(-1) ?? {};
+  const dispatchHold = dispatchHoldReason(job, data, config);
+  const review = reviewFor(job, dispatchHold);
+  const shippedOutcome = job.state === "Shipped" ? [
+    attempt.execution?.report?.summary,
+    "1 work item verified and shipped by Roundhouse.",
+    job.shipping?.deployment?.url ?? job.shipping?.deployment?.deploy_url,
+  ].filter(Boolean).join(" ") : null;
+  const { jobs: _jobs, ...base } = parentView;
+  return {
+    ...base,
+    id: job.id,
+    revision: job.revision,
+    title: job.work?.title ?? parentView.title ?? job.id,
+    state: job.state,
+    display_state: displayState(job.state, { needsYou: review.required }),
+    needs_you: review.required,
+    review_required: review.required,
+    review_kind: review.kind,
+    review_reason: review.reason,
+    project: job.project_id ?? parentView.project ?? null,
+    agent_role: job.agent_role ?? parentView.agent_role ?? "general",
+    owning_node: job.owning_node ?? job.project_context?.name ?? parentView.owning_node ?? null,
+    verification_status: attempt.verification?.passed ? "Passed" : attempt.verification ? "Failed" : (job.state === "Verification" ? "Running" : "Not run"),
+    shipping_status: job.shipping ? "Delivered" : "Not shipped",
+    updated_at: job.updated_at ?? parentView.updated_at ?? null,
+    reason: job.history?.at(-1)?.reason ?? parentView.reason ?? null,
+    outcome: shippedOutcome ?? job.work?.outcome ?? parentView.outcome ?? null,
+    acceptance_criteria: (job.work?.acceptance_criteria ?? []).map((criterion) => criterion.description ?? criterion),
+    evidence: {
+      checks: job.shipping?.verification?.checks ?? attempt.verification?.checks ?? [],
+      deliveries: job.shipping ? [{ job_id: job.id, ...job.shipping }] : [],
+      completion_reports: attempt.execution?.report ? [attempt.execution.report] : [],
+      completion_results: job.shipping?.result === undefined ? [] : [job.shipping.result],
+      outputs: job.shipping?.outputs ?? [],
+    },
+    history: (job.history ?? []).map((event) => ({ from: event.from ?? null, to: event.to, reason: event.reason, at: event.at })),
+    questions: [],
+    issue_resolution: job.issue_resolution ?? null,
+    dispatch_hold: dispatchHold,
+  };
+}
+
+function projectedStandaloneItem(data, item) {
+  const projected = itemView(data, item);
+  const review = reviewFor(item);
+  return {
+    ...projected,
+    needs_you: review.required,
+    review_required: review.required,
+    review_kind: review.kind,
+    review_reason: review.reason,
+  };
+}
+
+// This is the one canonical, job-level dashboard projection used by both the
+// loopback menu API and the hosted relay. Parent items are projected only when
+// they have no jobs, so every visible record has one stable authoritative ID.
+export function dashboardProjection(data, config, { connection = {} } = {}) {
+  const parentStatus = statusView(data);
+  const items = [
+    ...Object.values(data.jobs ?? {}).map((job) => projectedJob(data, job, config)),
+    ...Object.values(data.items ?? {}).filter((item) => !(item.job_ids ?? []).length)
+      .map((item) => projectedStandaloneItem(data, item)),
+  ].sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")) || a.id.localeCompare(b.id));
+  const counts = {
+    needs_review: items.filter((item) => item.review_required).length,
+    needs_you: items.filter((item) => item.needs_you).length,
+    active: items.filter((item) => activeStates.has(item.state)).length,
+    queued: items.filter((item) => queuedStates.has(item.state) && !item.needs_you).length,
+    completed: items.filter((item) => completedStates.has(item.state)).length,
+    blocked: items.filter((item) => item.state === "Blocked").length,
+  };
+  const projection_revision = digest(items.map((item) => ({
+    id: item.id, revision: item.revision, state: item.state,
+    needs_you: item.needs_you, review_kind: item.review_kind,
+  }))).slice(0, 24);
+  return {
+    schema_version: 2,
+    projection_revision,
+    overview: {
+      ...parentStatus,
+      projection_revision,
+      items,
+      counts,
+      needs_you: needsHumanView(data).questions,
+      connection,
+    },
   };
 }
 

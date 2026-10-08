@@ -1,14 +1,10 @@
 # Local control room and macOS installation
 
-Roundhouse runs as one loopback-bound Node service containing the browser UI, JSON
-API, background worker, and Streamable HTTP MCP endpoint. The macOS front door is a
-separate loopback-only LaunchDaemon that maps standard HTTP to the unprivileged
-service. `/etc/hosts` maps the single-label name `roundhouse` to `127.0.0.1`.
-Consequently the normal browser URL is exactly `http://roundhouse`.
-
-The privileged changes happen only when the operator runs the installer. Tests
-only inspect generated configuration and never change launchd, `/etc/hosts`, or
-port 80.
+Roundhouse runs as one loopback-bound Node service containing the JSON API,
+background worker, and Streamable HTTP MCP endpoint. It remains available to local
+clients at `127.0.0.1:8787`. Browser use is hosted at
+`https://roundhouse.ryan.green`; the obsolete port-80 front door and `roundhouse`
+hostname mapping are intentionally retired.
 
 ## Install and operate
 
@@ -16,17 +12,15 @@ Requires Node.js 20.11+, Git, and macOS command-line developer tools:
 
 ```sh
 ./scripts/macos/install.sh
-open http://roundhouse
+open https://roundhouse.ryan.green
 ./scripts/macos/menu-bar.sh install
 ```
 
 The installer runs `npm ci`, creates (without replacing) the private configuration
-at `~/Library/Application Support/Roundhouse/projects.yaml`, installs a user
-LaunchAgent for the app and worker, adds a marked `/etc/hosts` block, and installs
-a root-owned LaunchDaemon for the loopback port-80 proxy. It asks for `sudo` only
-for the latter two system changes.
+at `~/Library/Application Support/Roundhouse/projects.yaml`, and installs a user
+LaunchAgent for the local engine and worker. It makes no hostname or port-80 changes.
 
-The menu helper is an unsigned development build made with `swiftc`. It is a native
+The menu helper is an ad-hoc signed native build made with `swiftc`. It is a native
 AppKit menu extra, not another control surface. It can open Roundhouse, show local
 health and last-known cached counts, and start, stop, or restart the service. Its durable event cursor
 prevents repeat notifications. It notifies only for Needs You, blocked/failure, and
@@ -46,23 +40,23 @@ Useful commands:
 ./scripts/macos/uninstall.sh
 ```
 
-Install and repair report success only after both the unprivileged app's direct
-health endpoint and the canonical front-door health endpoint return healthy. A
+Install and repair report success only after the local engine's direct health
+endpoint returns healthy. A
 failed user-service bootstrap is cleared and retried once. The smoke paths are
 idempotent and do not unload either service. The menu helper reports app-service
-and front-door failures separately and labels counts unavailable when the app
-cannot provide its in-memory snapshot. Its periodic requests use only `/health`
-and `/api/local-snapshot`. Health remains a local liveness check; each explicit
+labels data stale when the engine returns a cached snapshot error and counts
+unavailable when the engine cannot be reached. Its periodic requests use only
+`/api/local-snapshot`. Health remains a local liveness check; each explicit
 local-snapshot request refreshes its response from authoritative storage without
 waking the worker or performing workflow work.
 
-Uninstall removes both launchd jobs and the marked host entry. It deliberately
+Uninstall removes the user launchd jobs and also cleans up any legacy front-door
+registration or marked host entry. It deliberately
 keeps state and private project configuration in Application Support; the operator
 can archive or remove that directory separately.
 
 For a foreground developer run, `npm start` starts the combined service on
-`127.0.0.1:8787`, creating an empty private configuration if necessary. The
-installed front door is what makes the port-free canonical URL available.
+`127.0.0.1:8787`, creating an empty private configuration if necessary.
 
 ## Project configuration
 

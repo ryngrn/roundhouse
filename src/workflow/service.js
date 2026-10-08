@@ -3,7 +3,7 @@ import { Engine } from "./engine.js";
 import { Store } from "./store.js";
 import { loadWorkflowConfig, readWorkflowConfig, saveWorkflowConfig } from "./config.js";
 import { normalizeDepotIntake, submitToDepot } from "./intake-contract.js";
-import { itemView, needsHumanView, notificationView, statusView } from "./views.js";
+import { dashboardProjection, itemView, needsHumanView, notificationView, statusView } from "./views.js";
 import { mapResult } from "../storage/repository.js";
 import { migrateLegacyDecisionQuestions } from "./legacy-decisions.js";
 
@@ -73,6 +73,10 @@ export class RoundhouseService {
 
   getWorkStatus(filters = {}) {
     return mapResult(this.store.read(), (data) => statusView(data, validateFilters(filters)));
+  }
+
+  getDashboardProjection({ connection = {} } = {}) {
+    return mapResult(this.store.read(), (data) => dashboardProjection(data, this.config ?? { projects: [] }, { connection }));
   }
 
   getNotifications(options = {}) {

@@ -23,20 +23,6 @@ ${strings(["/bin/zsh", `${repository}/scripts/macos/service-wrapper.sh`, node, r
 </dict></plist>\n`;
 }
 
-export function frontDoorLaunchDaemon({ node, repository }) {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>io.roundhouse.front-door</string>
-  <key>ProgramArguments</key><array>
-${strings([node, `${repository}/src/server/front-door.js`])}
-  </array>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/var/log/roundhouse-front-door.log</string>
-  <key>StandardErrorPath</key><string>/var/log/roundhouse-front-door-error.log</string>
-</dict></plist>\n`;
-}
-
 export function menuLaunchAgent({ executable, home }) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -48,5 +34,3 @@ export function menuLaunchAgent({ executable, home }) {
   <key>StandardErrorPath</key><string>${escapeXml(`${home}/Library/Application Support/Roundhouse/menu-error.log`)}</string>
 </dict></plist>\n`;
 }
-
-export const hostsBlock = "# BEGIN ROUNDHOUSE\n127.0.0.1 roundhouse\n# END ROUNDHOUSE\n";

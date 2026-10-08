@@ -1,10 +1,10 @@
 # PostgreSQL authoritative control plane
 
-Roundhouse uses PostgreSQL as the authoritative shared control plane whenever
-`DATABASE_URL` is present. Neon is the intended hosted provider, but the schema and
-queries use standard PostgreSQL. The local `state.json` repository remains an
-explicit single-node development/test/bootstrap option; it is not a cache, replica,
-or write-behind backup for PostgreSQL.
+This describes the optional generic PostgreSQL storage adapter and its tests. It is
+not enabled on the Mac Studio: the Studio's local `state.json` store is authoritative,
+and the Aiven database is used only for dashboard projection and remote commands.
+Roundhouse does not depend on Neon. Reintroducing shared authoritative storage
+requires an explicit provider decision and a separately verified cutover.
 
 ## Configuration and security
 
@@ -48,13 +48,10 @@ After comparing `depot status` and `/health` against the local snapshot, configu
 the service's real `DATABASE_URL` and restart it once. Keep the JSON backup for
 audit/recovery, but do not resume JSON writes after cutover.
 
-The macOS installer deliberately does not copy a connection URL from the shell into
-a plist. Its service wrapper optionally loads
-`~/Library/Application Support/Roundhouse/neon.env`, provided the file is a regular
-file owned by the service user with mode `0400` or `0600`. The wrapper exports the
-pooled `DATABASE_URL`, removes `DATABASE_URL_UNPOOLED` and `NEON_BRANCH`, and then
-executes the service. `neon env pull --service postgres --file <that-path>` can
-maintain the private file without placing credentials in Git or the plist.
+The macOS service wrapper forces local authoritative storage and ignores legacy
+database environment variables. The separate `relay.env` contains the Aiven relay
+connection and wake configuration; it must remain a regular mode-0400 or mode-0600
+file owned by the service user.
 
 ## Claims, leases, and failures
 

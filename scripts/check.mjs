@@ -18,7 +18,7 @@ function validateSite() {
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
   const css = fs.readFileSync(path.join(root, "styles.css"), "utf8");
   const workflow = fs.readFileSync(".github/workflows/pages.yml", "utf8");
-  for (const required of ["<main id=\"main\">", "id=\"workflow\"", "id=\"architecture\"", "id=\"quick-start\"", "id=\"status\"", "<svg", "http://roundhouse", "MCP Events"]) {
+  for (const required of ["<main id=\"main\">", "id=\"workflow\"", "id=\"architecture\"", "id=\"quick-start\"", "id=\"status\"", "<svg", "https://roundhouse.ryan.green", "MCP Events"]) {
     if (!html.includes(required)) throw new Error(`Public site is missing required content: ${required}`);
   }
   if (/<script\b/i.test(html) || /analytics|segment\.com|googletagmanager|fonts\.googleapis/i.test(html)) throw new Error("Public site must remain tracker-free and dependency-light.");

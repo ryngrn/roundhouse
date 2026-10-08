@@ -5,10 +5,14 @@ import UserNotifications
 struct Counts: Decodable {
     let needsYou: Int
     let active: Int
+    let queued: Int
+    let completed: Int
     let blocked: Int
+    let needsReview: Int?
     enum CodingKeys: String, CodingKey {
         case needsYou = "needs_you"
-        case active, blocked
+        case needsReview = "needs_review"
+        case active, queued, completed, blocked
     }
 }
 
@@ -22,14 +26,23 @@ struct LocalSnapshot: Decodable {
     let counts: Counts
     let notifications: [Notice]
     let cursor: String?
+    let capturedAt: String?
+    let projectionRevision: String?
+    let snapshotError: String?
+    enum CodingKeys: String, CodingKey {
+        case counts, notifications, cursor
+        case capturedAt = "captured_at"
+        case projectionRevision = "projection_revision"
+        case snapshotError = "snapshot_error"
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let health = NSMenuItem(title: "Roundhouse is starting…", action: nil, keyEquivalent: "")
-    private let counts = NSMenuItem(title: "Needs a signal 0 · Chugging along 0", action: nil, keyEquivalent: "")
+    private let counts = NSMenuItem(title: "Projection counts unavailable", action: nil, keyEquivalent: "")
     private var timer: Timer?
-    private let base = URL(string: "http://roundhouse")!
+    private let dashboard = URL(string: "https://roundhouse.ryan.green/")!
     private let directBase = URL(string: "http://127.0.0.1:8787")!
     private var serviceDomain: String { "gui/\(getuid())" }
     private var serviceLabel: String { "\(serviceDomain)/io.roundhouse.service" }
@@ -97,15 +110,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 }
                 return
             }
-            URLSession.shared.dataTask(with: self.base.appendingPathComponent("health")) { _, frontResponse, frontError in
-                let frontHealthy = frontError == nil && (frontResponse as? HTTPURLResponse)?.statusCode == 200
-                DispatchQueue.main.async {
-                    self.health.title = frontHealthy ? "● App and front door healthy" : "● Front door unavailable · app healthy"
-                    self.counts.title = "Needs a signal \(snapshot.counts.needsYou) · Chugging along \(snapshot.counts.active) · Held up \(snapshot.counts.blocked)"
-                    self.applyStatusIcon()
-                    self.item.button?.title = !frontHealthy ? "!" : snapshot.counts.needsYou > 0 || snapshot.counts.blocked > 0 ? "•" : ""
+            DispatchQueue.main.async {
+                let review = snapshot.counts.needsReview ?? snapshot.counts.needsYou
+                let revision = snapshot.projectionRevision.map { String($0.prefix(8)) } ?? "unknown"
+                if let snapshotError = snapshot.snapshotError, !snapshotError.isEmpty {
+                    self.health.title = "● Stale projection \(revision) · \(snapshotError)"
+                    self.counts.title = "Stale · review \(review) · ready \(snapshot.counts.queued) · executing \(snapshot.counts.active) · completed \(snapshot.counts.completed) · blocked \(snapshot.counts.blocked)"
+                    self.item.button?.title = "!"
+                } else {
+                    self.health.title = "● Authoritative projection \(revision)"
+                    self.counts.title = "Review \(review) · Ready \(snapshot.counts.queued) · Executing \(snapshot.counts.active) · Completed \(snapshot.counts.completed) · Blocked \(snapshot.counts.blocked)"
+                    self.item.button?.title = review > 0 || snapshot.counts.blocked > 0 ? "•" : ""
                 }
-            }.resume()
+                self.applyStatusIcon()
+            }
             self.deliverNotifications(snapshot)
         }.resume()
     }
@@ -133,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         try? process.run()
     }
 
-    @objc private func openRoundhouse() { NSWorkspace.shared.open(base) }
+    @objc private func openRoundhouse() { NSWorkspace.shared.open(dashboard) }
     @objc private func startService() { launchctl(["bootstrap", serviceDomain, servicePlist]) }
     @objc private func stopService() { launchctl(["bootout", serviceLabel]) }
     @objc private func restartService() {
