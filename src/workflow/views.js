@@ -1,5 +1,6 @@
 import { displayState } from "./presentation.js";
 import { digest } from "../storage/repository.js";
+import { projectSlug } from "./project-model.js";
 
 const activeStates = new Set(["Decision", "Executing", "Verification", "Rework"]);
 const queuedStates = new Set(["Depot", "Ready", "Imported Pending"]);
@@ -61,12 +62,14 @@ export function itemView(data, item) {
     answered_at: question.answer?.at ?? question.updated_at ?? null,
   }));
   const allocationDecisions = data.system_metadata?.execution_scheduler?.decisions ?? [];
+  const legacyProject = item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id] : null;
+  const assignedProject = item.project_id ?? (legacyProject?.name && legacyProject.name.toLowerCase() !== "unassigned"
+    ? projectSlug(legacyProject.name) : null);
   return {
     id: item.id,
     state,
     revision: item.revision,
-    project: item.project_id ?? null,
-    project_candidate: item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id] ?? null : null,
+    project: assignedProject,
     priority: item.priority ?? null,
     title,
     summary: item.input.text.slice(0, 240),
@@ -255,6 +258,12 @@ function projectedStandaloneItem(data, item) {
 // they have no jobs, so every visible record has one stable authoritative ID.
 export function dashboardProjection(data, config, { connection = {} } = {}) {
   const parentStatus = statusView(data);
+  const projects = Object.fromEntries((config?.projects ?? []).map((project) => [project.id, {
+    ...data.projects?.[project.id], id: project.id, name: project.name, configured: true,
+    repository: project.repository ?? null, repository_required: project.repository_required,
+    status: project.status,
+  }]));
+  for (const [id, project] of Object.entries(data.projects ?? {})) projects[id] ??= project;
   const items = [
     ...Object.values(data.jobs ?? {}).map((job) => projectedJob(data, job, config)),
     ...Object.values(data.items ?? {}).filter((item) => !(item.job_ids ?? []).length)
@@ -277,6 +286,7 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
     projection_revision,
     overview: {
       ...parentStatus,
+      projects,
       projection_revision,
       items,
       counts,
@@ -323,7 +333,6 @@ export function statusView(data, filters = {}) {
       decisions,
     },
     projects: data.projects,
-    project_candidates: data.project_candidates ?? {},
     system_metadata: data.system_metadata ?? {},
   };
 }

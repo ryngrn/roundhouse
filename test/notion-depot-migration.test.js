@@ -19,7 +19,7 @@ function setup(t) {
   return { directory, store: new Store(directory) };
 }
 
-test("Notion Depot cutover imports safe history/pending records, candidates, provenance and reconciles native IDs", (t) => {
+test("Notion Depot cutover imports safe history/pending records, assigns projects, preserves provenance and reconciles native IDs", (t) => {
   const { directory, store } = setup(t);
   const native = store.submit({ text: "Native work", source: "web", actor: "local-user" }, "native");
   const exported = structuredClone(fixture);
@@ -44,8 +44,10 @@ test("Notion Depot cutover imports safe history/pending records, candidates, pro
   assert.equal(inbox.legacy_depot["Decisions Needed"], "Choose audience before implementation");
   assert.equal(inbox.questions.length, 1);
   assert.equal(inbox.questions[0].kind, "imported_decision");
-  assert.equal(state.project_candidates[inbox.project_candidate_id].name, "Future Project");
-  assert.equal(state.project_candidates[inbox.project_candidate_id].executable, false);
+  assert.equal(inbox.project_id, "future-project");
+  assert.equal(state.projects[inbox.project_id].name, "Future Project");
+  assert.equal(state.projects[inbox.project_id].configured, false);
+  assert.equal(inbox.project_candidate_id, undefined);
   assert.equal(p0.state, "Imported Pending");
   assert.equal(p0.priority_rank, 0);
   assert.equal(state.items[native.id].state, "Depot");

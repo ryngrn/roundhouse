@@ -82,7 +82,7 @@ when unavailable; it must never fall back to a stale local file. Conversely, rel
 failure does not transfer workflow authority away from the Studio's local store.
 
 One-time Notion Depot imports add immutable provenance, legacy metadata,
-non-executable project candidates, and a durable cutover marker. `Imported History`
+ordinary project assignments without execution configuration, and a durable cutover marker. `Imported History`
 is terminal. `Imported Pending` is eligible only for the triage control plane: triage
 first commits a release into Depot with legacy status and provenance recorded as
 non-authoritative evidence, then performs a normal native evaluation. It can never

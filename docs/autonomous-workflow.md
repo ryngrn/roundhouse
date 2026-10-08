@@ -242,7 +242,7 @@ the durable `review_required` project gate remains until an operator resumes it.
 Weighted dispatch progress is stored in `system_metadata.execution_scheduler`.
 Its allocation counters, selection sequence, and timestamps survive worker restarts,
 so restarting a worker does not reset a project's place in weighted allocation.
-Every scheduling round also persists the considered project candidates and their
+Every scheduling round also persists the considered project/job options and their
 allocation or deferral result. Status projections expose each slice's eligibility,
 project queue position, weight and weighted-allocation rank, capability fit, and
 the capacity, project-limit, counted-resource, dependency, or lock constraint that

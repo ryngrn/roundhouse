@@ -21,7 +21,7 @@ const completionReportSchema = z.object({
 });
 const itemSchema = z.object({
   id: z.string(), state: z.string(), revision: z.number(), project: z.string().nullable(), summary: z.string(),
-  project_candidate: z.unknown().nullable(), priority: z.string().nullable(),
+  priority: z.string().nullable(),
   reason: z.string().nullable(), question: z.string().nullable(), question_id: z.string().nullable(), question_revision: z.number().nullable(),
   outcome: z.string().nullable(),
   imported: z.boolean(), provenance: z.unknown().nullable(), legacy: z.unknown().nullable(),
@@ -132,7 +132,7 @@ const toolSpecs = [
     input: filterSchema,
     output: z.object({ items: z.array(itemSchema), next_departure: nextDepartureSchema.nullable(), allocations: allocationsSchema,
       projects: z.record(z.string(), z.unknown()),
-      project_candidates: z.record(z.string(), z.unknown()), system_metadata: z.record(z.string(), z.unknown()) }),
+      system_metadata: z.record(z.string(), z.unknown()) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async (service, filters) => {
       const value = await service.getWorkStatus(filters);

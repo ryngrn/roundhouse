@@ -86,7 +86,7 @@ blocked for reconciliation and is never automatically replayed after a crash.
 ## Project dashboard and decision sessions
 
 The control room groups compact work rows under configured projects, imported
-project candidates, and Unknown / Unassigned. Project headings summarize Needs
+configured and repository-free projects, plus Unassigned. Project headings summarize Needs
 You, active, queued, shipped, and blocked work. A row carries workflow state,
 priority, agent role, owning node when known, current activity, verification,
 shipping, and subordinate import provenance.

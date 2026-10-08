@@ -76,7 +76,8 @@ export function executionEligibility(project, execution, capabilities = executio
   if (!missing.length && execution.providers && !selectExecutionProvider(execution.providers, required)) {
     reasons.push({ code: "provider_unavailable", message: `No execution provider supports the required capability combination: ${required.length ? required.join(", ") : "(none)"}.`, required });
   }
-  if ((job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository)) && !project.repository) {
+  const machineLocal = project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
+  if ((job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository)) && !project.repository && !machineLocal) {
     reasons.push({ code: "repository_unavailable", message: "This slice requires a repository, but the project has none configured." });
   }
   if (project.max_concurrent_runs > execution.capacity) reasons.push({ code: "configured_project_limit", message: "Project concurrency exceeds global execution capacity." });
@@ -98,7 +99,10 @@ export function projectExecutionEligible(project, execution, capabilities = exec
 export function executionReservation(project, job = null) {
   const repositoryRequired = job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository);
   const repository = project.repository ?? null;
-  const locks = repository && repositoryRequired ? [`repository:${repository}`] : [];
+  const machineLocal = project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
+  const remoteWorkspace = machineLocal ? `${project.herdr.machine}:${project.herdr.working_directory}` : null;
+  const locks = repository && repositoryRequired ? [`repository:${repository}`]
+    : remoteWorkspace && repositoryRequired ? [`remote-workspace:${remoteWorkspace}`] : [];
   if (repository && repositoryRequired && project.policy?.shipping !== "commit_only") locks.push(`delivery:${repository}:${project.remote ?? "origin"}`);
   if (project.policy?.shipping === "deploy") {
     locks.push(`deployment:${project.deployment?.kind ?? "unknown"}:${project.deployment?.environment ?? "production"}`);
@@ -108,7 +112,7 @@ export function executionReservation(project, job = null) {
     project_limit: project.max_concurrent_runs ?? 1,
     capacity_units: 1,
     required_capabilities: requiredExecutionCapabilities(project, job),
-    repository: { required: repositoryRequired, configured: Boolean(repository), value: repository },
+    repository: { required: repositoryRequired, configured: Boolean(repository) || machineLocal, value: repository ?? remoteWorkspace },
     resources: { ...(project.resource_requirements ?? {}) },
     locks,
   };

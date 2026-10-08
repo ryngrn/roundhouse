@@ -12,7 +12,7 @@ action="${1:-build}"
 
 build() {
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  xcrun swiftc "$repo/macos/RoundhouseMenu/main.swift" -o "$executable" -framework AppKit -framework UserNotifications
+  xcrun swiftc -parse-as-library "$repo/macos/RoundhouseMenu/main.swift" -o "$executable" -framework AppKit -framework UserNotifications
   cp "$repo/macos/RoundhouseMenu/Info.plist" "$app/Contents/Info.plist"
   cp "$repo/macos/RoundhouseMenu/status-light.svg" "$app/Contents/Resources/status-light.svg"
   cp "$repo/macos/RoundhouseMenu/status-dark.svg" "$app/Contents/Resources/status-dark.svg"

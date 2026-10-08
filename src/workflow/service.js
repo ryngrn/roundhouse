@@ -4,8 +4,9 @@ import { Store } from "./store.js";
 import { loadWorkflowConfig, readWorkflowConfig, saveWorkflowConfig } from "./config.js";
 import { normalizeDepotIntake, submitToDepot } from "./intake-contract.js";
 import { dashboardProjection, itemView, needsHumanView, notificationView, statusView } from "./views.js";
-import { digest, mapResult } from "../storage/repository.js";
+import { mapResult } from "../storage/repository.js";
 import { migrateLegacyDecisionQuestions } from "./legacy-decisions.js";
+import { promoteProjectCandidates, projectSlug } from "./project-model.js";
 
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const jsonSize = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -76,11 +77,16 @@ export class RoundhouseService {
     this.engine = engine ?? (this.config ? new Engine({ store: this.store, config: this.config }) : null);
     // Idempotent domain migration through the persistence boundary. This keeps
     // the service compatible with alternate stores while upgrading legacy data.
-    this.initialization = this.store.shared ? null : migrateLegacyDecisionQuestions(this.store);
+    this.initialization = this.store.shared ? null : this.runMigrations();
+  }
+
+  async runMigrations() {
+    await migrateLegacyDecisionQuestions(this.store);
+    return promoteProjectCandidates(this.store, this.config?.projects ?? []);
   }
 
   async initialize() {
-    if (!this.initialization) this.initialization = migrateLegacyDecisionQuestions(this.store);
+    if (!this.initialization) this.initialization = this.runMigrations();
     await this.initialization;
     return this;
   }
@@ -94,14 +100,17 @@ export class RoundhouseService {
 
   async initiateProject(input, adapter = { source: "web", actor: "local-user" }) {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Project initiation must be an object.");
-    const outcome = projectInitiationValue(input.outcome, "an outcome", { required: true });
+    const outcome = projectInitiationValue(input.outcome ?? input.purpose, "an outcome", { required: true });
     const name = projectInitiationValue(input.name, "name", { limit: 200 }) ?? inferredProjectName(outcome);
     const repository = projectInitiationValue(input.repository, "repository", { limit: 2_000 });
     const successState = projectInitiationValue(input.success_state, "success state");
     const boundaries = projectInitiationValue(input.boundaries, "boundaries");
     if (input.trusted !== undefined && typeof input.trusted !== "boolean") throw new Error("trusted must be boolean.");
     const trusted = input.trusted === true;
-    if (this.config?.projects?.some((project) => project.id === name || project.name.toLowerCase() === name.toLowerCase())) {
+    if (!this.configFile) throw new Error("Roundhouse configuration is required to create a project.");
+    const rawConfiguration = readWorkflowConfig(this.configFile);
+    const id = projectSlug(name);
+    if (this.config?.projects?.some((project) => project.id === id || project.name.toLowerCase() === name.toLowerCase())) {
       throw new Error(`A configured project already uses the name ${name}.`);
     }
     const brief = { name, outcome, repository, success_state: successState, boundaries, trusted };
@@ -116,26 +125,91 @@ export class RoundhouseService {
         ? "Decision mode: I trust Roundhouse to decide the remaining reversible implementation and product details using safe defaults."
         : "Decision mode: Use these answers as the project brief and ask one concise question at a time for any material unresolved decision.",
     ];
+    rawConfiguration.projects ??= [];
+    rawConfiguration.projects.push({
+      id,
+      name,
+      status: "active",
+      purpose: outcome,
+      success_state: successState ?? `Deliver a concrete, reviewable result for: ${outcome}`,
+      repository_required: false,
+      required_capabilities: [],
+      verification: [],
+      policy: {
+        allow_autonomous: trusted,
+        approval_required: !trusted,
+        review_after_shipping: true,
+        shipping: "durable_output",
+        continuation: "stop_after_job",
+        max_rework_attempts: 1,
+      },
+      executor: { kind: "codex", bin: "codex" },
+    });
+    this.config = saveWorkflowConfig(this.configFile, rawConfiguration);
+    this.engine = new Engine({ store: this.store, config: this.config });
     const created = await this.addToDepot({
-      content: details.join("\n\n"), project_hint: name,
+      content: details.join("\n\n"), project_hint: id,
       metadata: { kind: "project_initiation", project_brief: brief },
       ...(input.idempotency_key ? { idempotency_key: input.idempotency_key } : {}),
     }, adapter);
-    const candidateId = `native-${digest(name.toLowerCase()).slice(0, 16)}`;
     await this.store.change((data) => {
-      data.project_candidates ??= {};
-      const at = new Date().toISOString();
-      const existing = data.project_candidates[candidateId];
-      const sourceIds = [...new Set([...(existing?.source_ids ?? []), created.item.id])];
-      data.project_candidates[candidateId] = {
-        id: candidateId, name, status: "candidate", executable: false, source_system: adapter.source,
-        first_seen_at: existing?.first_seen_at ?? at, source_ids: sourceIds, record_count: sourceIds.length, project_brief: brief,
-      };
       const item = data.items[created.item.id];
-      if (item) item.project_candidate_id = candidateId;
+      if (item) item.project_id = id;
+      data.projects[id] = { ...data.projects[id], id, name, configured: true, repository: null,
+        repository_required: false, source_system: adapter.source, project_brief: brief };
     });
     const data = await this.store.read();
-    return { item: itemView(data, data.items[created.item.id]), project_candidate: data.project_candidates[candidateId], durable: true };
+    return { item: itemView(data, data.items[created.item.id]), project: data.projects[id], durable: true };
+  }
+
+  assignProject({ item_id, expected_item_revision, project_id, project_hint, actor = "local-user" }) {
+    if (!nonempty(item_id)) throw new Error("Project assignment requires an item ID.");
+    if (!Number.isInteger(expected_item_revision) || expected_item_revision < 1) throw new Error("Project assignment requires the current item revision.");
+    if (Boolean(nonempty(project_id)) === Boolean(nonempty(project_hint))) throw new Error("Choose exactly one project target.");
+    return this.store.change((data) => {
+      const item = data.items[item_id];
+      if (!item) throw new Error(`Unknown item: ${item_id}`);
+      if (item.revision !== expected_item_revision) throw new Error("Project assignment is stale; refresh before retrying.");
+      if ((item.job_ids ?? []).length) throw new Error("Planned or started work cannot be reassigned as a single item; replan it first.");
+      const target = project_id
+        ? this.config?.projects?.find((project) => project.id === project_id) ?? data.projects?.[project_id]
+        : this.config?.projects?.find((project) => project.id === project_hint || project.name.toLowerCase() === project_hint.toLowerCase());
+      const id = target?.id ?? projectSlug(project_hint);
+      const name = target?.name ?? project_hint;
+      data.projects[id] = { ...data.projects[id], id, name, configured: Boolean(this.config?.projects?.some((project) => project.id === id)),
+        repository: target?.repository ?? data.projects[id]?.repository ?? null,
+        repository_required: target?.repository_required ?? data.projects[id]?.repository_required ?? false };
+      item.project_id = id;
+      item.selected_project = id;
+      item.input.project_id = id;
+      delete item.input.project_hint;
+      if (item.project_candidate_id) item.legacy_project_candidate_id = item.project_candidate_id;
+      delete item.project_candidate_id;
+      item.requires_reevaluation = true;
+      item.execution_eligible = false;
+      item.revision += 1;
+      item.updated_at = new Date().toISOString();
+      item.history.push({ from: item.state, to: item.state, reason: `${actor} assigned this work to project ${name}.`, at: item.updated_at });
+      item.triage ??= { attempts: [], failure_count: 0 };
+      item.triage.retry_requested_at = item.updated_at;
+      return { item: itemView(data, item), project: data.projects[id], assigned: true };
+    });
+  }
+
+  jumpToFront({ item_id, expected_item_revision, actor = "local-user" }) {
+    if (!nonempty(item_id)) throw new Error("Priority change requires an item ID.");
+    return this.store.change((data) => {
+      const item = data.items[item_id];
+      if (!item) throw new Error(`Unknown item: ${item_id}`);
+      if (item.revision !== expected_item_revision) throw new Error("Priority change is stale; refresh before retrying.");
+      item.priority = "P0";
+      item.priority_rank = -1;
+      for (const jobId of item.job_ids ?? []) if (data.jobs[jobId]) data.jobs[jobId].priority_rank = -1;
+      item.revision += 1;
+      item.updated_at = new Date().toISOString();
+      item.history.push({ from: item.state, to: item.state, reason: `${actor} moved this work to the front of the queue.`, at: item.updated_at });
+      return { item: itemView(data, item), prioritized: true };
+    });
   }
 
   getNeedsHuman(filters = {}) {

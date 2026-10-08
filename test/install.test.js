@@ -20,25 +20,26 @@ test("macOS install configuration is loopback-local, durable, reversible, and pa
   assert.doesNotMatch(dispatch, /git\/roundhouse|src\/cli\.js|dispatch-once/);
 });
 
-test("menu bar companion remains a thin native HTTP client with service controls", () => {
+test("menu bar companion remains a designed native HTTP control room with service controls", () => {
   const source = fs.readFileSync("macos/RoundhouseMenu/main.swift", "utf8");
   assert.match(source, /import AppKit/);
   assert.match(source, /https:\/\/roundhouse\.ryan\.green/);
   assert.match(source, /api\/local-snapshot/);
   assert.doesNotMatch(source, /api\/overview|api\/notifications/);
   assert.match(source, /notificationCursor/);
-  assert.match(source, /Open Roundhouse/);
-  assert.match(source, /Start Service/);
-  assert.match(source, /Stop Service/);
-  assert.match(source, /Restart Service/);
-  assert.match(source, /App service unavailable/);
-  assert.match(source, /Stale projection/);
+  assert.match(source, /import SwiftUI/);
+  assert.match(source, /struct DashboardView: View/);
+  assert.match(source, /NSPopover/);
+  assert.match(source, /Open dashboard/);
+  assert.match(source, /Start local service/);
+  assert.match(source, /Stop local service/);
+  assert.match(source, /Restart local service/);
+  assert.match(source, /Local service is unavailable/);
   assert.match(source, /projectionRevision/);
   assert.match(source, /snapshotError/);
-  assert.match(source, /Counts unavailable/);
+  assert.match(source, /Priority work/);
   assert.match(source, /status-light/);
-  assert.match(source, /status-dark/);
-  assert.match(source, /effectiveAppearance/);
+  assert.match(source, /isTemplate = true/);
   assert.ok(fs.existsSync("macos/RoundhouseMenu/status-light.svg"));
   assert.ok(fs.existsSync("macos/RoundhouseMenu/status-dark.svg"));
   const menuBuild = fs.readFileSync("scripts/macos/menu-bar.sh", "utf8");

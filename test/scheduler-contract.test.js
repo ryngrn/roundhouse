@@ -111,7 +111,7 @@ test("scheduler contract: repository requirements are independent from capabilit
       repository_required: false, required_capabilities: ["research", "artifact"], verification: [],
     }],
   }, filename);
-  assert.equal(config.projects[0].repository, undefined);
+  assert.equal(config.projects[0].repository, null);
   assert.equal(config.projects[0].repository_required, false);
   assert.deepEqual(config.projects[0].required_capabilities, ["research", "artifact"]);
   assert.equal(projectExecutionEligible(config.projects[0], config.execution), false);

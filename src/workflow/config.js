@@ -78,11 +78,11 @@ function normalizeProjects(raw, root, execution) {
     check(["local", "herdr"].includes(runtime), "Runtime must be local or herdr.");
     const herdr = runtime === "herdr" ? { workspace_mode: "shared_worktree", ...(project.herdr ?? {}) } : null;
     const machineLocal = herdr?.workspace_mode === "machine_local";
-    const repository_required = project.repository_required ?? !machineLocal;
+    const repository_required = project.repository_required ?? true;
     check(typeof repository_required === "boolean", `Project ${project.id} repository_required must be boolean.`);
-    check(!repository_required || nonempty(project.repository), `Project ${project.id} requires a repository.`);
+    check(!repository_required || machineLocal || nonempty(project.repository), `Project ${project.id} requires a repository.`);
     if (runtime === "herdr" && !machineLocal) check(nonempty(project.repository), `Project ${project.id} shared-worktree Herdr runtime requires a repository.`);
-    check(repository_required || ["durable_output", "artifact"].includes(policy.shipping),
+    check(machineLocal || repository_required || ["durable_output", "artifact"].includes(policy.shipping),
       `Repository-free project ${project.id} requires durable_output shipping.`);
     const repository = nonempty(project.repository) ? fs.realpathSync(path.resolve(root, project.repository)) : null;
     const verification = project.verification ?? [];
@@ -174,7 +174,7 @@ function normalizeProjects(raw, root, execution) {
       check(deployment && typeof deployment === "object" && !Array.isArray(deployment), "Invalid deployment configuration.");
     }
     return {
-      ...project, ...(repository ? { repository } : {}), repository_required, verification, weight, max_concurrent_runs,
+      ...project, repository, repository_required, verification, weight, max_concurrent_runs,
       required_capabilities, resource_requirements, metric_definitions, policy, executor,
       runtime, ...(herdr ? { herdr } : {}), timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),

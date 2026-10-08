@@ -12,6 +12,7 @@ import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 import { Unblocker } from "./unblocker.js";
 import { dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
+import { resolveProjectIdentity } from "./project-model.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -230,18 +231,15 @@ export class Engine {
             route = { state: "Reconciled", reason: `${route.reason} Exact durable target: ${target.id}.` };
           } else route = { state: "Blocked", reason: "Reconciliation was refused because no exact durable/provenance identity matched the proposed target." };
         }
-        const unconfiguredHint = !project && (current.project_candidate_id || selectedProject || current.input.project_hint);
-        if (unconfiguredHint && !current.project_candidate_id) {
-          data.project_candidates ??= {};
-          const label = current.input.project_hint ?? selectedProject;
-          const candidateId = `native-${digest(String(label).toLowerCase()).slice(0, 16)}`;
-          data.project_candidates[candidateId] ??= { id: candidateId, name: String(label), status: "candidate", executable: false,
-            source_system: current.input.source ?? "native", first_seen_at: new Date(this.clock()).toISOString(), source_ids: [current.id], record_count: 1 };
-          current.project_candidate_id = candidateId;
-        }
-        if (unconfiguredHint && !["Review", "Archived", "Reconciled"].includes(route.state)
+        const legacyProject = current.project_candidate_id ? data.project_candidates?.[current.project_candidate_id] : null;
+        const unconfiguredLabel = legacyProject?.name ?? current.input.project_hint ?? selectedProject;
+        const unconfiguredProject = !project && resolveProjectIdentity(data, this.config.projects, unconfiguredLabel, {
+          configured: false, source_system: current.input.source ?? "native", first_seen_at: new Date(this.clock()).toISOString(),
+        });
+        if (unconfiguredProject) current.project_id = unconfiguredProject.id;
+        if (unconfiguredProject && !["Review", "Archived", "Reconciled"].includes(route.state)
           && (route.state !== "Needs Clarification" || proposedQuestions.length === 0)) {
-          route = { state: "Blocked", reason: "The referenced project is a non-executable project candidate and has no active runtime configuration." };
+          route = { state: "Blocked", reason: `Project ${unconfiguredProject.name} is assigned but does not yet have active execution configuration.` };
         }
         if (decision.dependencies.some((dependency) => !data.jobs[dependency])) {
           this.store.move(data, current, "Needs Clarification", "Decision referenced unknown dependencies.");
@@ -803,6 +801,7 @@ export class Engine {
             j.delivery_intent.reconciliation = { required_on_interruption: false, status: "confirmed", confirmed_at: delivered.timestamp };
             j.attempts.at(-1).status = "completed";
             j.attempts.at(-1).run.status = "completed";
+            j.attempts.at(-1).run.reconciliation = { required: false, status: "confirmed", confirmed_at: delivered.timestamp };
             j.attempts.at(-1).finished_at = delivered.timestamp;
             j.processes = [];
             this.store.move(data, j, "Shipped", "Verified work delivered under project policy.");
