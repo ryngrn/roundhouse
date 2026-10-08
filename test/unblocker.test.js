@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { harness } from "./support/harness.js";
 import { git } from "../src/workflow/delivery.js";
 import { diagnoseBlocker } from "../src/workflow/unblocker.js";
@@ -155,7 +156,7 @@ test("changed execution authority is never accepted as harmless context refresh"
 test("Unblocker can be invoked by the existing scheduled dispatcher without a model request", () => {
   const h = codexHarness();
   const response = spawnSync(process.execPath, [
-    new URL("../src/cli.js", import.meta.url).pathname,
+    fileURLToPath(new URL("../src/cli.js", import.meta.url)),
     "depot", "unblock",
     "--state-dir", h.store.directory,
     "--config", h.configFile,
