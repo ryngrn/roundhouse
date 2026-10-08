@@ -148,6 +148,15 @@ export class RoundhouseService {
       mapResult(this.store.read(), (data) => ({ item: itemView(data, data.items[job.parent_id]), human_task: job.human_task, completed: true })));
   }
 
+  annotateExceptionCompletion({ id, expected_revision, annotation_id, execution_path, reason, expected,
+    human_intervention_count, human_minutes, evidence_links, actor = "local-user" }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to record exception completion.");
+    return mapResult(this.engine.annotateExceptionCompletion(id, expected_revision, { annotation_id, execution_path, reason,
+      expected, human_intervention_count, human_minutes, evidence_links, actor }), (job) =>
+      mapResult(this.store.read(), (data) => ({ item: itemView(data, data.items[job.parent_id]),
+        execution_outcome: job.execution_outcome, exception_completed: true })));
+  }
+
   async answerQuestion({ id, answer, expected_revision, actor = "chatgpt-user", origin }) {
     if (!this.engine) throw new Error("Roundhouse configuration is required to re-evaluate an answer.");
     const claudeOrigin = origin === undefined ? null : normalizeClaudeOrigin(origin);

@@ -444,6 +444,33 @@ attempt. CLI integrations can use `depot assign-human-task` and
 `depot complete-human-task`; the JSON API exposes matching revision-guarded job
 endpoints.
 
+When an ordinary job is completed outside the intended execution path, record that
+fact explicitly instead of manufacturing native executor, verification, or delivery
+provenance. `depot complete-exception` accepts only a current Ready, Review, or
+Blocked job revision and requires a stable annotation ID, operator identity,
+structured reason, expected/authorized flag, actual bypass path, intervention count,
+and at least one durable evidence link. Supported bypass paths include `manual_rdc`,
+`direct_local_shell`, `chatgpt_execution`, `manual_file_edits`,
+`operator_reconciliation`, and `other`. A successful annotation is an auditable
+transition to Shipped with an `exception_success` outcome and a non-shipping
+`exception_annotation` delivery record; it never pushes or expands delivery policy.
+Retries using the same annotation ID and content are idempotent, while reuse with
+different content is rejected. Missing or invalid evidence rejects the annotation
+and leaves the existing unsuccessful or unresolved lifecycle unchanged. The JSON
+API exposes the same revision-guarded operation at
+`POST /api/jobs/:id/exception-completion`.
+
+For example:
+
+```sh
+node src/cli.js depot complete-exception --state-dir STATE --config CONFIG \
+  --id JOB_ID --revision REVISION --annotation-id rdc-2026-10-08-1 \
+  --path manual_rdc --reason missing_capability \
+  --note "The configured worker could not operate the native application." \
+  --expected false --interventions 1 --human-minutes 5 --actor operator \
+  --evidence '[{"kind":"screenshot","uri":"roundhouse://evidence/rdc-2026-10-08-1"}]'
+```
+
 `depot stop --state-dir STATE --project PROJECT_ID` stops future jobs after the
 current attempt finishes. `depot resume --state-dir STATE --project PROJECT_ID
 --actor operator` clears a stop or post-shipping human gate. A blocked project also

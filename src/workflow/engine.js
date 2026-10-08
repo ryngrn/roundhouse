@@ -15,9 +15,15 @@ import { dispatchConsiderations, executionEligibility, executionReservation, rec
 import { assessJobEligibility, ensureNextOccurrence, initializeJobSchedule, nextScheduledWake, recordConditionSignal } from "./scheduling.js";
 import { actionPolicy, approvalScope, assertProviderAuthorized, classifyAction } from "./actions.js";
 import { computeComplexityScore, computeRequestComplexity, recordComplexityOutcome } from "./complexity-score.js";
-import { deriveExecutionOutcome } from "./execution-outcome.js";
+import { deriveExecutionOutcome, exceptionCompletionStates, validateExceptionCompletion } from "./execution-outcome.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
+
+function exceptionCompletionIdentity(value) {
+  return digest({ annotation_id: value.annotation_id, actor: value.actor, expected: value.expected, reason: value.reason,
+    execution_path: value.execution_path, evidence_links: value.evidence_links,
+    human_intervention_count: value.human_intervention_count, human_minutes: value.human_minutes ?? null });
+}
 
 function configuredDecisionProviderEvidence(configuration) {
   const selected = providerIdentity(configuration, configuration?.kind ?? "decision-provider");
@@ -479,6 +485,42 @@ export class Engine {
       recordComplexityOutcome(data, job, "shipped", "Human completion and its durable evidence were recorded.");
       const parent = data.items[job.parent_id];
       if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = now;
+      return job;
+    });
+  }
+  annotateExceptionCompletion(id, revision, annotation) {
+    const requested = structuredClone(annotation ?? {});
+    return this.store.change((data) => {
+      const job = data.jobs[id];
+      if (!job) throw new Error("Exception completion must reference an existing job.");
+      if (job.exception_completion?.annotation_id === requested.annotation_id) {
+        const replay = validateExceptionCompletion({ ...requested, recorded_at: job.exception_completion.recorded_at });
+        if (exceptionCompletionIdentity(replay) !== exceptionCompletionIdentity(job.exception_completion)) {
+          throw new Error("annotation_id already exists with different exception completion data.");
+        }
+        return job;
+      }
+      if (job.revision !== revision) throw new Error("Exception completion must reference the current job revision.");
+      if (!exceptionCompletionStates.includes(job.state)) {
+        throw new Error(`Exception completion is not allowed while the job is ${job.state}.`);
+      }
+      const now = new Date().toISOString();
+      const completion = validateExceptionCompletion({ ...requested, recorded_at: now });
+      job.exception_completion = completion;
+      job.shipping = {
+        provider: "exception-completion",
+        policy: "exception_annotation",
+        pushed: false,
+        result: { summary: completion.reason.note },
+        evidence: structuredClone(completion.evidence_links),
+        timestamp: now,
+      };
+      this.store.move(data, job, "Shipped", `Exception completion recorded by ${completion.actor}; native provenance was not asserted.`);
+      job.exception_completion.completed_revision = job.revision;
+      job.execution_outcome = deriveExecutionOutcome(job, data.items[job.parent_id], { recordedBy: completion.actor });
+      recordComplexityOutcome(data, job, "shipped", "Out-of-band completion and durable evidence were recorded.");
+      const parent = data.items[job.parent_id];
+      if (parent?.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = now;
       return job;
     });
   }

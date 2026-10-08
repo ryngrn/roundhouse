@@ -279,6 +279,18 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 200, result);
       }
+      const completeException = url.pathname.match(/^\/api\/jobs\/([^/]+)\/exception-completion$/);
+      if (request.method === "POST" && completeException) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.annotateExceptionCompletion({ id: decodeURIComponent(completeException[1]),
+          expected_revision: input.expected_revision, annotation_id: input.annotation_id,
+          execution_path: input.execution_path, reason: input.reason, expected: input.expected,
+          human_intervention_count: input.human_intervention_count, human_minutes: input.human_minutes,
+          evidence_links: input.evidence_links, actor: "local-user" });
+        loop.wake();
+        return send(response, 200, result);
+      }
       const reconsider = url.pathname.match(/^\/api\/items\/([^/]+)\/reconsider$/);
       if (request.method === "POST" && reconsider) {
         verifyOrigin(request, origins);

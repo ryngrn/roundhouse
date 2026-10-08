@@ -6,7 +6,7 @@ import pg from "pg";
 import { StorageRepository, digest } from "./repository.js";
 import { record, transition } from "../workflow/state.js";
 import { reservationAssessment } from "../workflow/scheduler.js";
-import { deriveExecutionOutcome, validateExecutionOutcome } from "../workflow/execution-outcome.js";
+import { deriveExecutionOutcome, validateExceptionCompletion, validateExecutionOutcome } from "../workflow/execution-outcome.js";
 
 const { Pool } = pg;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -214,6 +214,7 @@ async function writeSnapshot(client, data) {
           [job.id, deployment.provider ?? null, deployment.environment ?? null, deployment.revision ?? null, deployment.status ?? null, deployment.url ?? null, deployment]);
       }
     }
+    if (job.exception_completion) validateExceptionCompletion(job.exception_completion);
     if (job.execution_outcome) {
       const outcome = validateExecutionOutcome(job.execution_outcome, { job });
       await client.query(`INSERT INTO roundhouse.execution_outcomes

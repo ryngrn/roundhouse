@@ -6,7 +6,7 @@ import { record, transition } from "./state.js";
 import { StorageRepository, digest } from "../storage/repository.js";
 import { acquireLock, alive } from "../storage/file-lock.js";
 import { loadNodeIdentity } from "../storage/node-identity.js";
-import { deriveExecutionOutcome, validateExecutionOutcome } from "./execution-outcome.js";
+import { deriveExecutionOutcome, validateExceptionCompletion, validateExecutionOutcome } from "./execution-outcome.js";
 
 export { acquireLock, alive, digest };
 
@@ -49,6 +49,7 @@ export class Store extends StorageRepository {
       const data = this.read();
       const result = fn(data);
       for (const job of Object.values(data.jobs ?? {})) {
+        if (job.exception_completion) validateExceptionCompletion(job.exception_completion);
         if (job.execution_outcome) validateExecutionOutcome(job.execution_outcome, { job });
       }
       atomicWrite(this.file, data);

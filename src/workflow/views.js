@@ -89,6 +89,7 @@ function jobView(job, data) {
     action_policy: job.action_policy ?? null,
     human_task: job.human_task ?? null,
     execution_outcome: job.execution_outcome ?? null,
+    exception_completion: job.exception_completion ?? null,
     complexity: job.work?.complexity ?? null,
   };
 }

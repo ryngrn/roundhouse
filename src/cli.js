@@ -12,7 +12,7 @@ import { importLocalStateToPostgres } from "./storage/import-local-state.js";
 function usage() {
   return `Usage:
   roundhouse capture --input <idea.json> --manifest <manifest.yaml> --state-dir <directory>
-  roundhouse depot <submit|triage|run|status|outbox|approve|clarify|reevaluate-import|retry-triage|signal-condition|stop|resume|recover> [...]
+  roundhouse depot <submit|triage|run|status|outbox|approve|clarify|complete-exception|reevaluate-import|retry-triage|signal-condition|stop|resume|recover> [...]
   roundhouse migrate notion-depot <export.json> [--state-dir <directory>] [--config <projects.yaml>]
   roundhouse migrate state-to-postgres [--state-dir <directory>]`;
 }

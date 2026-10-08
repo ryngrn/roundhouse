@@ -14,6 +14,8 @@ export const executionPathKinds = Object.freeze([
   "herdr_command",
   "manual_rdc",
   "direct_local_shell",
+  "chatgpt_execution",
+  "manual_file_edits",
   "operator_reconciliation",
   "human_task",
   "other",
@@ -41,6 +43,10 @@ export const nativeProvenanceStages = Object.freeze([
   "delivery",
 ]);
 
+export const exceptionCompletionStates = Object.freeze(["Ready", "Review", "Blocked"]);
+const exceptionPathKinds = new Set(["manual_rdc", "direct_local_shell", "chatgpt_execution", "manual_file_edits",
+  "operator_reconciliation", "other"]);
+
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const object = (value) => value && typeof value === "object" && !Array.isArray(value);
 const validDate = (value) => nonempty(value) && !Number.isNaN(Date.parse(value));
@@ -52,6 +58,41 @@ function validateEvidenceLinks(value, label) {
     if (link.label !== undefined && !nonempty(link.label)) throw new Error(`${label}[${index}].label must be nonempty when supplied.`);
     if (link.kind !== undefined && !nonempty(link.kind)) throw new Error(`${label}[${index}].kind must be nonempty when supplied.`);
   }
+}
+
+export function validateExceptionCompletion(value) {
+  if (!object(value)) throw new Error("Exception completion must be an object.");
+  value = structuredClone(value);
+  if (!nonempty(value.annotation_id)) throw new Error("Exception completion requires a stable annotation_id.");
+  if (!nonempty(value.actor)) throw new Error("Exception completion requires an actor.");
+  if (!validDate(value.recorded_at)) throw new Error("Exception completion recorded_at must be an ISO timestamp.");
+  if (typeof value.expected !== "boolean") throw new Error("Exception completion must record whether the bypass was expected or authorized.");
+  if (!object(value.reason) || !executionExceptionReasons.includes(value.reason.code) || !nonempty(value.reason.note)) {
+    throw new Error("Exception completion requires a structured reason code and freeform note.");
+  }
+  if (!Array.isArray(value.execution_path) || value.execution_path.length === 0) {
+    throw new Error("Exception completion requires the actual execution path.");
+  }
+  for (const [index, component] of value.execution_path.entries()) {
+    if (!object(component) || !executionPathKinds.includes(component.kind)) throw new Error(`Exception completion execution_path[${index}] is unsupported.`);
+    if (!exceptionPathKinds.has(component.kind)) {
+      throw new Error("Exception completion path must identify an out-of-band, manual, or reconciliation path.");
+    }
+    for (const field of ["provider", "runtime", "machine", "detail"]) {
+      if (component[field] !== undefined && !nonempty(component[field])) throw new Error(`Exception completion execution_path[${index}].${field} must be nonempty when supplied.`);
+    }
+    if (component.evidence_links !== undefined) validateEvidenceLinks(component.evidence_links, `Exception completion execution_path[${index}].evidence_links`);
+  }
+  validateEvidenceLinks(value.evidence_links, "Exception completion evidence_links");
+  if (value.evidence_links.length === 0) throw new Error("Exception completion requires at least one durable evidence link.");
+  if (!Number.isInteger(value.human_intervention_count) || value.human_intervention_count < 1) {
+    throw new Error("Exception completion human_intervention_count must be a positive integer.");
+  }
+  value.human_minutes ??= null;
+  if (value.human_minutes !== null && (!Number.isFinite(value.human_minutes) || value.human_minutes < 0)) {
+    throw new Error("Exception completion human_minutes must be null or a nonnegative number.");
+  }
+  return value;
 }
 
 function validateProvenance(provenance, classification) {
@@ -206,7 +247,7 @@ export function deriveExecutionOutcome(job, item, { recordedBy = "roundhouse" } 
     || job.recovery?.status === "confirmed";
   const successful = job.state === "Shipped";
   const recordedAt = shipping?.timestamp ?? humanCompletion?.completed_at ?? job.reconciliation?.confirmed_at
-    ?? attempt?.finished_at ?? job.updated_at;
+    ?? exception?.recorded_at ?? attempt?.finished_at ?? job.updated_at;
   if (!validDate(recordedAt)) return null;
 
   const provenance = {};
@@ -257,8 +298,9 @@ export function deriveExecutionOutcome(job, item, { recordedBy = "roundhouse" } 
     classification = "native_success";
   } else return null;
 
-  return validateExecutionOutcome({ schema_version: 1, classification, recorded_at: recordedAt, recorded_by: recordedBy,
+  const exceptionLinks = Array.isArray(exception?.evidence_links) ? exception.evidence_links : [];
+  return validateExecutionOutcome({ schema_version: 1, classification, recorded_at: recordedAt, recorded_by: exception?.actor ?? recordedBy,
     historical_import: false, execution_path: path, provenance, reason, exception_expected: expected,
     human_intervention_required: interventions > 0, human_intervention_count: interventions, human_minutes: humanMinutes,
-    evidence_links: Object.values(provenance).flatMap((entry) => entry.evidence_links) }, { job });
+    evidence_links: [...Object.values(provenance).flatMap((entry) => entry.evidence_links), ...structuredClone(exceptionLinks)] }, { job });
 }

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { deriveExecutionOutcome, executionOutcomeMetricStatus, nativeProvenanceStages, validateExecutionOutcome } from "../src/workflow/execution-outcome.js";
 import { Store } from "../src/workflow/store.js";
+import { Engine } from "../src/workflow/engine.js";
 
 const at = "2026-10-08T12:00:00.000Z";
 const evidence = (stage) => ({ recorded_at: at, evidence_links: [{ kind: "state", uri: `roundhouse://job/job-1/${stage}` }] });
@@ -82,6 +83,51 @@ test("execution outcome: local authoritative writes enforce the contract and pre
   assert.equal(store.read().jobs.legacy.execution_outcome, undefined);
   store.change((data) => { data.jobs.legacy.execution_outcome = native(); });
   assert.equal(store.read().jobs.legacy.execution_outcome.classification, "native_success");
+});
+
+test("exception completion annotation is evidenced, auditable, revision guarded, and idempotent", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-exception-completion-"));
+  const store = new Store(directory);
+  store.change((data) => {
+    data.items.item = { id: "item", state: "Ready", revision: 1, created_at: at, updated_at: at,
+      input: { text: "Finish the native-app task" }, job_ids: ["job"], history: [] };
+    data.jobs.job = { id: "job", parent_id: "item", project_id: "project", state: "Blocked", revision: 4,
+      created_at: at, updated_at: at, work: { title: "Finish it" }, attempts: [],
+      history: [{ from: "Ready", to: "Blocked", at, reason: "Worker lacks native-app control." }] };
+    data.jobs.job.execution_outcome = deriveExecutionOutcome(data.jobs.job, data.items.item);
+  });
+  const engine = new Engine({ store, config: { projects: [], execution: {} } });
+  const annotation = {
+    annotation_id: "rdc-finish-1", actor: "operator", expected: false,
+    reason: { code: "missing_capability", note: "RDC was required to operate the native application." },
+    execution_path: [{ kind: "manual_rdc", machine: "studio", detail: "Completed the native-app step." }],
+    evidence_links: [{ kind: "screenshot", uri: "roundhouse://evidence/rdc-finish-1", label: "Completion screenshot" }],
+    human_intervention_count: 2, human_minutes: 8,
+  };
+
+  assert.throws(() => engine.annotateExceptionCompletion("missing", 1, annotation), /existing job/);
+  assert.throws(() => engine.annotateExceptionCompletion("job", 3, annotation), /current job revision/);
+  assert.throws(() => engine.annotateExceptionCompletion("job", 4, { ...annotation, evidence_links: [] }), /durable evidence link/);
+  assert.equal(store.read().jobs.job.state, "Blocked", "insufficient evidence leaves the unsuccessful lifecycle unchanged");
+  assert.equal(store.read().jobs.job.execution_outcome.classification, "failed_or_abandoned");
+
+  const completed = engine.annotateExceptionCompletion("job", 4, annotation);
+  assert.equal(completed.state, "Shipped");
+  assert.equal(completed.execution_outcome.classification, "exception_success");
+  assert.equal(completed.execution_outcome.exception_expected, false);
+  assert.equal(completed.execution_outcome.execution_path[0].kind, "manual_rdc");
+  assert.equal(completed.execution_outcome.human_intervention_count, 2);
+  assert.equal(completed.execution_outcome.evidence_links.some((entry) => entry.uri === annotation.evidence_links[0].uri), true);
+  assert.equal(completed.execution_outcome.provenance.executor_ownership, undefined,
+    "manual completion does not manufacture native executor provenance");
+  assert.match(completed.history.at(-1).reason, /native provenance was not asserted/);
+  assert.equal(completed.shipping.policy, "exception_annotation");
+  assert.equal(completed.shipping.pushed, false);
+
+  const replay = engine.annotateExceptionCompletion("job", 4, annotation);
+  assert.equal(replay.revision, completed.revision, "retrying the same annotation does not append history");
+  assert.equal(replay.history.length, completed.history.length);
+  assert.throws(() => engine.annotateExceptionCompletion("job", 4, { ...annotation, human_minutes: 9 }), /different exception completion data/);
 });
 
 function lifecycle({ runtime = "local", executor = "codex", state = "Shipped" } = {}) {
