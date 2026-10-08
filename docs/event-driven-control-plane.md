@@ -12,6 +12,11 @@ nudge to inspect the Aiven command queue and authoritative local state. Duplicat
 the one startup cycle or an authenticated dashboard overview read, and the durable
 command remains safe to retry.
 
+The engine process owns the wake subscription, remote-command claim, and projection
+publish lifecycle. The former standalone `io.roundhouse.relay-watch` LaunchAgent
+must remain unloaded so two publishers cannot overwrite one another with different
+projection generations.
+
 Roundhouse does not poll Aiven by default. The worker runs once at startup,
 after a local mutation, or after a wake message. Browser status is read once on open
 and on explicit refresh or foreground lifecycle events. The macOS menu polls the
