@@ -6,14 +6,17 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { harness } from "./support/harness.js";
 import { Store } from "../src/workflow/store.js";
 import { RoundhouseService } from "../src/workflow/service.js";
-import { startMcpHttpServer } from "../src/mcp/http-server.js";
+import { startRoundhouseServer } from "../src/server/app-server.js";
+import { WorkerLoop } from "../src/server/worker.js";
 import { roundhouseToolCatalog } from "../src/mcp/server.js";
 
 async function connected(h) {
   const service = new RoundhouseService({ store: h.store, engine: h.engine });
-  const running = await startMcpHttpServer({ service, port: 0 });
+  const worker = new WorkerLoop({ service });
+  worker.wake = async () => {};
+  const running = await startRoundhouseServer({ service, worker, port: 0, autoStartWorker: false });
   const client = new Client({ name: "roundhouse-test", version: "1.0.0" });
-  await client.connect(new StreamableHTTPClientTransport(new URL(running.url)));
+  await client.connect(new StreamableHTTPClientTransport(new URL("/mcp", running.url)));
   return { client, running };
 }
 

@@ -51,6 +51,12 @@ export function normalizeIntake(input, adapter = {}) {
   }
   if (input.metadata !== undefined && (!input.metadata || typeof input.metadata !== "object" || Array.isArray(input.metadata))) throw new Error("metadata must be an object.");
   if (input.metadata !== undefined && jsonSize(input.metadata) > 100_000) throw new Error("metadata exceeds 100,000 encoded bytes.");
+  if (input.conversation !== undefined) {
+    if (!input.conversation || typeof input.conversation !== "object" || Array.isArray(input.conversation)) throw new Error("conversation must be an object.");
+    if (!nonempty(input.conversation.link) || input.conversation.link.length > 2_048) throw new Error("conversation.link must be a nonempty string of at most 2,048 characters.");
+    if (input.conversation.snapshot === undefined || jsonSize(input.conversation.snapshot) > 1_000_000) throw new Error("conversation.snapshot is required and must not exceed 1,000,000 encoded bytes.");
+    if (input.conversation.live_context !== undefined && jsonSize(input.conversation.live_context) > 1_000_000) throw new Error("conversation.live_context exceeds 1,000,000 encoded bytes.");
+  }
   if (input.idempotency_key !== undefined && (!nonempty(input.idempotency_key) || input.idempotency_key.length > 500)) throw new Error("idempotency_key must be a nonempty string of at most 500 characters.");
   return normalizeDepotIntake({
     content: input.content,
@@ -58,6 +64,7 @@ export function normalizeIntake(input, adapter = {}) {
     ...(input.context === undefined ? {} : { context: structuredClone(input.context) }),
     ...(input.attachments === undefined ? {} : { attachments: structuredClone(input.attachments) }),
     ...(input.metadata === undefined ? {} : { metadata: structuredClone(input.metadata) }),
+    ...(input.conversation === undefined ? {} : { conversation: structuredClone(input.conversation) }),
   }, adapter);
 }
 
@@ -198,6 +205,28 @@ export class RoundhouseService {
   async explodeJob({ id, expected_revision, actor = "local-user", note = "Operator removed a blocked job." }) {
     if (!this.engine) throw new Error("Roundhouse configuration is required to remove blocked work.");
     return await this.engine.explodeJob(id, { expectedRevision: expected_revision, actor, note });
+  }
+
+  resolveIssue({ issue_id, expected_revision, action, message, actor = "local-user" }) {
+    if (!nonempty(issue_id) || !Number.isInteger(expected_revision) || expected_revision < 1) throw new Error("Issue resolution requires an ID and current revision.");
+    if (!nonempty(action) || !nonempty(message) || message.length > 20_000) throw new Error("Issue resolution requires an action and concise response.");
+    return this.store.change((data) => {
+      const entity = data.jobs?.[issue_id] ?? data.items?.[issue_id];
+      if (!entity || !["Blocked", "Needs Clarification"].includes(entity.state)) throw new Error("Only Blocked or Needs Clarification work can be resolved here.");
+      if (entity.revision !== expected_revision) throw new Error("Stale issue revision; review the latest state before answering.");
+      const prior = entity.issue_resolution;
+      entity.issue_resolution = { ...(prior ?? {}), status: "answered", response: { action, message, actor, at: new Date().toISOString() } };
+      data.system_metadata ??= {};
+      data.system_metadata.cleanup_metrics ??= { decisions: 0, deleted: 0, repurposed: 0, asked: 0, kept: 0,
+        work_released: 0, operator_answers: 0, operator_accepted: 0, invalidated: 0, deleted_recreated: 0,
+        repurposed_shipped: 0, decision_latency_ms: 0, decision_log: [] };
+      data.system_metadata.cleanup_metrics.operator_answers += 1;
+      if (action === "option") data.system_metadata.cleanup_metrics.operator_accepted += 1;
+      entity.revision += 1;
+      entity.updated_at = entity.issue_resolution.response.at;
+      entity.history.push({ from: entity.state, to: entity.state, reason: `Cleanup guidance recorded by ${actor}: ${message}`, at: entity.updated_at });
+      return { recorded: true, id: entity.id, revision: entity.revision, issue_resolution: entity.issue_resolution };
+    });
   }
 
   getStorageStatus() {

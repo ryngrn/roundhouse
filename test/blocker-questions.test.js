@@ -1,172 +1,153 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
-import http from "node:http";
-import {harness} from "./support/harness.js";
-import {Unblocker} from "../src/workflow/unblocker.js";
-import {diagnoseBlocker} from "../src/workflow/unblocker.js";
-import {statusView,needsHumanView,notificationView} from "../src/workflow/views.js";
-import {RoundhouseService} from "../src/workflow/service.js";
-import {startRoundhouseServer} from "../src/server/app-server.js";
-import {Store} from "../src/workflow/store.js";
+import { harness } from "./support/harness.js";
+import { RoundhouseService, normalizeIntake } from "../src/workflow/service.js";
+import { WorkerLoop } from "../src/server/worker.js";
 
-const pending=(h)=>Object.values(h.store.read().items).filter(item=>item.blocker_followup);
-async function setup() {
-  const h=harness();
-  const original=h.submit("Implement tested UI update");
-  await h.engine.runTriage();
-  const item=h.store.read().items[original.id];
-  const jobId=item.job_ids[0];
-  h.store.change(data=>{
-    const j=data.jobs[jobId];
-    j.attempts=[{
-      number:1,execution:{passed:true,exit_code:0},
-      verification:{passed:false,checks:[{id:"feature",passed:false,summary:"Feature did not pass"}]},
-    }];
-    h.store.move(data,j,"Blocked","Rework limit reached: Required verification failed.");
-    data.projects.example={...data.projects.example,blocked:true};
-  });
-  return {h,jobId,original};
+function blockStandalone(h, text) {
+  const item = h.submit(text, text);
+  h.store.change((data) => h.store.move(data, data.items[item.id], "Blocked", "Fixture needs cleanup."));
+  return item.id;
 }
-test("one root blocker creates one revision-guarded question visible in portal and MCP",async()=>{
-  const {h,jobId}=await setup();
-  const first=await h.engine.runUnblocker();
-  assert.equal(first.questions_created_count,1);
-  assert.equal(first.questions_created[0].original_id,jobId);
-  const snapshot=h.store.read();
-  assert.equal(snapshot.jobs[jobId].state,"Blocked");
-  const recovery=pending(h)[0];
-  assert.equal(recovery.state,"Needs Clarification");
-  assert.equal(recovery.questions.length,1);
-  assert.equal(recovery.questions[0].status,"open");
-  assert.equal(recovery.questions[0].kind,"clarification");
-  assert.match(recovery.questions[0].prompt,/fresh isolated repair/);
-  assert.equal(recovery.input.context.blocker_entity_id,jobId);
-  const web=statusView(snapshot).items.find(x=>x.id===recovery.id);
-  assert.equal(web.needs_you,true);
-  assert.equal(web.questions.length,1);
-  const chat=needsHumanView(snapshot).questions.find(x=>x.item_id===recovery.id);
-  assert.ok(chat);
-  assert.equal(chat.revision,1);
-  const notices=notificationView(snapshot).notifications;
-  assert.ok(notices.some(x=>x.item_id===recovery.id&&x.kind==="needs_you"));
-  const second=await h.engine.runUnblocker();
-  assert.equal(second.questions_created_count,0);
-  assert.equal(pending(h).length,1);
+
+test("cleanup agent permanently deletes low-value blocked work and keeps a concise tombstone", async () => {
+  const h = harness();
+  const id = blockStandalone(h, "cleanup delete obsolete experiment");
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup.action, "delete");
+  const state = h.store.read();
+  assert.equal(state.items[id], undefined);
+  const tombstone = state.system_metadata.cleanup_tombstones.at(-1);
+  assert.deepEqual({ id: tombstone.id, kind: tombstone.kind, confidence: tombstone.confidence }, { id, kind: "item", confidence: 0.91 });
+  assert.match(tombstone.reason, /obsolete/);
+  assert.equal(tombstone.original_request, undefined);
 });
 
-test("answer from web decision session is evaluated as a new repair; old failed attempt is never replayed",async(t)=>{
-  const {h,jobId}=await setup();
-  await h.engine.runUnblocker();
-  const repair=pending(h)[0];
-  const q=repair.questions[0];
-  const service=new RoundhouseService({store:h.store,engine:h.engine});
-  const running=await startRoundhouseServer({service,port:0,autoStartWorker:false,wakeSource:{start(){},stop(){}},remoteRelay:null});
-  t.after(()=>running.close());
-  const post=(route,payload)=>new Promise((resolve,reject)=>{
-    const target=new URL(route,running.url);
-    const req=http.request(target,{method:"POST",headers:{host:"roundhouse","content-type":"application/json"}},res=>{
-      let body="";res.on("data",x=>body+=x);res.on("end",()=>resolve({status:res.statusCode,body:JSON.parse(body)}));
-    });req.on("error",reject);req.end(JSON.stringify(payload));
-  });
-  const first=await post("/api/items/"+repair.id+"/decision-session",{
-    expected_item_revision:repair.revision,
-    answers:[{question_id:q.id,expected_revision:q.revision,answer:"Investigate failure and plan an isolated repair. Do not replay the old attempt."}],
-  });
-  assert.equal(first.status,200,JSON.stringify(first.body));
-  const newState=h.store.read();
-  const changed=newState.items[repair.id];
-  assert.ok(["Ready","Needs Clarification","Review","Blocked"].includes(changed.state));
-  assert.equal(changed.questions[0].status,"answered");
-  assert.equal(newState.jobs[jobId].state,"Blocked");
-  assert.equal(newState.jobs[jobId].attempts.length,1);
-  assert.equal(newState.projects.example.blocked,true,
-    "An answer may authorize a new evaluated repair, not clear the original project quarantine.");
-  assert.equal(changed.clarifications[0].text,"Investigate failure and plan an isolated repair. Do not replay the old attempt.");
-  const again=await post("/api/items/"+repair.id+"/decision-session",{
-    expected_item_revision:repair.revision,
-    answers:[{question_id:q.id,expected_revision:q.revision,answer:"Replay it."}],
-  });
-  assert.notEqual(again.status,200);
-  assert.equal(new Store(h.store.directory).read().jobs[jobId].attempts.length,1);
-});
-
-test("multiple dependent Ready jobs do not generate duplicate questions",async()=>{
-  const {h,jobId}=await setup();
-  h.submit("Next dependent update");
+test("deleting a blocked prerequisite preserves dependent identity and records crossed-out scope", async () => {
+  const h = harness();
+  const first = h.submit("cleanup delete obsolete prerequisite", "cleanup-prerequisite");
+  const second = h.submit("still useful dependent", "cleanup-dependent");
   await h.engine.runTriage();
-  const depend=Object.values(h.store.read().jobs).find(x=>x.id!==jobId);
-  h.store.change(d=>{d.jobs[depend.id].dependencies=[jobId];});
-  const result=await h.engine.runUnblocker();
-  assert.equal(result.questions_created_count,1);
-  assert.equal(pending(h).length,1);
-  assert.equal(h.store.read().jobs[depend.id].state,"Ready");
-});
-
-test("root remote outcomes produce a single evidence question without claiming success",async()=>{
-  const h=harness();
-  const item=h.submit("Repair Kubuntu iMac screen adapter");
   await h.engine.runTriage();
-  const job=h.store.read().jobs[h.store.read().items[item.id].job_ids[0]];
-  h.config.projects[0].runtime="herdr";
-  h.store.change(d=>{
-    const j=d.jobs[job.id];
-    j.attempts=[{number:1,execution:{remote_execution:{machine_selector:"iMac"}}}];
-    h.store.move(d,j,"Blocked","Machine-local Herdr outcome requires explicit reconciliation and will not be replayed automatically.");
+  const snapshot = h.store.read();
+  const blockedId = snapshot.items[first.id].job_ids[0];
+  const dependentId = snapshot.items[second.id].job_ids[0];
+  h.store.change((data) => {
+    data.jobs[dependentId].dependencies = [blockedId];
+    h.store.move(data, data.jobs[blockedId], "Blocked", "Fixture needs cleanup.");
+    data.projects.example = { ...(data.projects.example ?? {}), blocked: true };
   });
-  const result=await new Unblocker({store:h.store,config:h.config}).run();
-  assert.equal(result.questions_created_count,1);
-  const question=pending(h)[0].questions[0].prompt;
-  assert.match(question,/verified commit\/branch/);
-  assert.match(question,/No replay/);
-  assert.equal(h.store.read().jobs[job.id].state,"Blocked");
-  assert.equal(h.store.read().jobs[job.id].shipping,undefined);
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup.action, "delete");
+  const state = h.store.read();
+  assert.equal(state.jobs[blockedId], undefined);
+  assert.ok(state.jobs[dependentId]);
+  assert.deepEqual(state.jobs[dependentId].dependencies, []);
+  assert.equal(state.jobs[dependentId].scope_revision.source, "roundhouse-unblocker");
+  assert.match(state.jobs[dependentId].scope_revision.removed_scope[0], new RegExp(blockedId));
 });
 
-test("blocked recovery follow-ups never recursively spawn more follow-ups",async()=>{
-  const {h}=await setup();
-  await h.engine.runUnblocker();
-  const repair=pending(h)[0];
-  h.store.change(d=>{h.store.move(d,d.items[repair.id],"Blocked","Recovery decision could not be evaluated.");});
-  const subsequent=await h.engine.runUnblocker();
-  assert.equal(subsequent.questions_created_count,0);
-  assert.equal(pending(h).length,1);
+test("below 70 percent cleanup asks two contextual choices plus a free-form third path", async () => {
+  const h = harness();
+  const id = blockStandalone(h, "cleanup ask ambiguous old idea");
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup.action, "ask");
+  const issue = h.store.read().items[id].issue_resolution;
+  assert.ok(issue.confidence < 0.7);
+  assert.equal(issue.model_confidence, 0.55);
+  assert.equal(issue.options.length, 3);
+  assert.equal(issue.options[2].label, "Take my own path");
+  assert.match(issue.question, /preserve|delete/i);
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const answer = service.resolveIssue({ issue_id: id, expected_revision: h.store.read().items[id].revision,
+    action: "custom", message: "Keep only the reporting outcome.", actor: "ryan" });
+  assert.equal(answer.recorded, true);
+  assert.equal(h.store.read().items[id].issue_resolution.response.message, "Keep only the reporting outcome.");
+  assert.equal(h.store.read().system_metadata.cleanup_metrics.operator_answers, 1);
 });
 
-test("at most three new questions per pass; no file-store writes on fully idle repeat",async()=>{
-  const {h}=await setup();
-  const original=h.store.read().jobs;
-  const firstJob=Object.values(original)[0];
-  h.store.change(d=>{
-    for(let i=1;i<=5;i++){
-      const id="blocked-extra-"+i;
-      d.jobs[id]={...structuredClone(d.jobs[firstJob.id]),id,parent_id:firstJob.parent_id,revision:1,
-        attempts:[{number:1,execution:{remote_execution:{machine_selector:"iMac"}}}],
-        history:[{from:"Executing",to:"Blocked",reason:"Uncertain machine-local Herdr outcome.",at:new Date().toISOString()}],
-        state:"Blocked"};
-    }
-  });
-  const a=await h.engine.runUnblocker();assert.equal(a.questions_created_count,3);
-  const b=await h.engine.runUnblocker();assert.equal(b.questions_created_count,3);
-  const file=path.join(h.store.directory,"state.json");
-  const before=fs.readFileSync(file);
-  const c=await h.engine.runUnblocker();
-  const after=fs.readFileSync(file);
-  assert.equal(c.questions_created_count,0);
-  assert.deepEqual(before,after);
+test("intake preserves an immutable transcript snapshot and live conversation context", () => {
+  const conversation = { link: "chatgpt://conversation/example", snapshot: { captured_at: "2026-10-08T00:00:00Z",
+    messages: [{ role: "user", text: "Make sense of this request." }] }, live_context: { updated_at: "2026-10-08T01:00:00Z", messages: [] } };
+  const normalized = normalizeIntake({ content: "Use the conversation", conversation }, { source: "chatgpt", actor: "ryan" });
+  assert.deepEqual(normalized.conversation, conversation);
+  conversation.snapshot.messages[0].text = "mutated";
+  assert.equal(normalized.conversation.snapshot.messages[0].text, "Make sense of this request.");
 });
 
+test("worker accepts hosted issue_resolution commands", async () => {
+  const calls = [];
+  const commands = [{ id: "resolution-1", kind: "issue_resolution", payload: { issue_id: "blocked-1", expected_revision: 2,
+    action: "custom", message: "Take a smaller path." } }];
+  const queue = { claimRemoteCommand: async () => commands.shift() ?? null,
+    finishRemoteCommand: async (id, result) => calls.push({ id, result }) };
+  const service = { resolveIssue: (input) => { calls.push(input); return { recorded: true }; } };
+  const worker = new WorkerLoop({ service, commandQueue: queue });
+  const result = await worker.remoteCommandTick();
+  assert.equal(result.remote_commands, 1);
+  assert.equal(calls[0].issue_id, "blocked-1");
+  assert.equal(calls[0].actor, "ryan");
+});
 
-test("a repeated already-answered decision does not generate a second human question", async()=>{
-  const h=harness();
-  const i=h.submit("already answered decision");
-  h.store.change(d=>{
-    d.items[i.id].questions=[{id:"question-old",revision:2,status:"answered",decision_key:"fixture:resolved",kind:"clarification",prompt:"Resolved decision"}];
-    h.store.move(d,d.items[i.id],"Blocked","Decision provider repeated already resolved decision fixture:resolved.");
+test("cleanup never evaluates work outside Blocked or Needs Clarification", async () => {
+  const h = harness();
+  const item = h.submit("cleanup delete ready work must remain", "cleanup-boundary");
+  await h.engine.runTriage();
+  const before = h.store.read();
+  const jobId = before.items[item.id].job_ids[0];
+  assert.equal(before.jobs[jobId].state, "Ready");
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup, null);
+  const after = h.store.read();
+  assert.ok(after.items[item.id]);
+  assert.equal(after.jobs[jobId].state, "Ready");
+});
+
+test("cleanup ranks a bottleneck ahead of an unrelated older blocked record", async () => {
+  const h = harness();
+  blockStandalone(h, "cleanup delete unrelated old record");
+  const first = h.submit("cleanup delete high-impact prerequisite", "rank-prerequisite");
+  const second = h.submit("useful dependent", "rank-dependent");
+  await h.engine.runTriage(); await h.engine.runTriage(); await h.engine.runTriage();
+  const before = h.store.read();
+  const prerequisite = before.items[first.id].job_ids[0];
+  const dependent = before.items[second.id].job_ids[0];
+  h.store.change((data) => {
+    data.jobs[dependent].dependencies = [prerequisite];
+    h.store.move(data, data.jobs[prerequisite], "Blocked", "Fixture needs cleanup.");
   });
-  const r=await h.engine.runUnblocker();
-  assert.equal(r.questions_created_count,0);
-  assert.equal(pending(h).length,0);
-  assert.equal(h.store.read().items[i.id].state,"Blocked");
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup.action, "delete");
+  assert.equal(result.cleanup.tombstone.id, prerequisite);
+  assert.equal(h.store.read().system_metadata.cleanup_metrics.work_released, 1);
+});
+
+test("cleanup refuses a stale model result when the candidate revision changes", async () => {
+  const h = harness();
+  const id = blockStandalone(h, "cleanup delete concurrent record");
+  const original = h.engine.decision.decideCleanup.bind(h.engine.decision);
+  h.engine.decision.decideCleanup = async (input) => {
+    const decision = await original(input);
+    h.store.change((data) => {
+      data.items[id].revision += 1;
+      data.items[id].history.push({ from: "Blocked", to: "Blocked", reason: "Concurrent evidence arrived.", at: new Date().toISOString() });
+    });
+    return decision;
+  };
+  await assert.rejects(() => h.engine.runUnblocker(), /changed|reevaluation/i);
+  assert.ok(h.store.read().items[id]);
+  assert.equal(h.store.read().system_metadata.cleanup_metrics.invalidated, 1);
+});
+
+test("a kept blocker is reconsidered only after its evidence changes", async () => {
+  const h = harness();
+  const id = blockStandalone(h, "keep this blocked fixture");
+  const first = await h.engine.runUnblocker();
+  assert.equal(first.cleanup.action, "keep");
+  assert.equal((await h.engine.runUnblocker()).cleanup, null);
+  h.store.change((data) => {
+    data.items[id].issue_resolution = { ...data.items[id].issue_resolution,
+      response: { action: "custom", message: "New intent", actor: "test", at: new Date().toISOString() } };
+  });
+  assert.equal((await h.engine.runUnblocker()).cleanup.action, "keep");
 });

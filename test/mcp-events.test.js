@@ -7,7 +7,7 @@ import { harness } from "./support/harness.js";
 import { Store } from "../src/workflow/store.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { MCP_PROTOCOL_VERSION, McpEventBroker, WORK_EVENT_NAME } from "../src/mcp/events.js";
-import { startMcpHttpServer } from "../src/mcp/http-server.js";
+import { startRoundhouseServer } from "../src/server/app-server.js";
 
 const envelope = {
   "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,
@@ -74,20 +74,20 @@ test("MCP Events: discover, list, durable subscription, signed delivery, dedupe,
     (error) => error.data?.reason === "callback_address_not_public",
   );
   let broker = new McpEventBroker({ service, allowInsecureLoopback: true, retryDelaysMs: [0], timeoutMs: 2_000 });
-  let running = await startMcpHttpServer({ service, eventBroker: broker, port: 0 });
+  let running = await startRoundhouseServer({ service, eventBroker: broker, port: 0, autoStartWorker: false });
   t.after(async () => { if (running) await running.close(); });
 
-  const discovered = await rpc(running.url, 1, "server/discover");
+  const discovered = await rpc(new URL("/mcp", running.url), 1, "server/discover");
   assert.deepEqual(discovered.result.supportedVersions, [MCP_PROTOCOL_VERSION]);
   assert.deepEqual(discovered.result.capabilities, { tools: {}, events: {} });
   assert.equal(discovered.result.resultType, "complete");
   assert.equal(discovered.result._meta["io.modelcontextprotocol/serverInfo"].name, "roundhouse-depot");
 
-  const tools = await rpc(running.url, "tools", "tools/list");
+  const tools = await rpc(new URL("/mcp", running.url), "tools", "tools/list");
   assert.deepEqual(tools.result.tools.map((tool) => tool.name).sort(), ["add_to_depot", "answer_question", "get_needs_human", "get_work_status"]);
   assert.equal(tools.result.tools.find((tool) => tool.name === "add_to_depot").inputSchema.additionalProperties, false);
 
-  const listed = await rpc(running.url, 2, "events/list");
+  const listed = await rpc(new URL("/mcp", running.url), 2, "events/list");
   assert.deepEqual(listed.result.events.map((event) => event.name), [WORK_EVENT_NAME]);
   assert.deepEqual(listed.result.events[0].delivery, ["webhook"]);
 
@@ -97,7 +97,7 @@ test("MCP Events: discover, list, durable subscription, signed delivery, dedupe,
     delivery: { mode: "webhook", url: receiver.url, secret },
     cursor: null,
   };
-  const subscribed = await rpc(running.url, 3, "events/subscribe", subscriptionParams);
+  const subscribed = await rpc(new URL("/mcp", running.url), 3, "events/subscribe", subscriptionParams);
   assert.match(subscribed.result.id, /^sub_[a-f0-9]{32}$/);
   assert.equal(subscribed.result.cursor, null);
   assert.equal(subscribed.result.truncated, false);
@@ -109,7 +109,7 @@ test("MCP Events: discover, list, durable subscription, signed delivery, dedupe,
   running = null;
   const restartedService = new RoundhouseService({ store: new Store(h.store.directory), engine: h.engine });
   broker = new McpEventBroker({ service: restartedService, allowInsecureLoopback: true, retryDelaysMs: [0], timeoutMs: 2_000 });
-  running = await startMcpHttpServer({ service: restartedService, eventBroker: broker, port: 0 });
+  running = await startRoundhouseServer({ service: restartedService, eventBroker: broker, port: 0, autoStartWorker: false });
   assert.equal(new Store(h.store.directory).read().mcp_events.subscriptions[subscribed.result.id].active, true);
 
   await h.engine.decide(item.id);
@@ -132,7 +132,7 @@ test("MCP Events: discover, list, durable subscription, signed delivery, dedupe,
   assert.equal(deliveries[0].status, "delivered");
   assert.equal(deliveries[0].attempts, 2);
 
-  const unsubscribed = await rpc(running.url, 4, "events/unsubscribe", {
+  const unsubscribed = await rpc(new URL("/mcp", running.url), 4, "events/unsubscribe", {
     name: WORK_EVENT_NAME,
     arguments: { item_id: item.id },
     delivery: { mode: "webhook", url: receiver.url },

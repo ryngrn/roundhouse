@@ -61,16 +61,16 @@ npm run demo -- --live
 
 `npm run acceptance` is the safe deterministic QA harness for the complete
 Roundhouse flow. It uses temporary state, temporary repositories, fixture
-deployment, and real browser/API paths without touching normal local Roundhouse
-state or real project data. `npm run acceptance:live` additionally tries the real
+deployment, and real API paths without touching normal local Roundhouse state or
+real project data. `npm run acceptance:live` additionally tries the real
 local Codex executor against a disposable repository and reports an explicit skip
 when Codex is unavailable.
 
 ## Use a real project
 
 Start from [the autonomy configuration](config/autonomy.example.yaml), saved outside
-your repository, or use the control room's validated private configuration editor.
-Configure its repository, context, checks, and delivery policy. The installed
+your repository, and configure its repository, context, checks, and delivery policy.
+The installed
 background worker runs on startup, local mutations, and disposable wake messages
 rather than polling PostgreSQL. CLI operation
 remains available:
@@ -111,12 +111,10 @@ verification and delivery ownership. PR creation and merging remain extension
 points. Deployment is available through
 the fixture provider for proof and a configurable command provider for real systems.
 
-## Earlier interfaces
+## Retired interfaces
 
-`capture` remains a local Intake/Brief prototype, using
-`config/intake-projects.example.yaml` and `config/intake.example.json`. It does not
-execute or approve work.
-
-The original Notion/RDC `dispatch` prototype is retired and no longer exposed by
-the Roundhouse CLI. There is no supported Notion pickup, status write-back, or
-bidirectional sync path.
+The original local `capture`, Notion/RDC `dispatch`, standalone MCP server, and
+loopback browser control room have been removed. Depot intake is the only supported
+intake path, the combined engine owns `/mcp`, and browser use goes through the hosted
+dashboard. There is no supported Notion pickup, status write-back, or bidirectional
+sync path.
