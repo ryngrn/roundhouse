@@ -113,8 +113,8 @@ test("Herdr placement evidence preserves Roundhouse policy authority and validat
   const job = { work: { required_capabilities: ["repository", "visual-review"] } };
   const requirements = herdrPlacementRequirements(project, job);
   assert.deepEqual(requirements.capabilities, ["repository", "visual-review", "browser"]);
-  const selected = { machine: "Studio-iMac", platform: "macos", tool: "claude", agent: "general-worker",
-    capabilities: ["repository", "visual-review", "browser"] };
+  const selected = { runtime: "herdr", machine: "Studio-iMac", platform: "macos", tool: "claude", agent: "general-worker",
+    capabilities: ["repository", "visual-review", "browser"], available: true };
   const evidence = validateHerdrPlacement({ requirements, eligible: [selected], selection: selected,
     rationale: "Machine advertises every required capability.", source: "herdr_scheduler", observed_at: "2026-10-08T00:00:00.000Z" });
   assert.deepEqual(evidence.authority, { control_plane: "roundhouse", placement: "herdr" });
@@ -127,6 +127,9 @@ test("Herdr placement evidence preserves Roundhouse policy authority and validat
   assert.throws(() => validateHerdrPlacement({ requirements, eligible: [{ ...selected, capabilities: [] }], selection: selected,
     rationale: "Selection claimed capabilities the machine did not advertise.", source: "herdr_scheduler" }),
   /capabilities must match its eligible advertisement/);
+  assert.throws(() => validateHerdrPlacement({ requirements, eligible: [{ ...selected, runtime: "local" }],
+    selection: { ...selected, runtime: "local" }, rationale: "Wrong runtime.", source: "herdr_scheduler" }),
+  /outside Roundhouse project policy/);
 });
 
 test("static Herdr projects adapt to placement evidence and unavailable placement records a precise hold", () => {
@@ -139,6 +142,11 @@ test("static Herdr projects adapt to placement evidence and unavailable placemen
   assert.equal(evidence.selection.source, "static_project_config");
   const held = validateHerdrPlacement({ requirements: evidence.requirements, eligible: [], observed_at: "2026-10-08T00:00:00.000Z" });
   assert.deepEqual(held.hold, { code: "missing_capability", reason: "No eligible Herdr placement advertises: local.", missing_capabilities: ["local"] });
+  const unavailable = validateHerdrPlacement({ requirements: evidence.requirements,
+    eligible: [{ runtime: "herdr", machine: "iMac", platform: "herdr", tool: "codex", agent: "roundhouse-imac",
+      capabilities: ["local"], available: false }], observed_at: "2026-10-08T00:00:00.000Z" });
+  assert.deepEqual(unavailable.hold, { code: "placement_unavailable",
+    reason: "No configured Herdr placement is currently available.", missing_capabilities: [] });
 });
 
 test("Herdr placement configuration is operator-owned and remains compatible with static machine and agent fields", () => {
@@ -147,6 +155,10 @@ test("Herdr placement configuration is operator-owned and remains compatible wit
     herdr: { machine: "Studio-iMac", agent: "worker", placement: { machine_selectors: ["Studio-iMac"],
       platforms: ["macos"], tools: ["claude"], agents: ["worker"], capabilities: ["browser"] } } }), path.join(root, "placement.yaml"));
   assert.deepEqual(config.projects[0].herdr.placement.platforms, ["macos"]);
+  const dynamic = validateWorkflowConfig(manifest(root, { runtime: "herdr", executor: { kind: "claude" },
+    herdr: { placement: { machine_selectors: ["Studio-iMac"], platforms: ["macos"], tools: ["claude"],
+      agents: ["worker"], capabilities: ["browser"] } } }), path.join(root, "dynamic-placement.yaml"));
+  assert.equal(dynamic.projects[0].herdr.machine, undefined);
   assert.throws(() => validateWorkflowConfig(manifest(root, { runtime: "herdr", executor: { kind: "claude" },
     herdr: { machine: "Studio-iMac", agent: "worker", placement: { tools: ["codex"] } } }), path.join(root, "bad-placement.yaml")),
   /executor must satisfy herdr.placement.tools/);

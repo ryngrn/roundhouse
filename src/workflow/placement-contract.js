@@ -19,6 +19,12 @@ function uniqueNames(value, label) {
   return value.map((entry) => entry.trim());
 }
 
+function timestamp(value, label) {
+  const normalized = nonempty(value, label);
+  if (Number.isNaN(Date.parse(normalized))) throw new Error(`${label} must be an ISO timestamp.`);
+  return normalized;
+}
+
 /**
  * Placement requirements are derived only from approved project/work policy.
  * Intake labels are deliberately not accepted by this boundary.
@@ -29,6 +35,7 @@ export function herdrPlacementRequirements(project, job = null) {
   const workCapabilities = job?.work?.required_capabilities ?? [];
   return {
     authority: "roundhouse",
+    runtime: "herdr",
     machine_selectors: configured.machine_selectors?.length
       ? uniqueNames(configured.machine_selectors, "Herdr placement machine_selectors")
       : [nonempty(project.herdr.machine, "Herdr machine selector")],
@@ -46,22 +53,31 @@ export function herdrPlacementRequirements(project, job = null) {
 function target(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object.`);
   return {
+    runtime: nonempty(value.runtime, `${label}.runtime`),
     machine: nonempty(value.machine, `${label}.machine`),
     platform: nonempty(value.platform, `${label}.platform`),
     tool: nonempty(value.tool, `${label}.tool`),
     agent: nonempty(value.agent, `${label}.agent`),
     capabilities: uniqueIdentifiers(value.capabilities ?? [], `${label}.capabilities`),
-    available: value.available !== false,
+    available: value.available === true,
   };
 }
 
 export function herdrPlacementHold(requirements, eligible, reason = null) {
-  const advertised = new Set(eligible.flatMap((entry) => entry.capabilities));
+  const bounded = eligible.filter((entry) => entry.runtime === requirements.runtime
+    && requirements.machine_selectors.includes(entry.machine) && requirements.platforms.includes(entry.platform)
+    && requirements.tools.includes(entry.tool) && requirements.agents.includes(entry.agent));
+  const advertised = new Set(bounded.flatMap((entry) => entry.capabilities));
   const missing = requirements.capabilities.filter((capability) => !advertised.has(capability));
+  const available = bounded.filter((entry) => entry.available);
+  const splitCapabilities = !missing.length && requirements.capabilities.length > 0
+    && available.length > 0
+    && !available.some((entry) => requirements.capabilities.every((capability) => entry.capabilities.includes(capability)));
   return {
-    code: missing.length ? "missing_capability" : "placement_unavailable",
+    code: missing.length || splitCapabilities ? "missing_capability" : "placement_unavailable",
     reason: reason ?? (missing.length
       ? `No eligible Herdr placement advertises: ${missing.join(", ")}.`
+      : splitCapabilities ? "No eligible Herdr placement advertises all required capabilities on one available target."
       : "No configured Herdr placement is currently available."),
     missing_capabilities: missing,
   };
@@ -69,15 +85,23 @@ export function herdrPlacementHold(requirements, eligible, reason = null) {
 
 /** Validate and bound Herdr's downstream placement result to Roundhouse policy. */
 export function validateHerdrPlacement({ requirements, eligible = [], selection = null, rationale = null,
-  source = "herdr", observed_at = new Date().toISOString() }) {
+  source = "herdr", observed_at = new Date().toISOString(), hold_reason = null }) {
   if (!requirements || requirements.authority !== "roundhouse") throw new Error("Herdr placement requires Roundhouse-owned requirements.");
+  if (requirements.runtime !== "herdr") throw new Error("Herdr placement requires the herdr runtime.");
+  if (!Array.isArray(eligible)) throw new Error("Herdr eligible placements must be an array.");
   const candidates = eligible.map((entry, index) => target(entry, `Herdr eligible placement ${index + 1}`));
+  const identities = candidates.map((entry) => [entry.runtime, entry.machine, entry.platform, entry.tool, entry.agent].join("\u0000"));
+  if (new Set(identities).size !== identities.length) throw new Error("Herdr eligible placements must have unique runtime, machine, platform, tool, and agent identities.");
+  const normalizedSource = nonempty(source, "Herdr placement source");
+  const observedAt = timestamp(observed_at, "Herdr placement observed_at");
+  const holdReason = hold_reason == null ? null : nonempty(hold_reason, "Herdr placement hold reason");
   if (!selection) return {
     authority: { control_plane: "roundhouse", placement: "herdr" }, requirements, eligible: candidates,
-    selection: null, hold: herdrPlacementHold(requirements, candidates), source, observed_at,
+    selection: null, hold: herdrPlacementHold(requirements, candidates, holdReason), source: normalizedSource, observed_at: observedAt,
   };
   const selected = target(selection, "Herdr selected placement");
-  const matching = candidates.find((entry) => entry.machine === selected.machine && entry.platform === selected.platform
+  const matching = candidates.find((entry) => entry.runtime === selected.runtime
+    && entry.machine === selected.machine && entry.platform === selected.platform
     && entry.tool === selected.tool && entry.agent === selected.agent);
   if (!matching) throw new Error("Herdr selected placement must be one of the eligible advertised placements.");
   if (!matching.available) throw new Error("Herdr selected placement is not currently available.");
@@ -86,7 +110,7 @@ export function validateHerdrPlacement({ requirements, eligible = [], selection 
     throw new Error("Herdr selected placement capabilities must match its eligible advertisement.");
   }
   const policyMismatch = [
-    requirements.machine_selectors.includes(selected.machine), requirements.platforms.includes(selected.platform),
+    selected.runtime === requirements.runtime, requirements.machine_selectors.includes(selected.machine), requirements.platforms.includes(selected.platform),
     requirements.tools.includes(selected.tool), requirements.agents.includes(selected.agent),
   ].some((matches) => !matches);
   if (policyMismatch) throw new Error("Herdr selected placement is outside Roundhouse project policy.");
@@ -97,10 +121,10 @@ export function validateHerdrPlacement({ requirements, eligible = [], selection 
   }
   return {
     authority: { control_plane: "roundhouse", placement: "herdr" }, requirements, eligible: candidates,
-    selection: { machine: selected.machine, platform: selected.platform, tool: selected.tool, agent: selected.agent,
+    selection: { runtime: selected.runtime, machine: selected.machine, platform: selected.platform, tool: selected.tool, agent: selected.agent,
       matched_capabilities: matchedCapabilities,
-      rationale: nonempty(rationale, "Herdr placement rationale"), source: nonempty(source, "Herdr placement source") },
-    hold: null, source, observed_at,
+      rationale: nonempty(rationale, "Herdr placement rationale"), source: normalizedSource },
+    hold: null, source: normalizedSource, observed_at: observedAt,
   };
 }
 
@@ -108,11 +132,13 @@ export function validateHerdrPlacement({ requirements, eligible = [], selection 
 export function staticHerdrPlacement(project, job = null, { observed_at = new Date().toISOString() } = {}) {
   const requirements = herdrPlacementRequirements(project, job);
   const selected = {
+    runtime: "herdr",
     machine: project.herdr.machine,
     platform: project.herdr.placement?.platforms?.[0] ?? "herdr",
     tool: project.executor.kind,
     agent: project.herdr.agent,
     capabilities: requirements.capabilities,
+    available: true,
   };
   return validateHerdrPlacement({ requirements, eligible: [selected], selection: selected,
     rationale: "Static project placement retained for compatibility; Herdr verifies availability before dispatch.",

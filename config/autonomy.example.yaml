@@ -79,10 +79,9 @@ projects:
   #   status: active
   #   runtime: herdr
   #   herdr:
-  #     machine: iMac
-  #     agent: roundhouse-imac
-  #     # Optional Roundhouse-owned placement bounds. Existing static machine
-  #     # and agent settings are adapted into the same durable evidence contract.
+  #     # Omit machine and agent to have Herdr explicitly select within these
+  #     # Roundhouse-owned bounds. Without placement, machine and agent are required
+  #     # and retain the compatible static selection behavior.
   #     placement:
   #       machine_selectors: [iMac]
   #       platforms: [macos]

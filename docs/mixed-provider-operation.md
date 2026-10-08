@@ -78,6 +78,12 @@ agent. Probe failures retain their precise phase and remote identity. Herdr neve
 falls back to local execution, and machine-local completion requires correlated
 commit, branch, configured-check, and push evidence from the remote agent.
 
+Projects with `herdr.placement` use Herdr's foreground `placement select --json`
+protocol before probing a selected machine. Roundhouse supplies the allowed runtime,
+machines, platforms, tools/agents, and required capabilities; it validates the full
+availability advertisement and durably records the choice before dispatch. Projects
+without `herdr.placement` retain the documented static machine/agent behavior.
+
 Model-agent prompts prefer GitHub and browser AXI interfaces where supported because
 they reduce tool traffic. Existing Git/GitHub CLI and Playwright/browser paths are
 bounded tool-level fallbacks when AXI is absent, unauthenticated, or lacks the needed

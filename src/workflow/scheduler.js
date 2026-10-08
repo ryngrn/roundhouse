@@ -109,7 +109,8 @@ export function executionReservation(project, job = null) {
   const machineLocal = project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
   const locks = repository && repositoryRequired ? [`repository:${repository}`] : [];
   if (project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local") {
-    locks.push(`remote-repository:${project.herdr.machine}:${project.herdr.working_directory}`);
+    const machineSelectors = project.herdr.placement?.machine_selectors ?? [project.herdr.machine];
+    for (const machine of machineSelectors) locks.push(`remote-repository:${machine}:${project.herdr.working_directory}`);
   }
   if (repository && repositoryRequired && project.policy?.shipping !== "commit_only") locks.push(`delivery:${repository}:${project.remote ?? "origin"}`);
   if (project.policy?.shipping === "deploy") {

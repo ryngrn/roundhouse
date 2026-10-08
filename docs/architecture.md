@@ -240,8 +240,8 @@ completion. Roundhouse owns verification and shipping. This supports wrapping
 another installed agent today without changing the engine. Commands must remain
 foreground and return when their work is done.
 
-`runtime: local` remains the default. Opt-in `runtime: herdr` requires an existing
-configured machine and agent. Shared-worktree mode keeps local verification and
+`runtime: local` remains the default. Opt-in `runtime: herdr` requires either an
+existing configured machine and agent or explicit placement bounds. Shared-worktree mode keeps local verification and
 delivery ownership. `machine_local` instead requires an absolute remote working
 directory and supports `commit_only` or `push_branch`: the remote agent runs the
 configured checks, commits the exact job branch, performs the authorized delivery,
@@ -252,6 +252,13 @@ filesystem is not locally visible. Herdr failures never fall back to local work.
 
 Roundhouse owns placement requirements and the job lifecycle; Herdr may select a
 machine, platform, and configured tool or agent only inside those requirements.
+When `herdr.placement` is configured, Roundhouse invokes `herdr placement select
+--json` before any machine probe or agent prompt. It sends a versioned JSON request
+on stdin containing the job/run IDs and Roundhouse-owned requirements. Herdr returns
+`eligible`, an optional `selection`, `rationale`, `source`, `observed_at`, and an
+optional hold reason. Every advertised target explicitly names `runtime`, `machine`,
+`platform`, `tool`, `agent`, `capabilities`, and `available`; Roundhouse rejects a
+selection unless it is an available advertised target satisfying every bound.
 Each Herdr attempt records the bounded requirements, eligible targets, selected
 target, matched capabilities, rationale, source, and any capability/availability
 hold before remote work begins. Request labels are not placement policy. Existing

@@ -924,13 +924,18 @@ export class Engine {
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
             previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id),
             onProviderStart,
+            onPlacement: (placement) => this.store.change((data) => {
+              const recorded = data.jobs[id].attempts.at(-1);
+              recorded.placement = structuredClone(placement);
+              recorded.run.placement = structuredClone(placement);
+            }),
             onRemoteStart: (remote_execution) => this.store.change((data) => {
               const j = data.jobs[id];
               j.attempts.at(-1).placement = structuredClone(remote_execution.placement);
               j.attempts.at(-1).run.placement = structuredClone(remote_execution.placement);
               j.attempts.at(-1).execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
               if (machineLocal) j.delivery_intent = { mode: "machine_local", working_directory: project.herdr.working_directory,
-                machine_selector: project.herdr.machine, agent_target: project.herdr.agent, branch: executionBranch(project, j),
+                machine_selector: remote_execution.machine_selector, agent_target: remote_execution.agent_target, branch: executionBranch(project, j),
                 policy: project.policy.shipping, report_token: remote_execution.report_token,
                 recorded_at: new Date().toISOString(), reconciliation: { required_on_interruption: true, status: "remote_execution" } };
             }) });
@@ -952,6 +957,10 @@ export class Engine {
               throw new Error(`Execution provider cannot change within attempt ${recorded.number}: selected ${recorded.provider_evidence?.selected?.id}, returned ${execution.provider.id}.`);
             }
             recorded.execution = execution;
+            if (execution.remote_execution?.placement) {
+              recorded.placement = structuredClone(execution.remote_execution.placement);
+              recorded.run.placement = structuredClone(execution.remote_execution.placement);
+            }
             if (execution.provider_probe) {
               recorded.provider_evidence.live_probe = structuredClone(execution.provider_probe);
               data.jobs[id].provider_evidence = structuredClone(recorded.provider_evidence);
@@ -960,6 +969,13 @@ export class Engine {
             recorded.status = execution.passed ? "executed" : "failed";
             recorded.run.status = recorded.status;
           });
+          const placementHold = execution.remote_execution?.placement?.hold;
+          if (!execution.passed && placementHold && ["placement_selection_failed", "placement_selection_invalid",
+            "missing_capability", "placement_unavailable"].includes(execution.remote_execution?.phase)) {
+            await this.block(id, placementHold.reason, { scope: "job", code: placementHold.code,
+              dependency: "eligible Herdr placement" });
+            return true;
+          }
           if (!execution.passed) throw new Error(execution.error ?? `Executor failed (exit ${execution.exit_code}).`);
           if (machineLocal) {
             const { verification, shipping } = machineLocalEvidence(project, providerJob, execution);

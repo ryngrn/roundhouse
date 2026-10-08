@@ -110,8 +110,11 @@ function normalizeProjects(raw, root, execution) {
     }
     if (runtime === "herdr") {
       check(plainObject(project.herdr), `Project ${project.id} requires herdr configuration.`);
-      check(nonempty(herdr.machine), `Project ${project.id} requires a nonempty herdr.machine selector.`);
-      check(nonempty(herdr.agent), `Project ${project.id} requires a nonempty herdr.agent target.`);
+      const dynamicPlacement = plainObject(herdr.placement);
+      check(nonempty(herdr.machine) || (dynamicPlacement && herdr.placement.machine_selectors?.length),
+        `Project ${project.id} requires herdr.machine or herdr.placement.machine_selectors.`);
+      check(nonempty(herdr.agent) || (dynamicPlacement && herdr.placement.agents?.length),
+        `Project ${project.id} requires herdr.agent or herdr.placement.agents.`);
       check(herdr.bin === undefined || nonempty(herdr.bin), `Project ${project.id} herdr.bin must be nonempty.`);
       assertNotRemoteDesktopCommanderCommand([herdr.bin ?? "herdr"], `Project ${project.id} Herdr runtime`);
       check(["shared_worktree", "machine_local"].includes(herdr.workspace_mode), `Project ${project.id} herdr.workspace_mode must be shared_worktree or machine_local.`);
@@ -134,9 +137,9 @@ function normalizeProjects(raw, root, execution) {
             `Project ${project.id} herdr.placement.agents must contain nonempty agent names.`);
           check(new Set(herdr.placement.agents).size === herdr.placement.agents.length, `Project ${project.id} herdr.placement.agents must be unique.`);
         }
-        check(!herdr.placement.machine_selectors || herdr.placement.machine_selectors.includes(herdr.machine),
+        check(!herdr.machine || !herdr.placement.machine_selectors || herdr.placement.machine_selectors.includes(herdr.machine),
           `Project ${project.id} static herdr.machine must satisfy herdr.placement.machine_selectors.`);
-        check(!herdr.placement.agents || herdr.placement.agents.includes(herdr.agent),
+        check(!herdr.agent || !herdr.placement.agents || herdr.placement.agents.includes(herdr.agent),
           `Project ${project.id} static herdr.agent must satisfy herdr.placement.agents.`);
         check(!herdr.placement.tools || herdr.placement.tools.includes(executor.kind),
           `Project ${project.id} executor must satisfy herdr.placement.tools.`);

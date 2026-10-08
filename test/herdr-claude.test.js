@@ -5,14 +5,18 @@ import path from "node:path";
 import test from "node:test";
 import { HerdrRuntime } from "../src/workflow/runtime.js";
 
-function fakeHerdr(root, { authenticated = true, agentProbeError = "" } = {}) {
+function fakeHerdr(root, { authenticated = true, agentProbeError = "", placementResponse = null } = {}) {
   const filename = path.join(root, "herdr-fixture.mjs");
   const promptLog = path.join(root, "prompt.json");
   fs.writeFileSync(filename, `#!/usr/bin/env node
 import fs from "node:fs";
 const args = process.argv.slice(2);
 const capability = { installed: true, version: "2.1.9", authenticated: ${authenticated}, quota_available: true, available: true };
-if (args[0] === "machine" && args[1] === "status") console.log(JSON.stringify({ reachable: true, capabilities: { claude: capability } }));
+if (args[0] === "placement" && args[1] === "select") {
+  const request = JSON.parse(await new Promise((resolve) => { let input = ""; process.stdin.on("data", (chunk) => input += chunk); process.stdin.on("end", () => resolve(input)); }));
+  console.log(JSON.stringify({ ...${JSON.stringify(placementResponse)}, request_version: request.version }));
+}
+else if (args[0] === "machine" && args[1] === "status") console.log(JSON.stringify({ reachable: true, capabilities: { claude: capability } }));
 else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "get") {
   if (${JSON.stringify(agentProbeError)}) { console.error(${JSON.stringify(agentProbeError)}); process.exit(1); }
   console.log(JSON.stringify({ kind: "general", status: "idle", capabilities: { claude: capability } }));
@@ -60,6 +64,43 @@ test("Herdr dispatches Claude only after advertised capability probes and preser
   assert.match(prompt, /prior failure/);
   assert.match(prompt, /npx -y gh-axi/);
   assert.match(prompt, /Roundhouse owns commits, verification and delivery/);
+});
+
+test("Herdr selects and validates a policy-bounded placement before probing or dispatching", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-herdr-placement-"));
+  const selected = { runtime: "herdr", machine: "Studio-iMac", platform: "macos", tool: "claude",
+    agent: "fleet-worker", capabilities: ["repository", "browser"], available: true };
+  const fixture = fakeHerdr(root, { placementResponse: { eligible: [selected], selection: selected,
+    rationale: "Selected the available macOS Claude worker.", source: "herdr_scheduler", observed_at: "2026-10-08T00:00:00.000Z" } });
+  const input = request(root, fixture.filename);
+  delete input.project.herdr.machine;
+  delete input.project.herdr.agent;
+  input.project.required_capabilities = ["repository"];
+  input.project.herdr.placement = { machine_selectors: ["Studio-iMac"], platforms: ["macos"], tools: ["claude"],
+    agents: ["fleet-worker"], capabilities: ["browser"] };
+  let persisted;
+  const result = await new HerdrRuntime().execute({ ...input, onPlacement: (placement) => { persisted = placement; } });
+  assert.equal(result.passed, true);
+  assert.equal(result.remote_execution.machine_selector, "Studio-iMac");
+  assert.equal(result.remote_execution.agent_target, "fleet-worker");
+  assert.equal(result.remote_execution.placement.selection.source, "herdr_scheduler");
+  assert.deepEqual(persisted, result.remote_execution.placement);
+  assert.equal(result.remote_execution.placement_request.passed, true);
+});
+
+test("Herdr holds work when dynamic placement has no eligible target and never falls back", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-herdr-placement-hold-"));
+  const fixture = fakeHerdr(root, { placementResponse: { eligible: [], selection: null,
+    hold: { reason: "No online macOS worker advertises browser." }, source: "herdr_scheduler" } });
+  const input = request(root, fixture.filename);
+  input.project.herdr.placement = { machine_selectors: ["iMac"], platforms: ["macos"], tools: ["claude"],
+    agents: ["claude-worker"], capabilities: ["browser"] };
+  const result = await new HerdrRuntime().execute(input);
+  assert.equal(result.passed, false);
+  assert.equal(result.remote_execution.phase, "missing_capability");
+  assert.equal(result.remote_execution.placement.selection, null);
+  assert.match(result.remote_execution.placement.hold.reason, /No online macOS worker/);
+  assert.equal(fs.existsSync(fixture.promptLog), false);
 });
 
 test("Herdr records Claude authentication failure without dispatching work", async () => {

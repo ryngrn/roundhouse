@@ -297,27 +297,59 @@ function agentProbeFailure(result, machine, agent) {
 }
 
 export class HerdrRuntime {
-  async execute({ project, job, workspace, directory, previous_failure, run, onStart, onRemoteStart = () => {} }) {
+  async execute({ project, job, workspace, directory, previous_failure, run, onStart,
+    onPlacement = () => {}, onRemoteStart = () => {} }) {
     const bin = project.herdr.bin ?? "herdr";
     assertNotRemoteDesktopCommanderCommand([bin], `Project ${project.id} Herdr runtime`);
-    const machine = project.herdr.machine;
-    const agent = project.herdr.agent;
     const workspaceMode = project.herdr.workspace_mode ?? "shared_worktree";
     const machineLocal = workspaceMode === "machine_local";
     const dispatchNonce = randomUUID();
     const reportToken = machineLocal ? dispatchNonce : null;
     const localCwd = machineLocal ? directory : workspace;
     if (machineLocal) fs.mkdirSync(localCwd, { recursive: true, mode: 0o700 });
-    const placement = staticHerdrPlacement(project, job);
+    const requirements = herdrPlacementRequirements(project, job);
     const unavailablePlacement = (reason, code = "placement_unavailable") => {
-      const evidence = validateHerdrPlacement({ requirements: herdrPlacementRequirements(project, job), eligible: [],
+      const evidence = validateHerdrPlacement({ requirements, eligible: [], hold_reason: reason,
         source: "herdr_probe", observed_at: new Date().toISOString() });
       return { ...evidence, hold: { ...evidence.hold, code, reason } };
     };
+    const preflightIdentity = { runtime: "herdr", workspace_mode: workspaceMode,
+      executor: project.executor.kind, dispatch_nonce: dispatchNonce,
+      ...(machineLocal ? { working_directory: project.herdr.working_directory, report_token: reportToken } : {}) };
+    let placement;
+    let placementRequest = null;
+    if (project.herdr.placement) {
+      placementRequest = await runProcess([bin, "placement", "select", "--json"], {
+        cwd: localCwd, timeout: project.timeout_ms, onStart,
+        input: JSON.stringify({ version: 1, job_id: job.id, run_id: run?.id ?? null, requirements }),
+      });
+      if (!placementRequest.passed) {
+        const reason = "Herdr placement selection is unavailable; no work was dispatched.";
+        return { ...placementRequest, error: reason, remote_execution: { ...preflightIdentity,
+          placement: unavailablePlacement(reason), phase: "placement_selection_failed" } };
+      }
+      let response;
+      try { response = parseJsonOutput(placementRequest.stdout, "Herdr placement selection"); }
+      catch (error) { return { ...placementRequest, passed: false, error: error.message,
+        remote_execution: { ...preflightIdentity, placement: unavailablePlacement(error.message), phase: "placement_selection_invalid" } }; }
+      try {
+        placement = validateHerdrPlacement({ requirements, eligible: response?.eligible, selection: response?.selection,
+          rationale: response?.rationale, source: response?.source ?? "herdr_scheduler",
+          observed_at: response?.observed_at ?? new Date().toISOString(), hold_reason: response?.hold?.reason });
+      } catch (error) {
+        return { ...placementRequest, passed: false, error: error.message,
+          remote_execution: { ...preflightIdentity, placement: unavailablePlacement(error.message), phase: "placement_selection_invalid" } };
+      }
+      if (!placement.selection) return { ...placementRequest, passed: false, error: placement.hold.reason,
+        remote_execution: { ...preflightIdentity, placement, phase: placement.hold.code } };
+    } else placement = staticHerdrPlacement(project, job);
+    const machine = placement.selection.machine;
+    const agent = placement.selection.agent;
     const baseIdentity = { runtime: "herdr", machine_selector: machine, agent_target: agent, workspace_mode: workspaceMode,
       placement,
       executor: project.executor.kind, dispatch_nonce: dispatchNonce,
       ...(machineLocal ? { working_directory: project.herdr.working_directory, report_token: reportToken } : {}) };
+    await onPlacement(placement, baseIdentity);
     const probe = await runProcess([bin, "machine", "status", machine, "--json"], {
       cwd: localCwd, timeout: project.timeout_ms, onStart,
     });
@@ -353,6 +385,8 @@ export class HerdrRuntime {
           agent_status: correlation(agentStatus), capability_probe: capabilityProbe } };
     }
     const remoteExecution = { ...baseIdentity, phase: "prompting", machine_status: correlation(machineStatus),
+      ...(placementRequest ? { placement_request: { command: placementRequest.command, started_at: placementRequest.started_at,
+        finished_at: placementRequest.finished_at, exit_code: placementRequest.exit_code, passed: placementRequest.passed } } : {}),
       ...(agentStatus ? { agent_status: correlation(agentStatus), capability_probe: capabilityProbe } : {}) };
     await onRemoteStart(remoteExecution);
     const prompt = machineLocal
