@@ -14,6 +14,7 @@ import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, sele
 import { Unblocker } from "./unblocker.js";
 import { compareDispatchCandidates, dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 import { resolveProjectIdentity } from "./project-model.js";
+import { jobWithCurrentRequestContext, requestContextFromItem } from "./execution-context.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -346,6 +347,7 @@ export class Engine {
       if (data.jobs[id]) throw new Error("Work already exists for this decision.");
       data.jobs[id] = record(id, { state: "Ready", parent_id: item.id, project_id: item.project_id,
         work, agent_role: item.agent_role ?? "general", project_context: item.project_context, policy_hash: item.policy_hash,
+        request_context: requestContextFromItem(item),
         input_digest: digest({ input: item.input, clarifications: item.clarifications, work }),
         dependencies: [...item.decision.dependencies, ...(index ? [`${item.id}-${index}`] : [])],
         attempts: [], processes: [], priority_rank: priorityRank(item), position: Object.keys(data.jobs).length });
@@ -759,7 +761,7 @@ export class Engine {
         await this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? `postgresql:project/${project.id}`; });
       }
       const state = await this.store.read();
-      const job = state.jobs[id];
+      const job = jobWithCurrentRequestContext(state, state.jobs[id]);
       const currentProjectContext = executionProjectContext(project, job.agent_role ?? "general");
       const currentPolicyHash = digest(currentProjectContext);
       if (currentPolicyHash !== job.policy_hash) {
@@ -787,10 +789,12 @@ export class Engine {
         : this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
       await this.store.change((data) => { data.jobs[id].prepared = prepared; });
       for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {
-        const current = (await this.store.read()).jobs[id];
+        const currentState = await this.store.read();
+        const current = jobWithCurrentRequestContext(currentState, currentState.jobs[id]);
         const run = { id: randomUUID(), job_id: id, attempt: attempt + 1, provider_id: null, status: "executing",
-          input_digest: current.input_digest ?? digest({ work: current.work, project_context: current.project_context }),
+          input_digest: digest({ work: current.work, project_context: current.project_context, request_context: current.request_context }),
           inputs: { work: structuredClone(current.work), project_context_digest: digest(current.project_context),
+            request_context_digest: digest(current.request_context),
             previous_failure_attempt: current.attempts.at(-1)?.number ?? null },
           reconciliation: { required: false, status: "not_required" } };
         await this.store.change((data) => {

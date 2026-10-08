@@ -93,7 +93,10 @@ test("Herdr probes first, passes the prompt as one argv value, and returns corre
   let started;
   const result = await new HerdrRuntime().execute({
     project: { timeout_ms: 10_000, herdr: { bin: filename, machine: "builder", agent: "agent-main" } },
-    job: { work: { title: "Do work" }, project_context: {} }, workspace: root, previous_failure: null,
+    job: { work: { title: "Do work" }, project_context: {}, request_context: {
+      original_request: "# Original request\n\nPreserve the user's structured intent.",
+      conversation: { link: "chatgpt://conversation/example", live_context: { messages: [{ role: "user", text: "Newest constraint." }] } },
+    } }, workspace: root, previous_failure: null,
     onRemoteStart: async (identity) => { started = identity; },
   });
   assert.equal(result.passed, true);
@@ -105,6 +108,9 @@ test("Herdr probes first, passes the prompt as one argv value, and returns corre
   assert.deepEqual(calls[0], ["machine", "status", "builder", "--json"]);
   assert.equal(calls[1][0], "--machine");
   assert.equal(calls[1][5].includes("Do work"), true);
+  assert.match(calls[1][5], /# Original request\n\nPreserve the user's structured intent\./);
+  assert.match(calls[1][5], /Newest constraint\./);
+  assert.ok(calls[1][5].indexOf("# Original request") < calls[1][5].indexOf("Do work"));
   assert.equal(calls[1].length, 9);
 });
 
