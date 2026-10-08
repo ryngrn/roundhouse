@@ -54,6 +54,9 @@ export class WorkerLoop {
               result = await this.service.addToDepot(command.payload, { source: "remote-dashboard", actor: "ryan" });
             } else if (command.kind === "decision_session") {
               result = await this.service.answerDecisionSession({ ...command.payload, actor: "ryan" });
+            } else if (command.kind === "explode_job") {
+              result = await this.service.explodeJob({ id: command.payload.job_id, expected_revision: command.payload.expected_revision,
+                note: command.payload.note, actor: "ryan" });
             } else {
               throw new Error(`Unsupported remote command: ${command.kind}`);
             }

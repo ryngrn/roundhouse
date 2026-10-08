@@ -143,6 +143,30 @@ test("local worker processes relay commands without making relay authoritative",
   assert.equal(finished[0][1].result.item.id, "local-item");
 });
 
+test("local worker maps an explode command to the authoritative job removal service", async () => {
+  const commands = [{ id: "command-explode", kind: "explode_job", payload: {
+    job_id: "blocked-job", expected_revision: 7, note: "Operator removed a dead blocker.",
+  } }];
+  const finished = [];
+  const calls = [];
+  const queue = {
+    claimRemoteCommand: async () => commands.shift() ?? null,
+    finishRemoteCommand: async (id, result) => finished.push([id, result]),
+  };
+  const store = { shared: false };
+  const service = {
+    store,
+    explodeJob: async (input) => { calls.push(input); return { removed: true, id: input.id }; },
+    engine: { store, runTriage: async () => ({ triaged: 0 }), runDispatch: async () => ({ executed: 0 }) },
+  };
+  const worker = new WorkerLoop({ service, commandQueue: queue });
+  const result = await worker.tick();
+  assert.equal(result.remote_commands, 1);
+  assert.deepEqual(calls, [{ id: "blocked-job", expected_revision: 7,
+    note: "Operator removed a dead blocker.", actor: "ryan" }]);
+  assert.equal(finished[0][1].result.removed, true);
+});
+
 test("relay outage never blocks local triage or dispatch", async () => {
   let triage = 0;
   let dispatch = 0;

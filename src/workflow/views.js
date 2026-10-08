@@ -171,6 +171,9 @@ function projectedJob(data, job, config) {
   const attempt = job.attempts?.at(-1) ?? {};
   const dispatchHold = dispatchHoldReason(job, data, config);
   const review = reviewFor(job, dispatchHold);
+  const blockedDependents = job.state === "Blocked"
+    ? Object.values(data.jobs).filter((candidate) => (candidate.dependencies ?? []).includes(job.id)).length
+    : 0;
   const shippedOutcome = job.state === "Shipped" ? [
     attempt.execution?.report?.summary,
     "1 work item verified and shipped by Roundhouse.",
@@ -208,6 +211,8 @@ function projectedJob(data, job, config) {
     questions: [],
     issue_resolution: job.issue_resolution ?? null,
     dispatch_hold: dispatchHold,
+    bottleneck: blockedDependents > 0,
+    blocked_dependents: blockedDependents,
   };
 }
 

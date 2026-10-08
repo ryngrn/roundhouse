@@ -275,6 +275,15 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 200, result);
       }
+      const explodeJob = url.pathname.match(/^\/api\/jobs\/([^/]+)\/explode$/);
+      if (request.method === "POST" && explodeJob) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.explodeJob({ id: decodeURIComponent(explodeJob[1]), expected_revision: input.expected_revision,
+          actor: "local-user", note: input.note ?? "Operator removed a blocked job from the dashboard." });
+        loop.wake();
+        return send(response, 200, result);
+      }
       if (request.method === "POST" && url.pathname === "/api/worker/tick") {
         verifyOrigin(request, origins);
         await jsonBody(request);

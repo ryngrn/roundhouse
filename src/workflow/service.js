@@ -131,6 +131,11 @@ export class RoundhouseService {
       mapResult(this.store.read(), (data) => ({ item: itemView(data, item), retry_requested: true })));
   }
 
+  async explodeJob({ id, expected_revision, actor = "local-user", note = "Operator removed a blocked job." }) {
+    if (!this.engine) throw new Error("Roundhouse configuration is required to remove blocked work.");
+    return await this.engine.explodeJob(id, { expectedRevision: expected_revision, actor, note });
+  }
+
   getStorageStatus() {
     return this.store.status();
   }

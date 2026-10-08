@@ -900,6 +900,54 @@ export class Engine {
       data.projects[job.project_id] = { ...data.projects[job.project_id], blocked: true, active: false };
     });
   }
+  async explodeJob(id, { expectedRevision, actor, note = "Operator removed a blocked job." } = {}) {
+    if (typeof id !== "string" || !id.trim()) throw new Error("A blocked job ID is required.");
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new Error("Current job revision is required.");
+    if (typeof actor !== "string" || !actor.trim() || actor.length > 128) throw new Error("Job removal requires an actor.");
+    if (typeof note !== "string" || !note.trim() || note.length > 2_000) throw new Error("Job removal requires a concise audit note.");
+    const release = this.store.shared ? () => {} : this.store.acquireWorkerLease();
+    try {
+      return await this.store.change((data) => {
+        const job = data.jobs[id];
+        if (!job) throw new Error("Blocked job was not found.");
+        if (job.state !== "Blocked") throw new Error("Only a Blocked job can be removed from the queue.");
+        if (job.revision !== expectedRevision) throw new Error("Stale job revision; review the latest blocker before removing it.");
+        if ((job.processes ?? []).length || job.owning_node_id || data.projects?.[job.project_id]?.active) {
+          throw new Error("Job removal refused while project execution may still be active.");
+        }
+        const at = new Date(this.clock()).toISOString();
+        const releasedJobs = [];
+        for (const candidate of Object.values(data.jobs)) {
+          if (candidate.id === id || !(candidate.dependencies ?? []).includes(id)) continue;
+          candidate.dependencies = candidate.dependencies.filter((dependency) => dependency !== id);
+          candidate.revision += 1;
+          candidate.updated_at = at;
+          candidate.history.push({ from: candidate.state, to: candidate.state,
+            reason: `Blocked prerequisite ${id} was removed by ${actor.trim()}; remaining dependencies are preserved.`, at });
+          releasedJobs.push(candidate.id);
+        }
+        const parent = data.items[job.parent_id];
+        if (parent) {
+          parent.job_ids = (parent.job_ids ?? []).filter((jobId) => jobId !== id);
+          parent.revision += 1;
+          parent.updated_at = at;
+          parent.history.push({ from: parent.state, to: parent.state,
+            reason: `Blocked job ${id} was removed by ${actor.trim()}.`, at });
+        }
+        data.system_metadata ??= {};
+        data.system_metadata.job_explosions ??= [];
+        data.system_metadata.job_explosions.push({ id, parent_id: job.parent_id ?? null, project_id: job.project_id ?? null,
+          title: job.work?.title ?? id, prior_revision: job.revision, actor: actor.trim(), note: note.trim(), at,
+          released_jobs: releasedJobs });
+        if (data.system_metadata.job_explosions.length > 500) data.system_metadata.job_explosions.splice(0, data.system_metadata.job_explosions.length - 500);
+        delete data.jobs[id];
+        const project = data.projects[job.project_id] ?? {};
+        data.projects[job.project_id] = { ...project, blocked: false, active: false,
+          resume_approval: { actor: actor.trim(), note: `Removed blocker ${id}: ${note.trim()}`, at } };
+        return { removed: true, id, project_id: job.project_id, parent_id: job.parent_id, released_jobs: releasedJobs, at };
+      });
+    } finally { release(); }
+  }
   async runUnblocker() {
     return new Unblocker({ store: this.store, config: this.config, engine: this }).run();
   }

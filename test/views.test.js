@@ -68,6 +68,9 @@ test("dashboard projection is job-level and counts blocked, held, queued, and sh
     needs_review: 4, needs_you: 4, active: 0, queued: 0, completed: 2, blocked: 1,
   });
   assert.equal(projection.overview.items.find((item) => item.id === "held").review_kind, "blocked");
+  assert.equal(projection.overview.items.find((item) => item.id === "blocked").bottleneck, true);
+  assert.equal(projection.overview.items.find((item) => item.id === "blocked").blocked_dependents, 1);
+  assert.equal(projection.overview.items.find((item) => item.id === "held").bottleneck, false);
   assert.equal(projection.overview.items.find((item) => item.id === "queued").review_required, true);
   assert.match(projection.overview.items.find((item) => item.id === "queued").review_reason, /blocked \(Blocked\)/);
   assert.equal(projection.overview.projection_revision, projection.projection_revision);

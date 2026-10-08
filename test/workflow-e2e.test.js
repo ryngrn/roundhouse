@@ -146,6 +146,30 @@ test("e2e: an unrelated review item does not stop an independently Ready job", a
   assert.equal(result.jobs[result.items[ready.id].job_ids[0]].state, "Shipped");
   assert.equal(result.executed, 1);
 });
+test("e2e: exploding a blocked prerequisite removes only that job and releases its queue", async () => {
+  const h = harness();
+  const item = h.submit("decompose this request");
+  await h.engine.runTriage({ limit: Infinity });
+  const [blockedId, dependentId] = h.store.read().items[item.id].job_ids;
+  h.store.change((data) => {
+    h.store.move(data, data.jobs[blockedId], "Blocked", "Fixture blocker.");
+    data.projects.example = { ...data.projects.example, blocked: true, active: false };
+  });
+  const revision = h.store.read().jobs[blockedId].revision;
+
+  const removal = await h.engine.explodeJob(blockedId, { expectedRevision: revision, actor: "test", note: "Remove fixture blocker." });
+  const after = h.store.read();
+  assert.equal(after.jobs[blockedId], undefined);
+  assert.deepEqual(after.jobs[dependentId].dependencies, []);
+  assert.deepEqual(after.items[item.id].job_ids, [dependentId]);
+  assert.equal(after.projects.example.blocked, false);
+  assert.deepEqual(removal.released_jobs, [dependentId]);
+  assert.equal(after.system_metadata.job_explosions.at(-1).id, blockedId);
+
+  const result = await h.engine.runDispatch();
+  assert.equal(result.jobs[dependentId].state, "Shipped");
+  await assert.rejects(() => h.engine.explodeJob(dependentId, { expectedRevision: result.jobs[dependentId].revision, actor: "test" }), /Only a Blocked job/);
+});
 test("e2e: continue-project ships two jobs exactly once, chains their output and stops", async () => {
   const h = harness(); h.submit("first"); h.submit("second");
   const result = await h.engine.run();
