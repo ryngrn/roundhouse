@@ -72,6 +72,7 @@ function jobView(job, data) {
     latest_failure: attempt?.failure ?? null,
     provider_evidence: job.provider_evidence ?? attempt?.provider_evidence ?? null,
     latest_attempt_provider: attempt?.provider_evidence ?? null,
+    placement: attempt?.placement ?? remoteExecution?.placement ?? null,
     provider_transitions: job.provider_transitions ?? [],
     reconciliation: job.reconciliation ?? job.delivery_intent?.reconciliation ?? attempt?.run?.reconciliation ?? null,
     agent_role: job.agent_role ?? "general",

@@ -81,6 +81,14 @@ projects:
   #   herdr:
   #     machine: iMac
   #     agent: roundhouse-imac
+  #     # Optional Roundhouse-owned placement bounds. Existing static machine
+  #     # and agent settings are adapted into the same durable evidence contract.
+  #     placement:
+  #       machine_selectors: [iMac]
+  #       platforms: [macos]
+  #       tools: [claude]
+  #       agents: [roundhouse-imac]
+  #       capabilities: [repository]
   #     workspace_mode: machine_local
   #     working_directory: /home/ryngrn/kmac
   #   executor:

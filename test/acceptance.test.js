@@ -239,6 +239,14 @@ test("acceptance: dispatched machine-local Herdr work is app-visible while a loc
   assert.ok(active.untracked_activity.every((entry) => entry.authoritative === false && entry.status === "untracked"));
   assert.equal(active.active_jobs[0].remote_execution.phase, "prompting");
   assert.equal(active.active_jobs[0].remote_execution.machine_selector, "iMac");
+  assert.deepEqual(active.active_jobs[0].placement.authority, { control_plane: "roundhouse", placement: "herdr" });
+  assert.equal(active.active_jobs[0].placement.selection.machine, "iMac");
+  assert.equal(active.active_jobs[0].placement.selection.platform, "herdr");
+  assert.equal(active.active_jobs[0].placement.selection.tool, "command");
+  assert.equal(active.active_jobs[0].placement.selection.agent, "roundhouse-imac");
+  assert.equal(active.active_jobs[0].placement.selection.source, "static_project_config");
+  assert.match(active.active_jobs[0].placement.selection.rationale, /compatibility/);
+  assert.deepEqual(active.active_jobs[0].latest_run.placement, active.active_jobs[0].placement);
   assert.deepEqual({
     project: active.active_jobs[0].project,
     state: active.active_jobs[0].state,
@@ -274,6 +282,7 @@ test("acceptance: dispatched machine-local Herdr work is app-visible while a loc
   assert.equal(remoteTerminal.remote_run_id, "imac-run-42");
   assert.equal(remoteTerminal.remote_execution.execution_id, "imac-run-42");
   assert.equal(remoteTerminal.remote_execution.phase, "completed");
+  assert.deepEqual(remoteTerminal.placement.selection.matched_capabilities, []);
   assert.equal(remoteTerminal.shipping.source, "remote_agent_report");
   assert.equal(remoteTerminal.shipping.verification.independently_verified, false);
 });

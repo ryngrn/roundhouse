@@ -8,6 +8,7 @@ import { claudeDecisionArgs, decisionSchema } from "../src/workflow/decision.js"
 import { claudeDefaultTools, claudeExecutorArgs, claudeResult } from "../src/workflow/runtime.js";
 import { externallyUncertain, providerCapabilities, providerCapabilityEvidence, providerContract, providerFailureEvidence,
   providerAdvertisement, providerIdentity, validateProviderSelection } from "../src/workflow/provider-contract.js";
+import { herdrPlacementRequirements, staticHerdrPlacement, validateHerdrPlacement } from "../src/workflow/placement-contract.js";
 
 function manifest(root, changes = {}) {
   return { projects: [{ id: "example", name: "Example", purpose: "Exercise provider contracts", success_state: "Checks pass",
@@ -102,4 +103,51 @@ test("unsupported provider, capability, runtime, tool, and fallback combinations
   assert.throws(() => validateWorkflowConfig({ ...manifest(root), decision: { kind: "claude", fallback: "codex" } }, filename), /does not switch providers implicitly/);
   assert.throws(() => validateWorkflowConfig({ ...manifest(root), conversation: { kind: "command", command: ["chat"] } }, filename), /does not support the conversation capability/);
   assert.throws(() => validateWorkflowConfig(manifest(root, { executor: { kind: "claude", allowed_tools: [] } }), filename), /allowed_tools/);
+});
+
+test("Herdr placement evidence preserves Roundhouse policy authority and validates selection evidence", () => {
+  const project = { runtime: "herdr", required_capabilities: ["repository"], executor: { kind: "claude" },
+    herdr: { machine: "Studio-iMac", agent: "general-worker", placement: {
+      machine_selectors: ["Studio-iMac"], platforms: ["macos"], tools: ["claude"], agents: ["general-worker"], capabilities: ["browser"],
+    } } };
+  const job = { work: { required_capabilities: ["repository", "visual-review"] } };
+  const requirements = herdrPlacementRequirements(project, job);
+  assert.deepEqual(requirements.capabilities, ["repository", "visual-review", "browser"]);
+  const selected = { machine: "Studio-iMac", platform: "macos", tool: "claude", agent: "general-worker",
+    capabilities: ["repository", "visual-review", "browser"] };
+  const evidence = validateHerdrPlacement({ requirements, eligible: [selected], selection: selected,
+    rationale: "Machine advertises every required capability.", source: "herdr_scheduler", observed_at: "2026-10-08T00:00:00.000Z" });
+  assert.deepEqual(evidence.authority, { control_plane: "roundhouse", placement: "herdr" });
+  assert.deepEqual(evidence.selection.matched_capabilities, requirements.capabilities);
+  assert.equal(evidence.selection.source, "herdr_scheduler");
+  assert.equal(evidence.hold, null);
+  assert.throws(() => validateHerdrPlacement({ requirements, eligible: [selected],
+    selection: { ...selected, tool: "codex" }, rationale: "Request asked for Codex.", source: "request_label" }),
+  /eligible advertised placements/);
+  assert.throws(() => validateHerdrPlacement({ requirements, eligible: [{ ...selected, capabilities: [] }], selection: selected,
+    rationale: "Selection claimed capabilities the machine did not advertise.", source: "herdr_scheduler" }),
+  /capabilities must match its eligible advertisement/);
+});
+
+test("static Herdr projects adapt to placement evidence and unavailable placement records a precise hold", () => {
+  const project = { runtime: "herdr", required_capabilities: ["local"], executor: { kind: "codex" },
+    herdr: { machine: "iMac", agent: "roundhouse-imac" } };
+  const evidence = staticHerdrPlacement(project, null, { observed_at: "2026-10-08T00:00:00.000Z" });
+  assert.equal(evidence.selection.machine, "iMac");
+  assert.equal(evidence.selection.platform, "herdr");
+  assert.equal(evidence.selection.tool, "codex");
+  assert.equal(evidence.selection.source, "static_project_config");
+  const held = validateHerdrPlacement({ requirements: evidence.requirements, eligible: [], observed_at: "2026-10-08T00:00:00.000Z" });
+  assert.deepEqual(held.hold, { code: "missing_capability", reason: "No eligible Herdr placement advertises: local.", missing_capabilities: ["local"] });
+});
+
+test("Herdr placement configuration is operator-owned and remains compatible with static machine and agent fields", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-placement-config-"));
+  const config = validateWorkflowConfig(manifest(root, { runtime: "herdr", executor: { kind: "claude" },
+    herdr: { machine: "Studio-iMac", agent: "worker", placement: { machine_selectors: ["Studio-iMac"],
+      platforms: ["macos"], tools: ["claude"], agents: ["worker"], capabilities: ["browser"] } } }), path.join(root, "placement.yaml"));
+  assert.deepEqual(config.projects[0].herdr.placement.platforms, ["macos"]);
+  assert.throws(() => validateWorkflowConfig(manifest(root, { runtime: "herdr", executor: { kind: "claude" },
+    herdr: { machine: "Studio-iMac", agent: "worker", placement: { tools: ["codex"] } } }), path.join(root, "bad-placement.yaml")),
+  /executor must satisfy herdr.placement.tools/);
 });

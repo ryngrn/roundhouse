@@ -115,6 +115,32 @@ function normalizeProjects(raw, root, execution) {
       check(herdr.bin === undefined || nonempty(herdr.bin), `Project ${project.id} herdr.bin must be nonempty.`);
       assertNotRemoteDesktopCommanderCommand([herdr.bin ?? "herdr"], `Project ${project.id} Herdr runtime`);
       check(["shared_worktree", "machine_local"].includes(herdr.workspace_mode), `Project ${project.id} herdr.workspace_mode must be shared_worktree or machine_local.`);
+      if (herdr.placement !== undefined) {
+        check(plainObject(herdr.placement), `Project ${project.id} herdr.placement must be an object.`);
+        for (const key of Object.keys(herdr.placement)) check(["machine_selectors", "platforms", "tools", "agents", "capabilities"].includes(key),
+          `Unknown Project ${project.id} herdr.placement setting: ${key}`);
+        for (const key of ["platforms", "tools", "capabilities"]) {
+          if (herdr.placement[key] !== undefined) herdr.placement[key] = stringSet(herdr.placement[key], `Project ${project.id} herdr.placement.${key}`);
+        }
+        if (herdr.placement.machine_selectors !== undefined) {
+          check(Array.isArray(herdr.placement.machine_selectors) && herdr.placement.machine_selectors.length > 0
+            && herdr.placement.machine_selectors.every(nonempty),
+          `Project ${project.id} herdr.placement.machine_selectors must contain nonempty machine selectors.`);
+          check(new Set(herdr.placement.machine_selectors).size === herdr.placement.machine_selectors.length,
+            `Project ${project.id} herdr.placement.machine_selectors must be unique.`);
+        }
+        if (herdr.placement.agents !== undefined) {
+          check(Array.isArray(herdr.placement.agents) && herdr.placement.agents.length > 0 && herdr.placement.agents.every(nonempty),
+            `Project ${project.id} herdr.placement.agents must contain nonempty agent names.`);
+          check(new Set(herdr.placement.agents).size === herdr.placement.agents.length, `Project ${project.id} herdr.placement.agents must be unique.`);
+        }
+        check(!herdr.placement.machine_selectors || herdr.placement.machine_selectors.includes(herdr.machine),
+          `Project ${project.id} static herdr.machine must satisfy herdr.placement.machine_selectors.`);
+        check(!herdr.placement.agents || herdr.placement.agents.includes(herdr.agent),
+          `Project ${project.id} static herdr.agent must satisfy herdr.placement.agents.`);
+        check(!herdr.placement.tools || herdr.placement.tools.includes(executor.kind),
+          `Project ${project.id} executor must satisfy herdr.placement.tools.`);
+      }
       if (machineLocal) {
         check(nonempty(herdr.working_directory), `Project ${project.id} machine_local Herdr requires a nonempty herdr.working_directory.`);
         check(path.posix.isAbsolute(herdr.working_directory) || path.win32.isAbsolute(herdr.working_directory), `Project ${project.id} herdr.working_directory must be absolute.`);

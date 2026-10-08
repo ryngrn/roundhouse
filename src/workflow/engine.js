@@ -926,6 +926,8 @@ export class Engine {
             onProviderStart,
             onRemoteStart: (remote_execution) => this.store.change((data) => {
               const j = data.jobs[id];
+              j.attempts.at(-1).placement = structuredClone(remote_execution.placement);
+              j.attempts.at(-1).run.placement = structuredClone(remote_execution.placement);
               j.attempts.at(-1).execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
               if (machineLocal) j.delivery_intent = { mode: "machine_local", working_directory: project.herdr.working_directory,
                 machine_selector: project.herdr.machine, agent_target: project.herdr.agent, branch: executionBranch(project, j),

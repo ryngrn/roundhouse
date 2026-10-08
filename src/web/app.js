@@ -213,6 +213,11 @@ function renderActiveJobs(overview) {
     details.append(node("span", activeExecutionSummary(job), "active-job-location"));
     for (const value of [
       job.agent ? `Agent · ${job.agent}` : null,
+      job.placement?.selection?.platform ? `Platform · ${job.placement.selection.platform}` : null,
+      job.placement?.selection?.tool ? `Tool · ${job.placement.selection.tool}` : null,
+      job.placement?.selection?.matched_capabilities?.length ? `Capabilities · ${job.placement.selection.matched_capabilities.join(", ")}` : null,
+      job.placement?.selection?.rationale ? `Placement · ${job.placement.selection.rationale}` : null,
+      job.placement?.hold?.reason ? `Placement hold · ${job.placement.hold.reason}` : null,
       job.working_directory ? `Directory · ${job.working_directory}` : null,
       job.remote_run_id !== null && job.remote_run_id !== undefined ? `Remote run · ${job.remote_run_id}` : null,
     ].filter(Boolean)) details.append(node("span", value, "active-job-fact"));

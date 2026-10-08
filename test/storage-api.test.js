@@ -57,6 +57,9 @@ test("active job projection identifies machine-local Herdr work from durable met
       processes: [{ pid: 43210, at: "2026-10-04T00:00:00.000Z" }],
       attempts: [{
         number: 1,
+        placement: { authority: { control_plane: "roundhouse", placement: "herdr" },
+          selection: { machine: "iMac", platform: "macos", tool: "claude", agent: "roundhouse-imac",
+            matched_capabilities: ["repository"], rationale: "Selected by Herdr.", source: "herdr_scheduler" } },
         execution: { remote_execution: {
           runtime: "herdr",
           machine_selector: "iMac",
@@ -87,6 +90,8 @@ test("active job projection identifies machine-local Herdr work from durable met
     remote_run_id: "remote-run-42",
   });
   assert.equal(status.active_jobs[0].remote_execution.execution_id, "remote-run-42");
+  assert.equal(status.active_jobs[0].placement.selection.platform, "macos");
+  assert.equal(status.items[0].jobs[0].placement.selection.source, "herdr_scheduler");
   assert.notEqual(status.active_jobs[0].remote_run_id, 43210);
   assert.equal(status.items[0].jobs[0].working_directory, "/home/ryngrn/kmac");
 });

@@ -50,6 +50,9 @@ test("Herdr dispatches Claude only after advertised capability probes and preser
   assert.equal(result.remote_execution.executor, "claude");
   assert.equal(result.remote_execution.execution_id, "remote-claude-9");
   assert.equal(result.remote_execution.capability_probe.phase, "ready");
+  assert.deepEqual(result.remote_execution.placement.authority, { control_plane: "roundhouse", placement: "herdr" });
+  assert.equal(result.remote_execution.placement.selection.machine, "iMac");
+  assert.equal(result.remote_execution.placement.selection.tool, "claude");
   assert.match(result.remote_execution.dispatch_nonce, /^[0-9a-f-]{36}$/);
   assert.equal(Object.hasOwn(result.remote_execution, "pid"), false);
   const prompt = JSON.parse(fs.readFileSync(fixture.promptLog, "utf8"))[5];
@@ -65,6 +68,9 @@ test("Herdr records Claude authentication failure without dispatching work", asy
   const result = await new HerdrRuntime().execute(request(root, fixture.filename));
   assert.equal(result.passed, false);
   assert.equal(result.remote_execution.phase, "claude_authentication_failed");
+  assert.equal(result.remote_execution.placement.selection, null);
+  assert.equal(result.remote_execution.placement.hold.code, "missing_capability");
+  assert.match(result.remote_execution.placement.hold.reason, /authentication/i);
   assert.equal(fs.existsSync(fixture.promptLog), false);
 });
 
@@ -74,6 +80,8 @@ test("Herdr classifies an unavailable Claude agent before dispatch", async () =>
   const result = await new HerdrRuntime().execute(request(root, fixture.filename));
   assert.equal(result.passed, false);
   assert.equal(result.remote_execution.phase, "agent_unavailable");
+  assert.equal(result.remote_execution.placement.selection, null);
+  assert.equal(result.remote_execution.placement.hold.code, "placement_unavailable");
   assert.equal(fs.existsSync(fixture.promptLog), false);
 });
 

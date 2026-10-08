@@ -250,6 +250,15 @@ directory, report token, remote run identity, evidence, and delivery intent. Tha
 evidence is explicitly marked as not independently verified because the remote
 filesystem is not locally visible. Herdr failures never fall back to local work.
 
+Roundhouse owns placement requirements and the job lifecycle; Herdr may select a
+machine, platform, and configured tool or agent only inside those requirements.
+Each Herdr attempt records the bounded requirements, eligible targets, selected
+target, matched capabilities, rationale, source, and any capability/availability
+hold before remote work begins. Request labels are not placement policy. Existing
+static `herdr.machine` and `herdr.agent` projects are adapted to this evidence
+contract and still require Herdr availability probes. A placement failure is
+retained as a hold and never silently changes runtime, provider, tool, or agent.
+
 Remote Desktop Commander is not an execution adapter or Herdr substitute. It is
 reserved for transport, inspection, connectivity checks, bootstrap, and emergency
 repair. Configuration validation rejects it at decision, execution-provider,
