@@ -13,6 +13,12 @@ import { Unblocker } from "./unblocker.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error?.code !== "ESRCH"; }
+}
+
 function machineLocalEvidence(project, job, execution) {
   const report = execution.remote_report;
   if (!report || typeof report !== "object" || Array.isArray(report)) throw new Error("Machine-local Herdr execution did not return structured remote evidence.");
@@ -912,7 +918,7 @@ export class Engine {
         if (!job) throw new Error("Blocked job was not found.");
         if (job.state !== "Blocked") throw new Error("Only a Blocked job can be removed from the queue.");
         if (job.revision !== expectedRevision) throw new Error("Stale job revision; review the latest blocker before removing it.");
-        if ((job.processes ?? []).length || job.owning_node_id || data.projects?.[job.project_id]?.active) {
+        if ((job.processes ?? []).some(({ pid }) => processIsAlive(pid)) || job.owning_node_id || data.projects?.[job.project_id]?.active) {
           throw new Error("Job removal refused while project execution may still be active.");
         }
         const at = new Date(this.clock()).toISOString();

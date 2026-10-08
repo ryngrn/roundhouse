@@ -153,6 +153,7 @@ test("e2e: exploding a blocked prerequisite removes only that job and releases i
   const [blockedId, dependentId] = h.store.read().items[item.id].job_ids;
   h.store.change((data) => {
     h.store.move(data, data.jobs[blockedId], "Blocked", "Fixture blocker.");
+    data.jobs[blockedId].processes = [{ pid: 2_147_483_647, at: "2026-01-01T00:00:00.000Z" }];
     data.projects.example = { ...data.projects.example, blocked: true, active: false };
   });
   const revision = h.store.read().jobs[blockedId].revision;
