@@ -1,0 +1,66 @@
+{
+  "recorded_at": "2026-10-08T12:00:00.000Z",
+  "project_id": "roundhouse",
+  "scenarios": [
+    {
+      "id": "native-local",
+      "kind": "native",
+      "runtime": "local",
+      "executor": "codex",
+      "expected_classification": "native_success"
+    },
+    {
+      "id": "recovered-herdr",
+      "kind": "reconciled",
+      "runtime": "herdr",
+      "executor": "claude",
+      "machine": "studio",
+      "reason": "Expired stale worker was automatically reconciled with durable remote delivery evidence.",
+      "expected_classification": "recovered_success"
+    },
+    {
+      "id": "manual-rdc",
+      "kind": "exception_annotation",
+      "reason_code": "missing_capability",
+      "reason": "RDC was required because the configured worker could not operate the native application.",
+      "expected": false,
+      "human_intervention_count": 2,
+      "human_minutes": 8,
+      "expected_classification": "exception_success"
+    },
+    {
+      "id": "failed-provider",
+      "kind": "failed",
+      "reason": "Provider limit exhausted and the work was abandoned.",
+      "expected_classification": "failed_or_abandoned"
+    },
+    {
+      "id": "historical-import",
+      "kind": "historical_import",
+      "expected_exclusion": "historical_import"
+    },
+    {
+      "id": "shipped-without-provenance",
+      "kind": "unclassified_shipped",
+      "expected_exclusion": "unclassified"
+    }
+  ],
+  "expected_metrics": {
+    "classification_counts": {
+      "native_success": 1,
+      "recovered_success": 1,
+      "exception_success": 1,
+      "failed_or_abandoned": 1
+    },
+    "total_jobs": 6,
+    "measured_jobs": 4,
+    "completed_jobs": 3,
+    "excluded_jobs": 2,
+    "historical_exclusions": 1,
+    "unclassified_exclusions": 1,
+    "native_kpi_numerator": 1,
+    "native_kpi_denominator": 3,
+    "intervention_total": 3,
+    "exception_reason": "missing_capability"
+  }
+}

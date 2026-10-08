@@ -460,6 +460,10 @@ and leaves the existing unsuccessful or unresolved lifecycle unchanged. The JSON
 API exposes the same revision-guarded operation at
 `POST /api/jobs/:id/exception-completion`.
 
+The classification precedence, evidence contract, reason taxonomy, intervention
+fields, historical migration rules, and KPI denominators are defined in
+[Execution-path outcome telemetry](execution-outcome-telemetry.md).
+
 For example:
 
 ```sh
