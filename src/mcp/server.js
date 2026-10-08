@@ -65,7 +65,7 @@ function result(structuredContent, text) {
 }
 
 const addToDepotInput = z.object({
-  content: nonblank(100_000).describe("The original user intent to preserve verbatim, in ordinary language."),
+  content: nonblank(100_000).describe("The user's complete original request preserved verbatim, including its headings, lists, requirements, and formatting. Never replace a well-structured request with a generated summary."),
   project_hint: nonblank(500).optional().describe("A non-authoritative project name or ID hint."),
   context: z.union([z.string().max(100_000), z.record(z.string(), z.unknown())]).optional().describe("Relevant conversational context, kept separate from the original intent."),
   attachments: z.array(z.object({
@@ -76,9 +76,9 @@ const addToDepotInput = z.object({
   metadata: z.record(z.string(), z.unknown()).optional().describe("Channel-neutral correlation metadata; do not place secrets here."),
   conversation: z.object({
     link: nonblank(2_048),
-    snapshot: z.unknown(),
-    live_context: z.unknown().optional(),
-  }).strict().optional().describe("Immutable conversation snapshot plus a live conversation reference/context for later intent recovery."),
+    snapshot: z.unknown().describe("Immutable full ordered transcript snapshot through the message that created this request, including roles and timestamps when available."),
+    live_context: z.unknown().optional().describe("Newer live thread messages or context available after the snapshot; preserve message order and roles."),
+  }).strict().optional().describe("Stable conversation link, immutable full transcript snapshot, and optional newer live thread context. Omit only when there is no chat thread."),
   idempotency_key: nonblank(500).optional().describe("Stable caller key for safe retry deduplication."),
 }).strict();
 const answerQuestionInput = z.object({
@@ -91,7 +91,7 @@ const toolSpecs = [
   {
     name: "add_to_depot",
     title: "Add to Roundhouse Depot",
-    description: "Durably capture the user's original intent and relevant conversation context in Roundhouse. Use project_hint only when the user supplied a likely project; Roundhouse performs project inference and planning.",
+    description: "Durably capture the user's complete structured request verbatim. When the request came from a chat, also send the full ordered transcript snapshot and available newer live thread context in conversation; do not flatten either into a generated summary. A well-structured request without a chat needs no conversation object. Use project_hint only when the user supplied a likely project; Roundhouse performs project inference and planning.",
     input: addToDepotInput,
     output: z.object({ item: itemSchema, durable: z.boolean() }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
