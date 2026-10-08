@@ -51,8 +51,8 @@ export async function depotCommand(argv) {
     run: ["--state-dir", "--config", "--project"],
     dispatch: ["--state-dir", "--config", "--project", "--job"],
     status: ["--state-dir"], outbox: ["--state-dir"],
-    issues: ["--state-dir", "--project"],
-    "issue-respond": ["--state-dir", "--id", "--revision", "--actor", "--text", "--action"],
+    issues: ["--state-dir", "--config", "--project"],
+    "issue-respond": ["--state-dir", "--config", "--id", "--revision", "--actor", "--text", "--action"],
     approve: ["--state-dir", "--config", "--id", "--revision", "--actor"],
     clarify: ["--state-dir", "--config", "--id", "--text", "--actor", "--project"],
     stop: ["--state-dir", "--project"], resume: ["--state-dir", "--project", "--actor", "--note"],
@@ -73,10 +73,12 @@ export async function depotCommand(argv) {
   if (command === "notion-updates") return updates(store.read(), statusView);
   if (command === "notion-ack") return acknowledge(store, JSON.parse(fs.readFileSync(required("--input"), "utf8")), statusView);
   if (command === "status") return statusView(store.read());
-  if (command === "issues") return { issues: listIssues(store.read(), { projectId: options["--project"] }) };
+  if (command === "issues") return { issues: listIssues(store.read(), { projectId: options["--project"],
+    config: options["--config"] ? loadWorkflowConfig(path.resolve(options["--config"])) : undefined }) };
   if (command === "issue-respond") return respondToIssue(store, {
     issueId: required("--id"), expectedRevision: Number(required("--revision")),
     actor: required("--actor"), message: required("--text"), action: options["--action"] ?? "note",
+    config: options["--config"] ? loadWorkflowConfig(path.resolve(options["--config"])) : undefined,
   });
   if (command === "outbox") {
     const data = store.read();

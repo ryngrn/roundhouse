@@ -8,7 +8,7 @@ import { computeAdvisory, validateDecision, routeDecision } from "../src/workflo
 import { Store, acquireLock } from "../src/workflow/store.js";
 import { runProcess } from "../src/workflow/runtime.js";
 import { notionInput } from "../src/workflow/cli.js";
-import { listIssues, respondToIssue } from "../src/workflow/issues.js";
+import { listIssues, respondToIssue, dispatchHoldReason } from "../src/workflow/issues.js";
 
 const project = { id: "example", status: "active", executor: { kind: "command" }, runtime: "local",
   verification: [{ id: "tests" }], policy: { project_confidence: 0.8, execution_confidence: 0.9, allow_autonomous: true, shipping: "push_branch" } };
@@ -119,4 +119,29 @@ test("unit: issue resolution is shared, revision guarded and never replays block
   assert.throws(() => respondToIssue(store, { issueId: item.id, expectedRevision: repair.revision,
     actor: "web", message: "duplicate", action: "replan" }), /already exists/);
   assert.deepEqual(listIssues(data, { projectId: "absent" }), []);
+});
+
+
+test("unit: Ready work with unsafe prerequisites is an issue, not executable clearance", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-held-ready-"));
+  const store = new Store(directory);
+  const parent = store.submit({ text: "Legacy task", project_id: "example" }, "held-ready");
+  const config = { projects: [project] };
+  store.change((data) => {
+    data.jobs.held = record("held", { state: "Ready", parent_id: parent.id,
+      project_id: "example", dependencies: ["failed"],
+      work: { title: "Legacy work", outcome: "Result", acceptance_criteria: [] }, attempts: [] });
+    data.jobs.failed = record("failed", { state: "Blocked", project_id: "example", attempts: [] });
+  });
+  const data = store.read();
+  assert.match(dispatchHoldReason(data.jobs.held, data, config), /Waiting for prerequisite/);
+  const issue = listIssues(data, { config }).find((entry) => entry.id === "held");
+  assert.equal(issue.held_ready, true);
+  assert.equal(issue.status, "needs_attention");
+  const plan = respondToIssue(store, { issueId: "held", expectedRevision: issue.revision,
+    actor: "chat", action: "replan", message: "Investigate first, preserve evidence", config });
+  assert.equal(plan.status, "repair_queued");
+  assert.equal(store.read().jobs.held.state, "Blocked");
+  assert.equal(store.read().items[plan.follow_up_id].state, "Depot");
+  assert.equal(store.read().jobs.held.attempts.length, 0);
 });

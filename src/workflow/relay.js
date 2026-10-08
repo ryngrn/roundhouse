@@ -4,7 +4,7 @@ import { digest } from "./store.js";
 import { projectContext } from "./config.js";
 import { Engine } from "./engine.js";
 import { cleanupDownloadedAssets, downloadRemoteAssets, projectedAttachments } from "./assets.js";
-import { respondToIssue, listIssues } from "./issues.js";
+import { respondToIssue, listIssues, dispatchHoldReason } from "./issues.js";
 
 const { Pool } = pg;
 let pool;
@@ -189,7 +189,7 @@ export async function applyRemoteCommand({
   if (command.kind === "issue_resolution") {
     return respondToIssue(store, {
       issueId: payload.issue_id, expectedRevision: payload.expected_revision,
-      actor: "remote-dashboard", message: payload.message, action: payload.action ?? "note",
+      actor: "remote-dashboard", message: payload.message, action: payload.action ?? "note", config,
     });
   }
   if (command.kind === "decision_session") {
@@ -214,7 +214,7 @@ function questionFor(entity) {
   return [{ id: active?.id ?? `${entity.id}:decision`, prompt, revision: active?.revision ?? entity.revision }];
 }
 
-function workItemFromJob(job, data) {
+function workItemFromJob(job, data, config) {
   const parent = data.items[job.parent_id];
   const attempt = latestAttempt(job);
   return {
@@ -247,6 +247,7 @@ function workItemFromJob(job, data) {
     history: job.history,
     questions: questionFor(job),
     issue_resolution: job.issue_resolution ?? null,
+    dispatch_hold: dispatchHoldReason(job, data, config),
     assets: projectedAttachments(parent?.input?.attachments),
   };
 }
@@ -288,7 +289,7 @@ function workItemFromItem(item) {
 
 export function dashboardProjection(data, config, { connection = {} } = {}) {
   const items = [
-    ...Object.values(data.jobs).map((job) => workItemFromJob(job, data)),
+    ...Object.values(data.jobs).map((job) => workItemFromJob(job, data, config)),
     ...Object.values(data.items).filter((item) => !item.job_ids?.length).map(workItemFromItem),
   ].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
   const counts = {
@@ -316,7 +317,7 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
       counts,
       items,
       project_candidates: projectCandidates,
-      issues: listIssues(data),
+      issues: listIssues(data, { config }),
     },
   };
 }
