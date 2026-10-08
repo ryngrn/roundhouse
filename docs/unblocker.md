@@ -25,3 +25,15 @@ The existing event-driven worker invokes the same pass on wake. For CLI-only exe
 ## Acceptance
 
 A local verification failure isolates only that job. An independent Ready job executes and ships normally; a dependent Ready job does not. Changed authority, remote uncertainty, operator stops, and review gates cannot be cleared. A second Unblocker run performs no duplicate release, and a worker wake reports its action without adding polling.
+
+## Recovery questions in chat and the web portal
+
+A blocked root job or unplanned blocked item receives one small follow-up intake item with a single focused question. The new item appears in **Needs a signal** on the local and hosted Roundhouse portal. It preserves the original job ID, blocker category, failure evidence, and known conversation correlation. It does not replay the blocked job.
+
+- In the web portal, open the recovery item, answer its decision question, and submit. The existing revision-guarded decision-session endpoint evaluates the answer and may plan a new repair. Stale or duplicate answers fail without modifying the original attempt.
+- In ChatGPT, Roundhouse's get_needs_human MCP tool lists the same durable question IDs, and answer_question records a current answer for evaluation. The normal Roundhouse outbox emits a Needs Clarification event for connected notification consumers.
+- Automatically posting an unsolicited message into the original ChatGPT thread is not supported by the existing transport: correlation metadata is preserved when present, but an approved thread-addressable delivery connector is required to actually push into a specific existing conversation.
+
+Generation is bounded to three new root-blocker questions per worker wake and deduplicated by original entity ID. Dependency-held Ready descendants receive no redundant questions; already answered/repeated decisions and prior recovery follow-ups do not recursively create questions. No state write occurs on an idle pass with nothing to create.
+
+Answers never directly mark the original job Shipped or clear uncertain remote execution holds. The ordinary Roundhouse policy, verification and approval gates still apply to any newly proposed repair.
