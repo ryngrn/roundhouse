@@ -101,6 +101,7 @@ test("local server: protected UI, health, API, worker, evidence, config, and not
   assert.match(page.text, /Roundhouse Control Room/);
   assert.match(page.text, /Needs a signal/);
   assert.match(page.text, /Project configuration/);
+  assert.match(page.text, /New project/);
   assert.equal((await request(running.url, "/health")).json().status, "ok");
 
   const added = await request(running.url, "/api/intake", {
@@ -130,6 +131,34 @@ test("local server: protected UI, health, API, worker, evidence, config, and not
   const saved = await request(running.url, "/api/config", { method: "PUT", body: { configuration: config.configuration } });
   assert.equal(saved.status, 200);
   assert.equal(saved.json().configuration.projects[0].weight, 3);
+
+  const initiated = await request(running.url, "/api/projects", {
+    method: "POST",
+    body: { outcome: "Create a calm reading tracker", name: "Quiet Pages", success_state: "A usable reading log exists", trusted: true },
+  });
+  assert.equal(initiated.status, 201);
+  assert.equal(initiated.json().project_candidate.name, "Quiet Pages");
+  assert.equal(initiated.json().project_candidate.executable, false);
+  assert.equal(initiated.json().project_candidate.project_brief.trusted, true);
+  const projectItem = h.store.read().items[initiated.json().item.id];
+  assert.equal(projectItem.project_candidate_id, initiated.json().project_candidate.id);
+  assert.equal(projectItem.input.metadata.kind, "project_initiation");
+  assert.match(projectItem.input.text, /I trust Roundhouse/);
+});
+
+test("project initiation validates the outcome and infers a candidate name for delegated setup", async (t) => {
+  const h = harness();
+  const running = await startRoundhouseServer({ service: new RoundhouseService({ store: h.store, engine: h.engine }), port: 0, autoStartWorker: false });
+  t.after(() => running.close());
+
+  const invalid = await request(running.url, "/api/projects", { method: "POST", body: { trusted: true } });
+  assert.equal(invalid.status, 400);
+  assert.match(invalid.json().error, /requires an outcome/i);
+
+  const inferred = await request(running.url, "/api/projects", { method: "POST", body: { outcome: "Build a gracious household inventory.", trusted: true } });
+  assert.equal(inferred.status, 201);
+  assert.equal(inferred.json().project_candidate.name, "a gracious household inventory");
+  assert.equal(inferred.json().item.project_candidate.name, "a gracious household inventory");
 });
 
 test("local snapshot explicitly refreshes external durable changes without waking the worker", async (t) => {

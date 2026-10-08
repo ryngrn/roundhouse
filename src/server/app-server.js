@@ -222,6 +222,14 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 201, result);
       }
+      if (request.method === "POST" && url.pathname === "/api/projects") {
+        verifyOrigin(request, origins);
+        const result = await roundhouse.initiateProject(await jsonBody(request), { source: "web", actor: "local-user" });
+        await refreshLocalSnapshot();
+        projectionPublisher.trigger();
+        loop.wake();
+        return send(response, 201, result);
+      }
       const answer = url.pathname.match(/^\/api\/questions\/([^/]+)\/answer$/);
       if (request.method === "POST" && answer) {
         verifyOrigin(request, origins);

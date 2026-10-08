@@ -508,6 +508,39 @@ test("acceptance: project-first dashboard runs seven-question atomic sessions wi
   assert.equal(await page.getByRole("link", { name: "Open preview" }).getAttribute("href"), "https://inclusion-preview.example");
 });
 
+test("acceptance: Projects initiates a candidate one question at a time with a delegated fast path", { timeout: 30_000 }, async (t) => {
+  if (!fs.existsSync(chrome)) return t.skip("Google Chrome is not installed.");
+  const fixture = tempProject({ approvalRequired: false, autonomous: true });
+  fs.writeFileSync(fixture.configFile, JSON.stringify(fixture.configuration));
+  const running = await startRoundhouseServer({ stateDirectory: fixture.stateDirectory, configFile: fixture.configFile,
+    allowedHosts: ["roundhouse-compatible"], port: 0, autoStartWorker: false });
+  t.after(() => running.close());
+  const browser = await chromium.launch({ executablePath: chrome, args: ["--host-resolver-rules=MAP roundhouse-compatible 127.0.0.1"] });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.goto(`http://roundhouse-compatible:${new URL(running.url).port}/`, { waitUntil: "networkidle" });
+
+  await page.getByRole("button", { name: /New project/ }).click();
+  await expectText(page, "#project-step-label", /Question 1 of 5/);
+  const bounds = await page.locator("#project-dialog").boundingBox();
+  assert.deepEqual({ x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) },
+    { x: 0, y: 0, width: 390, height: 844 });
+  await page.locator("#project-answer").fill("Build a serene place to track books and reading rituals.");
+  await page.locator("#project-answer").press("Enter");
+  await expectText(page, "#project-step-label", /Question 2 of 5/);
+  await page.locator("#project-answer").fill("Quiet Pages");
+  const responsePromise = page.waitForResponse((response) => response.url().endsWith("/api/projects"));
+  await page.getByRole("button", { name: /I trust you, you decide/ }).click();
+  const response = await responsePromise;
+  assert.equal(response.status(), 201, await response.text());
+  await expectText(page, "#project-board", /Quiet Pages/);
+  assert.equal(await page.locator('[data-filter-key="all"]').getAttribute("aria-pressed"), "true");
+  const state = new Store(fixture.stateDirectory).read();
+  const candidate = Object.values(state.project_candidates).find((entry) => entry.name === "Quiet Pages");
+  assert.equal(candidate.project_brief.trusted, true);
+  assert.equal(candidate.project_brief.repository, null);
+});
+
 async function expectText(page, selector, pattern) {
   await page.waitForFunction(({ selector, source, flags }) => {
     const element = document.querySelector(selector);

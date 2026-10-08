@@ -207,6 +207,32 @@ dialog { padding:0; color:var(--text); background:var(--surface-1); border:1px s
 .intake-dialog-body .message { min-height:20px; margin-top:4px; }
 .intake-dialog-actions { display:flex; justify-content:flex-end; gap:8px; padding:14px 22px 18px; border-top:1px solid var(--border); background:var(--surface-0); }
 
+/* One-question project initiation */
+.new-project-button { min-height:34px; padding:7px 12px; color:#171b1d; background:var(--accent); border-color:var(--accent); box-shadow:0 1px 2px rgba(0,0,0,.34),0 0 0 0 rgba(185,215,108,0); }
+.new-project-button:hover { color:#101412; background:#c9e77a; border-color:#c9e77a; box-shadow:0 4px 18px rgba(185,215,108,.15); transform:translateY(-1px); }
+.project-dialog { width:min(720px,calc(100% - 32px)); max-height:min(760px,calc(100vh - 36px)); padding:0; overflow:hidden; border:1px solid #394247; border-radius:18px; background:#111619; box-shadow:0 28px 90px rgba(0,0,0,.62),inset 0 1px rgba(255,255,255,.025); }
+.project-dialog::backdrop { background:rgba(2,4,5,.84); backdrop-filter:blur(8px); }
+.project-dialog form { min-height:560px; display:flex; flex-direction:column; }
+.project-dialog-header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; padding:24px 27px 19px; border-bottom:1px solid var(--border); background:radial-gradient(circle at 12% 0%,rgba(185,215,108,.08),transparent 38%),var(--surface-2); }
+.project-dialog-header h2 { margin-top:5px; font-size:24px; letter-spacing:-.025em; }
+.project-dialog-progress { padding:16px 27px 0; }
+.project-dialog-progress>div { display:flex; justify-content:space-between; margin-bottom:8px; color:var(--text-tertiary); font-size:9px; text-transform:uppercase; letter-spacing:.075em; }
+.project-dialog-progress progress { display:block; width:100%; height:3px; overflow:hidden; border:0; border-radius:99px; background:#252c30; appearance:none; }
+.project-dialog-progress progress::-webkit-progress-bar { background:#252c30; }
+.project-dialog-progress progress::-webkit-progress-value { border-radius:99px; background:linear-gradient(90deg,#829c42,var(--accent)); transition:width 260ms cubic-bezier(.2,.8,.2,1); }
+.project-dialog-progress progress::-moz-progress-bar { border-radius:99px; background:linear-gradient(90deg,#829c42,var(--accent)); }
+.project-question-stage { flex:1; display:flex; flex-direction:column; justify-content:center; padding:34px 52px 40px; opacity:1; transform:translateY(0); }
+.project-question-stage.is-arriving { animation:project-question-in 260ms cubic-bezier(.2,.8,.2,1); }
+.project-question-stage label { max-width:600px; color:#f5f7f5; font-size:26px; font-weight:720; line-height:1.18; letter-spacing:-.025em; }
+.project-question-stage>p:not(.message) { max-width:570px; margin-top:9px; color:var(--text-secondary); font-size:12px; }
+.project-question-stage textarea { min-height:140px; margin-top:24px; padding:17px 18px; resize:none; color:var(--text); background:#0b1012; border-color:#333d42; border-radius:12px; font-size:16px; line-height:1.55; box-shadow:inset 0 1px 10px rgba(0,0,0,.18); }
+.project-question-stage textarea:focus { border-color:#788d46; box-shadow:0 0 0 3px rgba(185,215,108,.08),inset 0 1px 10px rgba(0,0,0,.18); }
+.project-question-stage .message { min-height:20px; margin-top:9px; color:var(--held); font-size:11px; }
+.project-dialog-actions { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; padding:16px 27px 20px; border-top:1px solid var(--border); background:#0d1214; }
+.project-dialog-actions .trust-button { justify-self:center; color:#dce9ba; background:rgba(185,215,108,.055); border-color:#52602f; box-shadow:none; }
+.project-dialog-actions .trust-button:hover { color:#f4ffd8; background:rgba(185,215,108,.1); border-color:#718341; box-shadow:0 0 22px rgba(185,215,108,.08); }
+@keyframes project-question-in { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:translateY(0); } }
+
 @media (max-width:650px) {
   .app-header { align-items:center; }
   .header-left { gap:8px; }
@@ -220,4 +246,14 @@ dialog { padding:0; color:var(--text); background:var(--surface-1); border:1px s
   .intake-dialog-body textarea { min-height:220px; flex:1 1 220px; }
   .intake-dialog-actions { position:sticky; bottom:0; padding:12px 16px calc(12px + env(safe-area-inset-bottom)); }
   .intake-dialog-actions button { min-height:44px; }
+  .new-project-button { min-height:36px; padding:7px 10px; }
+  .project-dialog { width:100%; height:100dvh; max-width:none; max-height:none; margin:0; border:0; border-radius:0; }
+  .project-dialog form { min-height:100dvh; }
+  .project-dialog-header { padding:20px 17px 16px; }
+  .project-dialog-progress { padding:14px 17px 0; }
+  .project-question-stage { justify-content:flex-start; padding:34px 18px 28px; }
+  .project-question-stage label { font-size:23px; }
+  .project-question-stage textarea { min-height:190px; }
+  .project-dialog-actions { grid-template-columns:auto 1fr; padding:13px 16px calc(18px + env(safe-area-inset-bottom)); }
+  .project-dialog-actions .trust-button { grid-column:1/-1; grid-row:1; width:100%; min-height:44px; }
 }

@@ -2,6 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 let configuration = { projects: [] };
 let currentOverview = null;
 let activeSession = null;
+let projectWizard = null;
 let dashboardFilters = { status: "needs", project: null, search: "", sort: "priority", show: "active", view: "list" };
 
 const TRAIN_LANGUAGE = Object.freeze({
@@ -506,6 +507,90 @@ intakeForm.addEventListener("submit", async (event) => {
     setTimeout(load, 250);
     setTimeout(() => { intakeDialog.close(); message.textContent = ""; }, 550);
   } catch (error) { message.textContent = error.message; } finally { intakeSubmitting = false; }
+});
+
+const PROJECT_QUESTIONS = Object.freeze([
+  { key: "outcome", name: "The idea", prompt: "What do you want this project to accomplish?", help: "Start with the outcome. A sentence or two is plenty.", placeholder: "Describe the change you want to exist…", required: true },
+  { key: "name", name: "The name", prompt: "What should we call it?", help: "Use a durable name you’ll recognize in the Projects list.", placeholder: "Project name" },
+  { key: "repository", name: "The starting point", prompt: "Where should the work begin?", help: "Give me a repository path or URL, say “start fresh,” or leave it to Roundhouse.", placeholder: "/path/to/repository, Git URL, or start fresh" },
+  { key: "success_state", name: "The finish line", prompt: "How will we know it worked?", help: "Name the visible result or proof that would make this project a success.", placeholder: "The concrete, verifiable result…" },
+  { key: "boundaries", name: "The guardrails", prompt: "Anything Roundhouse must protect or avoid?", help: "Call out deadlines, systems, people, budgets, or decisions that must stay with you.", placeholder: "No hard constraints, or list the non-negotiables…" },
+]);
+
+function resetProjectWizard() {
+  projectWizard = { index: 0, answers: {} };
+  renderProjectQuestion();
+}
+
+function renderProjectQuestion() {
+  const question = PROJECT_QUESTIONS[projectWizard.index];
+  const answer = $("#project-answer");
+  $("#project-step-label").textContent = `Question ${projectWizard.index + 1} of ${PROJECT_QUESTIONS.length}`;
+  $("#project-step-name").textContent = question.name;
+  $("#project-progress").value = projectWizard.index + 1;
+  $("#project-question").textContent = question.prompt;
+  $("#project-question-help").textContent = question.help;
+  answer.placeholder = question.placeholder;
+  answer.value = projectWizard.answers[question.key] || "";
+  answer.required = question.required === true;
+  $("#project-back").disabled = projectWizard.index === 0;
+  $("#project-next").textContent = projectWizard.index === PROJECT_QUESTIONS.length - 1 ? "Initiate project" : "Next";
+  $("#project-message").textContent = "";
+  const stage = document.querySelector(".project-question-stage");
+  stage?.classList?.remove("is-arriving");
+  setTimeout(() => stage?.classList?.add("is-arriving"), 0);
+  setTimeout(() => answer.focus?.(), 0);
+}
+
+function saveCurrentProjectAnswer() {
+  const question = PROJECT_QUESTIONS[projectWizard.index];
+  const value = $("#project-answer").value.trim();
+  if (question.required && !value) {
+    $("#project-message").textContent = "Give me the outcome first—then I can take it from here.";
+    $("#project-answer").focus?.();
+    return false;
+  }
+  if (value) projectWizard.answers[question.key] = value;
+  else delete projectWizard.answers[question.key];
+  return true;
+}
+
+let projectSubmitting = false;
+async function submitProjectInitiation(trusted) {
+  if (projectSubmitting || !saveCurrentProjectAnswer()) return;
+  projectSubmitting = true;
+  const message = $("#project-message");
+  const trust = $("#project-trust"); const next = $("#project-next");
+  trust.disabled = true; next.disabled = true;
+  message.textContent = trusted ? "Choosing the remaining details with care…" : "Creating the project brief…";
+  try {
+    const result = await api("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...projectWizard.answers, trusted }) });
+    message.textContent = `${result.project_candidate.name} is ready in Projects.`;
+    dashboardFilters = { ...dashboardFilters, status: "all", project: `candidate:${result.project_candidate.id}`, show: "all" };
+    updateFilterControls();
+    await load();
+    setTimeout(() => { $("#project-dialog").close(); projectWizard = null; }, 500);
+  } catch (error) { message.textContent = error.message; }
+  finally { projectSubmitting = false; trust.disabled = false; next.disabled = false; }
+}
+
+$("#new-project").addEventListener("click", () => { resetProjectWizard(); $("#project-dialog").showModal(); });
+$("#close-project").addEventListener("click", () => { $("#project-dialog").close(); projectWizard = null; });
+$("#project-dialog").addEventListener("cancel", () => { projectWizard = null; });
+$("#project-back").addEventListener("click", () => {
+  if (!projectWizard || projectWizard.index === 0) return;
+  saveCurrentProjectAnswer(); projectWizard.index -= 1; renderProjectQuestion();
+});
+$("#project-trust").addEventListener("click", () => submitProjectInitiation(true));
+$("#project-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!saveCurrentProjectAnswer()) return;
+  if (projectWizard.index < PROJECT_QUESTIONS.length - 1) { projectWizard.index += 1; renderProjectQuestion(); return; }
+  await submitProjectInitiation(false);
+});
+$("#project-answer").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault(); $("#project-form").requestSubmit();
 });
 
 for (const button of document.querySelectorAll?.("[data-filter-key]") || []) {

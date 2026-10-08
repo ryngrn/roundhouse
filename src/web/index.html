@@ -40,7 +40,7 @@
     </section>
 
     <section aria-labelledby="projects-heading">
-      <div class="section-title"><div><span class="eyebrow">Live portfolio</span><h2 id="projects-heading">Projects</h2></div><div class="section-actions"><button id="clear-filter" class="secondary filter-clear" type="button" hidden>Clear filter</button><button id="edit-config" class="secondary" type="button">Project configuration</button></div></div>
+      <div class="section-title"><div><span class="eyebrow">Live portfolio</span><h2 id="projects-heading">Projects</h2></div><div class="section-actions"><button id="clear-filter" class="secondary filter-clear" type="button" hidden>Clear filter</button><button id="edit-config" class="secondary" type="button">Project configuration</button><button id="new-project" class="new-project-button" type="button"><span aria-hidden="true">＋</span> New project</button></div></div>
       <div id="project-board" class="project-board" aria-live="polite"></div>
     </section>
   </main>
@@ -61,6 +61,30 @@
       <footer class="intake-dialog-actions">
         <button id="cancel-intake" class="secondary" type="button">Cancel</button>
         <button type="submit">Add to Depot</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="project-dialog" class="project-dialog" aria-labelledby="project-dialog-title">
+    <form id="project-form">
+      <header class="project-dialog-header">
+        <div><span class="eyebrow">New project</span><h2 id="project-dialog-title">Let’s make something worthwhile.</h2></div>
+        <button id="close-project" class="icon-button" type="button" aria-label="Close new project">×</button>
+      </header>
+      <div class="project-dialog-progress">
+        <div><span id="project-step-label">Question 1 of 5</span><span id="project-step-name">The idea</span></div>
+        <progress id="project-progress" max="5" value="1" aria-label="Project setup progress"></progress>
+      </div>
+      <div class="project-question-stage">
+        <label id="project-question" for="project-answer">What do you want this project to accomplish?</label>
+        <p id="project-question-help">Start with the outcome. A sentence or two is plenty.</p>
+        <textarea id="project-answer" rows="6" required placeholder="Describe the change you want to exist…"></textarea>
+        <p id="project-message" class="message" role="status"></p>
+      </div>
+      <footer class="project-dialog-actions">
+        <button id="project-back" class="secondary" type="button">Back</button>
+        <button id="project-trust" class="trust-button" type="button"><span aria-hidden="true">✦</span> I trust you, you decide</button>
+        <button id="project-next" type="submit">Next</button>
       </footer>
     </form>
   </dialog>
