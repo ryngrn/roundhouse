@@ -8,6 +8,7 @@ import { computeAdvisory, validateDecision, routeDecision } from "../src/workflo
 import { Store, acquireLock } from "../src/workflow/store.js";
 import { runProcess } from "../src/workflow/runtime.js";
 import { notionInput } from "../src/workflow/cli.js";
+import { listIssues, respondToIssue } from "../src/workflow/issues.js";
 
 const project = { id: "example", status: "active", executor: { kind: "command" }, runtime: "local",
   verification: [{ id: "tests" }], policy: { project_confidence: 0.8, execution_confidence: 0.9, allow_autonomous: true, shipping: "push_branch" } };
@@ -92,4 +93,30 @@ test("unit: Notion is a source adapter, and Ready is never an authority grant", 
   assert.equal(input.project_id, "example");
   assert.equal(input.approved, undefined);
   assert.throws(() => notionInput({ url: "https://app.notion.com/p/abc", Project: "Unknown" }, []), /map uniquely/);
+});
+
+
+test("unit: issue resolution is shared, revision guarded and never replays blocked work", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-issues-"));
+  const store = new Store(directory);
+  const item = store.submit({ text: "Fix build", project_id: "example" }, "issue-base");
+  store.change((data) => store.move(data, data.items[item.id], "Blocked", "Verification failed."));
+  const initial = listIssues(store.read())[0];
+  assert.equal(initial.status, "needs_attention");
+  const first = respondToIssue(store, { issueId: item.id, expectedRevision: initial.revision,
+    actor: "chat", message: "Investigate the build log" });
+  assert.equal(first.status, "investigating");
+  assert.equal(listIssues(store.read())[0].history[0].text, "Investigate the build log");
+  assert.throws(() => respondToIssue(store, { issueId: item.id, expectedRevision: initial.revision,
+    actor: "web", message: "stale" }), /Stale/);
+  const repair = respondToIssue(store, { issueId: item.id, expectedRevision: first.revision,
+    actor: "web", message: "Please investigate without replaying", action: "replan" });
+  assert.ok(repair.follow_up_id);
+  const data = store.read();
+  assert.equal(data.items[item.id].state, "Blocked");
+  assert.equal(data.items[repair.follow_up_id].state, "Depot");
+  assert.equal(data.items[repair.follow_up_id].parent_issue_id, item.id);
+  assert.throws(() => respondToIssue(store, { issueId: item.id, expectedRevision: repair.revision,
+    actor: "web", message: "duplicate", action: "replan" }), /already exists/);
+  assert.deepEqual(listIssues(data, { projectId: "absent" }), []);
 });

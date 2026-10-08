@@ -4,6 +4,7 @@ import { digest } from "./store.js";
 import { projectContext } from "./config.js";
 import { Engine } from "./engine.js";
 import { cleanupDownloadedAssets, downloadRemoteAssets, projectedAttachments } from "./assets.js";
+import { respondToIssue, listIssues } from "./issues.js";
 
 const { Pool } = pg;
 let pool;
@@ -185,6 +186,12 @@ export async function applyRemoteCommand({
       return { item_id: payload.item_id, job_ids: jobs.map((job) => job.id) };
     });
   }
+  if (command.kind === "issue_resolution") {
+    return respondToIssue(store, {
+      issueId: payload.issue_id, expectedRevision: payload.expected_revision,
+      actor: "remote-dashboard", message: payload.message, action: payload.action ?? "note",
+    });
+  }
   if (command.kind === "decision_session") {
     const answers = payload.answers ?? [];
     if (!Array.isArray(answers) || answers.length !== 1) throw new Error("Decision session must answer exactly one current question.");
@@ -239,6 +246,7 @@ function workItemFromJob(job, data) {
     prior_decisions: parent?.decision_history ?? [],
     history: job.history,
     questions: questionFor(job),
+    issue_resolution: job.issue_resolution ?? null,
     assets: projectedAttachments(parent?.input?.attachments),
   };
 }
@@ -273,6 +281,7 @@ function workItemFromItem(item) {
     prior_decisions: item.decision_history ?? [],
     history: item.history,
     questions: questionFor(item),
+    issue_resolution: item.issue_resolution ?? null,
     assets: projectedAttachments(item.input?.attachments),
   };
 }
@@ -307,6 +316,7 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
       counts,
       items,
       project_candidates: projectCandidates,
+      issues: listIssues(data),
     },
   };
 }
