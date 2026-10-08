@@ -52,6 +52,12 @@ export class WorkerLoop {
             let result;
             if (command.kind === "intake") {
               result = await this.service.addToDepot(command.payload, { source: "remote-dashboard", actor: "ryan" });
+            } else if (command.kind === "project_create") {
+              result = await this.service.initiateProject(command.payload, { source: "remote-dashboard", actor: "ryan" });
+            } else if (command.kind === "project_assign") {
+              result = await this.service.assignProject({ ...command.payload, actor: "ryan" });
+            } else if (command.kind === "jump_front") {
+              result = await this.service.jumpToFront({ ...command.payload, actor: "ryan" });
             } else if (command.kind === "decision_session") {
               result = await this.service.answerDecisionSession({ ...command.payload, actor: "ryan" });
             } else if (command.kind === "explode_job") {

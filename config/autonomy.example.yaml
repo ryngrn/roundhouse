@@ -8,6 +8,12 @@ execution:
   # Global execution slots default to one when this block is omitted.
   capacity: 1
   capabilities: [local]
+  # Providers are selected solely from each slice's required capabilities. A
+  # project provider preserves the existing Codex/command executor path.
+  providers:
+    - id: local-software
+      kind: project
+      capabilities: [local]
   resource_limits:
     workspace: 1
 projects:
@@ -16,6 +22,10 @@ projects:
     purpose: Deliver useful improvements to this project.
     success_state: Requested improvements pass project checks and reach a delivery branch.
     status: active
+    # Existing software projects default to true. Set false to model work that
+    # does not require Git; a repository-independent delivery provider is still
+    # needed before such work can execute.
+    repository_required: true
     repository: /absolute/path/to/a/clean/repository
     base_ref: HEAD
     remote: origin

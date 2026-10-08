@@ -40,7 +40,8 @@ Answering an imported Needs Decisions prompt through the normal Needs You API is
 also an explicit re-evaluation. Import itself never creates a job, calls the
 decision provider, or wakes the worker.
 
-Unknown projects are retained as non-executable project candidates. Exact Notion
+Unknown project names remain ordinary project assignments and stay non-executable
+until runtime configuration is added. Exact Notion
 source identity and exact native item/job IDs are used for reconciliation; text
 similarity is deliberately not used. Re-running identical export bytes is a
 state-level no-op. A later changed source record is reported as a conflict and

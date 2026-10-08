@@ -5,12 +5,14 @@ import { record } from "./state.js";
 import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
 import { createRuntime, CommandVerifier } from "./runtime.js";
-import { GitDelivery, git } from "./delivery.js";
+import { CapabilityRuntime } from "./execution-adapters.js";
+import { DeliveryRouter, git } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
 import { Unblocker } from "./unblocker.js";
-import { compareDispatchCandidates, dispatchConsiderations, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
+import { compareDispatchCandidates, dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
+import { resolveProjectIdentity } from "./project-model.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -109,15 +111,18 @@ function relatedWork(data, item) {
       jobs: (candidate.job_ids ?? []).map((jobId) => data.jobs[jobId]).filter(Boolean).map((job) => ({
         id: job.id, state: job.state, title: job.work?.title ?? null, outcome: job.work?.outcome ?? null,
         commit: job.shipping?.commit ?? null, branch: job.shipping?.branch ?? null,
+        output_reference: job.shipping?.reference ?? null, output_version: job.shipping?.version ?? null,
       })),
     }));
 }
 
 export class Engine {
-  constructor({ store, config, decision = new DecisionProvider(config.decision), runtime = createRuntime(), verifier = new CommandVerifier(), shipping = new GitDelivery(), clock = () => Date.now() }) {
+  constructor({ store, config, decision = new DecisionProvider(config.decision), runtime, verifier = new CommandVerifier(), shipping = new DeliveryRouter({ directory: store.directory }), clock = () => Date.now() }) {
     const triage = { max_per_tick: 1, max_concurrent: 1, base_backoff_ms: 30_000, max_backoff_ms: 60 * 60_000, ...(config.triage ?? {}) };
     config.triage = triage;
     config.execution = { capacity: 1, capabilities: [], resource_limits: {}, ...(config.execution ?? {}) };
+    const providers = config.execution.providers ?? [{ id: "local-project", kind: "project", capabilities: [...config.execution.capabilities] }];
+    runtime ??= new CapabilityRuntime(providers, createRuntime());
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
   processRecorder(collection, id) {
@@ -171,6 +176,10 @@ export class Engine {
       const project = configuredProject ? executionProjectContext(configuredProject, role) : null;
       const decision = project ? inferRoutineAcceptanceCriteria(proposed, project, item, role) : proposed;
       let route = routeDecision(decision, project ? [project] : projects, selectedProject);
+      const executionEligibilityReasons = route.state === "Ready" && project
+        ? decision.work_items.flatMap((work) => executionEligibility(project, this.config.execution,
+          this.config.execution.capabilities, { work }).reasons)
+        : [];
       if (leaseHeartbeatError) throw leaseHeartbeatError;
       if (this.store.shared) await this.store.assertLease(decisionLease);
       await this.store.change((data) => {
@@ -222,24 +231,22 @@ export class Engine {
             route = { state: "Reconciled", reason: `${route.reason} Exact durable target: ${target.id}.` };
           } else route = { state: "Blocked", reason: "Reconciliation was refused because no exact durable/provenance identity matched the proposed target." };
         }
-        const unconfiguredHint = !project && (current.project_candidate_id || selectedProject || current.input.project_hint);
-        if (unconfiguredHint && !current.project_candidate_id) {
-          data.project_candidates ??= {};
-          const label = current.input.project_hint ?? selectedProject;
-          const candidateId = `native-${digest(String(label).toLowerCase()).slice(0, 16)}`;
-          data.project_candidates[candidateId] ??= { id: candidateId, name: String(label), status: "candidate", executable: false,
-            source_system: current.input.source ?? "native", first_seen_at: new Date(this.clock()).toISOString(), source_ids: [current.id], record_count: 1 };
-          current.project_candidate_id = candidateId;
-        }
-        if (unconfiguredHint && !["Review", "Archived", "Reconciled"].includes(route.state)
+        const legacyProject = current.project_candidate_id ? data.project_candidates?.[current.project_candidate_id] : null;
+        const unconfiguredLabel = legacyProject?.name ?? current.input.project_hint ?? selectedProject;
+        const unconfiguredProject = !project && resolveProjectIdentity(data, this.config.projects, unconfiguredLabel, {
+          configured: false, source_system: current.input.source ?? "native", first_seen_at: new Date(this.clock()).toISOString(),
+        });
+        if (unconfiguredProject) current.project_id = unconfiguredProject.id;
+        if (unconfiguredProject && !["Review", "Archived", "Reconciled"].includes(route.state)
           && (route.state !== "Needs Clarification" || proposedQuestions.length === 0)) {
-          route = { state: "Blocked", reason: "The referenced project is a non-executable project candidate and has no active runtime configuration." };
+          route = { state: "Blocked", reason: `Project ${unconfiguredProject.name} is assigned but does not yet have active execution configuration.` };
         }
         if (decision.dependencies.some((dependency) => !data.jobs[dependency])) {
           this.store.move(data, current, "Needs Clarification", "Decision referenced unknown dependencies.");
         } else {
           this.store.move(data, current, route.state, route.reason);
-          current.execution_eligible = route.state === "Ready";
+          current.execution_eligible = route.state === "Ready" && executionEligibilityReasons.length === 0;
+          current.execution_ineligibility_reasons = executionEligibilityReasons;
           if (route.state === "Ready") {
             if (current.blocker_followup?.original_id || current.input?.context?.blocker_entity_id) {
               current.priority_rank = Math.min(priorityRank(current), -1);
@@ -326,6 +333,7 @@ export class Engine {
       if (data.jobs[id]) throw new Error("Work already exists for this decision.");
       data.jobs[id] = record(id, { state: "Ready", parent_id: item.id, project_id: item.project_id,
         work, agent_role: item.agent_role ?? "general", project_context: item.project_context, policy_hash: item.policy_hash,
+        input_digest: digest({ input: item.input, clarifications: item.clarifications, work }),
         dependencies: [...item.decision.dependencies, ...(index ? [`${item.id}-${index}`] : [])],
         attempts: [], processes: [], priority_rank: priorityRank(item), position: Object.keys(data.jobs).length });
       return id;
@@ -402,6 +410,8 @@ export class Engine {
       const authorized = { ...contextualProject, policy: { ...contextualProject.policy, allow_autonomous: true, approval_required: false } };
       const route = routeDecision(decision, [authorized], item.selected_project ?? item.input.project_id);
       if (route.state !== "Ready") throw new Error(`Approval cannot bypass readiness: ${route.reason}`);
+      const eligibilityReasons = decision.work_items.flatMap((work) => executionEligibility(authorized, this.config.execution,
+        this.config.execution.capabilities, { work }).reasons);
       item.approval = { actor, revision, at: new Date().toISOString() };
       const question = (item.questions ?? []).findLast((candidate) => candidate.status === "open");
       if (question) {
@@ -411,6 +421,8 @@ export class Engine {
         question.updated_at = item.approval.at;
       }
       this.store.move(data, item, "Ready", `Approved by ${actor}.`);
+      item.execution_eligible = eligibilityReasons.length === 0;
+      item.execution_ineligibility_reasons = eligibilityReasons;
       this.createJobs(data, item);
       data.projects[item.project_id] ??= {};
       return item;
@@ -730,7 +742,7 @@ export class Engine {
       }
       const machineLocal = isMachineLocal(project);
       if (!machineLocal) {
-        releaseRepo = this.shipping.lock(project);
+        releaseRepo = this.shipping.lock(project, (await this.store.read()).jobs[id]);
         await this.store.change((data) => { data.projects[project.id].repository_lock = releaseRepo.directory ?? `postgresql:project/${project.id}`; });
       }
       const state = await this.store.read();
@@ -756,17 +768,22 @@ export class Engine {
         job.project_context = currentProjectContext;
         job.policy_hash = currentPolicyHash;
       }
-      if (!machineLocal && !this.shipping.supports(project)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
+      if (!machineLocal && !this.shipping.supports(project, job)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = machineLocal
         ? { workspace_mode: "machine_local", working_directory: project.herdr.working_directory, machine_selector: project.herdr.machine, agent_target: project.herdr.agent }
         : this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
       await this.store.change((data) => { data.jobs[id].prepared = prepared; });
       for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {
         const current = (await this.store.read()).jobs[id];
+        const run = { id: randomUUID(), job_id: id, attempt: attempt + 1, provider_id: null, status: "executing",
+          input_digest: current.input_digest ?? digest({ work: current.work, project_context: current.project_context }),
+          inputs: { work: structuredClone(current.work), project_context_digest: digest(current.project_context),
+            previous_failure_attempt: current.attempts.at(-1)?.number ?? null },
+          reconciliation: { required: false, status: "not_required" } };
         await this.store.change((data) => {
           const j = data.jobs[id];
           this.store.move(data, j, "Executing", `Execution attempt ${attempt + 1}.`);
-          j.attempts.push({ number: attempt + 1, started_at: new Date().toISOString(),
+          j.attempts.push({ number: attempt + 1, run, started_at: new Date().toISOString(), status: "executing",
             node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null });
         });
         let failure;
@@ -774,13 +791,19 @@ export class Engine {
         try {
           const execution = await this.runtime.execute({ project, job: current, workspace: prepared.workspace,
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
-            previous_failure: current.attempts.at(-1) ?? null, onStart: this.processRecorder("jobs", id),
+            previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id),
             onRemoteStart: (remote_execution) => this.store.change((data) => {
               data.jobs[id].attempts.at(-1).execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
               if (machineLocal) data.jobs[id].delivery_intent = { mode: "machine_local", working_directory: project.herdr.working_directory,
                 machine_selector: project.herdr.machine, agent_target: project.herdr.agent, branch: `codex/roundhouse-${id}`, policy: project.policy.shipping };
             }) });
-          await this.store.change((data) => { data.jobs[id].attempts.at(-1).execution = execution; });
+          await this.store.change((data) => {
+            const recorded = data.jobs[id].attempts.at(-1);
+            recorded.execution = execution;
+            recorded.run.provider_id = execution.provider?.id ?? null;
+            recorded.status = execution.passed ? "executed" : "failed";
+            recorded.run.status = recorded.status;
+          });
           if (!execution.passed) throw new Error(execution.error ?? `Executor failed (exit ${execution.exit_code}).`);
           if (machineLocal) {
             const { verification, shipping } = machineLocalEvidence(project, current, execution);
@@ -788,6 +811,9 @@ export class Engine {
               const j = data.jobs[id];
               this.store.move(data, j, "Verification", "Recording remote machine-local verification evidence.");
               j.attempts.at(-1).verification = verification;
+              j.attempts.at(-1).status = "completed";
+              j.attempts.at(-1).run.status = "completed";
+              j.attempts.at(-1).finished_at = shipping.timestamp;
               j.shipping = shipping;
               j.processes = [];
               this.store.move(data, j, "Shipped", "Remote agent reported verified machine-local delivery; Roundhouse did not inspect the remote filesystem.");
@@ -798,21 +824,31 @@ export class Engine {
             });
             return true;
           }
-          const snapshot = this.shipping.snapshot({ project, job: current, prepared });
+          const snapshot = this.shipping.snapshot({ project, job: current, prepared, execution, run });
           await this.store.change((data) => {
             data.jobs[id].attempts.at(-1).snapshot = snapshot;
+            data.jobs[id].attempts.at(-1).status = "verifying";
+            data.jobs[id].attempts.at(-1).run.status = "verifying";
             this.store.move(data, data.jobs[id], "Verification", "Verifying committed candidate.");
           });
           const verification = await this.verifier.verify({ project, job: current, workspace: prepared.workspace, commit: snapshot.commit, snapshot, execution,
             directory: path.join(this.store.directory, "evidence", id, String(attempt + 1)), onStart: this.processRecorder("jobs", id) });
-          if (!this.shipping.unchanged(prepared, snapshot.commit)) {
+          if (!this.shipping.unchanged(prepared, snapshot.version ?? snapshot.commit)) {
             verification.passed = false;
             verification.checks.push({ id: "unchanged-tested-version", passed: false, stderr: "Verification modified the tested version or left uncommitted changes." });
           }
-          await this.store.change((data) => { data.jobs[id].attempts.at(-1).verification = verification; });
+          await this.store.change((data) => {
+            data.jobs[id].attempts.at(-1).verification = verification;
+            data.jobs[id].attempts.at(-1).status = verification.passed ? "verified" : "failed";
+            data.jobs[id].attempts.at(-1).run.status = data.jobs[id].attempts.at(-1).status;
+          });
           if (!verification.passed) throw new Error("Required verification failed.");
           // Persist delivery intent before touching a remote. On crash this attempt is never replayed.
-          await this.store.change((data) => { data.jobs[id].delivery_intent = { commit: snapshot.commit, branch: prepared.branch, policy: project.policy.shipping }; });
+          await this.store.change((data) => { data.jobs[id].delivery_intent = {
+            candidate: snapshot.version ?? snapshot.commit, commit: snapshot.commit ?? null, version: snapshot.version ?? null,
+            branch: prepared.branch ?? null, policy: project.policy.shipping, provider: prepared.kind ?? "git",
+            recorded_at: new Date().toISOString(), reconciliation: { required_on_interruption: true, status: "pending_delivery" },
+          }; });
           if (heartbeatError) throw heartbeatError;
           if (this.store.shared) {
             await this.store.assertLease(projectLease);
@@ -821,14 +857,20 @@ export class Engine {
           }
           let delivered;
           deliveryAttempted = true;
-          try { delivered = await this.shipping.ship({ project, job: current, prepared, verification, onStart: this.processRecorder("jobs", id) }); }
+          try { delivered = await this.shipping.ship({ project, job: current, prepared, snapshot, execution, run, verification, onStart: this.processRecorder("jobs", id) }); }
           catch (error) { await this.block(id, `Delivery failed or uncertain: ${error.message}`); return true; }
           await this.store.change((data) => {
             const j = data.jobs[id];
             j.shipping = delivered;
+            j.delivery_intent.reconciliation = { required_on_interruption: false, status: "confirmed", confirmed_at: delivered.timestamp };
+            j.attempts.at(-1).status = "completed";
+            j.attempts.at(-1).run.status = "completed";
+            j.attempts.at(-1).run.reconciliation = { required: false, status: "confirmed", confirmed_at: delivered.timestamp };
+            j.attempts.at(-1).finished_at = delivered.timestamp;
             j.processes = [];
             this.store.move(data, j, "Shipped", "Verified work delivered under project policy.");
-            data.projects[project.id] = { ...data.projects[project.id], last_commit: delivered.commit,
+            data.projects[project.id] = { ...data.projects[project.id], ...(delivered.commit ? { last_commit: delivered.commit } : {}),
+              ...(delivered.reference ? { last_output: delivered.reference } : {}),
               active: false, review_required: project.policy.review_after_shipping };
             const parent = data.items[j.parent_id];
             if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) {
@@ -842,7 +884,14 @@ export class Engine {
           if (deliveryAttempted) { await this.block(id, `Delivery outcome requires reconciliation: ${error.message}`); return true; }
           failure = error.message;
         }
-        await this.store.change((data) => { data.jobs[id].attempts.at(-1).failure = failure; });
+        await this.store.change((data) => {
+          const failed = data.jobs[id].attempts.at(-1);
+          failed.failure = failure;
+          failed.status = "failed";
+          failed.run.provider_id ??= run.provider_id;
+          failed.run.status = "failed";
+          failed.finished_at = new Date().toISOString();
+        });
         if (attempt === project.policy.max_rework_attempts) { await this.block(id, `Rework limit reached: ${failure}`); return true; }
         if ((await this.store.read()).projects[project.id]?.stop) { await this.block(id, "Operator stopped the project before automated rework."); return true; }
         await this.store.change((data) => this.store.move(data, data.jobs[id], "Rework", failure));
@@ -968,6 +1017,16 @@ export class Engine {
   block(id, reason) {
     return this.store.change((data) => {
       const job = data.jobs[id];
+      if (job.delivery_intent) job.reconciliation = { required: true, status: "required", reason,
+        intent: structuredClone(job.delivery_intent), recorded_at: new Date().toISOString() };
+      const attempt = job.attempts.at(-1);
+      if (attempt && attempt.status !== "completed") {
+        attempt.failure ??= reason;
+        if (attempt.status !== "failed") attempt.status = "blocked";
+        attempt.finished_at ??= new Date().toISOString();
+        if (attempt.run) attempt.run.status = attempt.status;
+      }
+      if (attempt?.run && job.reconciliation) attempt.run.reconciliation = job.reconciliation;
       this.store.move(data, job, "Blocked", reason);
       data.projects[job.project_id] = { ...data.projects[job.project_id], blocked: true, active: false };
     });
@@ -1102,7 +1161,7 @@ export class Engine {
           break;
         }
         const { project, job } = selected;
-        const reservation = executionReservation(project);
+        const reservation = executionReservation(project, job);
         await this.store.change((data) => {
           recordDispatchRound(data, considerations, job.id, this.config.execution.capacity, at);
           data.projects[project.id] = { ...data.projects[project.id], active: true };
@@ -1157,9 +1216,9 @@ export class Engine {
         snapshot = await this.store.read();
         const activeReservations = Object.values(snapshot.jobs)
           .filter((job) => job.owning_node_id || ["Executing", "Verification", "Rework"].includes(job.state))
-          .map((job) => this.config.projects.find((project) => project.id === job.project_id))
-          .filter(Boolean)
-          .map(executionReservation);
+          .map((job) => ({ job, project: this.config.projects.find((project) => project.id === job.project_id) }))
+          .filter(({ project }) => Boolean(project))
+          .map(({ project, job }) => executionReservation(project, job));
         const waiting = dispatchConsiderations(snapshot, this.config.projects, this.config.execution, {
           projectId,
           stopped,
@@ -1176,9 +1235,9 @@ export class Engine {
       if (hasImportedTriageBarrier(snapshot)) break;
       const activeReservations = Object.values(snapshot.jobs)
         .filter((job) => job.owning_node_id || ["Executing", "Verification", "Rework"].includes(job.state))
-        .map((job) => this.config.projects.find((project) => project.id === job.project_id))
-        .filter(Boolean)
-        .map(executionReservation);
+        .map((job) => ({ job, project: this.config.projects.find((project) => project.id === job.project_id) }))
+        .filter(({ project }) => Boolean(project))
+        .map(({ project, job }) => executionReservation(project, job));
       const considerations = dispatchConsiderations(snapshot, this.config.projects, this.config.execution, {
         projectId,
         stopped,
@@ -1193,7 +1252,7 @@ export class Engine {
         if (running.size) { await settleOne(); continue; }
         break;
       }
-      const reservations = Object.fromEntries(candidates.map(({ project, job }) => [job.id, executionReservation(project)]));
+      const reservations = Object.fromEntries(candidates.map(({ project, job }) => [job.id, executionReservation(project, job)]));
       const claim = await this.store.claimJob(candidates.map(({ job }) => job.id), {
         leaseMs: this.store.leaseMs,
         execution: this.config.execution,

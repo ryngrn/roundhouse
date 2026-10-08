@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { digest } from "../storage/repository.js";
 import { record } from "./state.js";
+import { resolveProjectIdentity } from "./project-model.js";
 
 export const LEGACY_FIELDS = [
   "Roundhouse ID",
@@ -279,6 +280,9 @@ export function importNotionDepot({ store, exportData, exportDigest, configuredP
 
         const configured = projectMatch(legacy.Project, configuredProjects);
         const projectCandidate = configured ? null : candidate(data, legacy.Project, source, at);
+        const assignedProject = configured ?? resolveProjectIdentity(data, configuredProjects, projectCandidate?.name, {
+          configured: false, source_system: "notion", first_seen_at: at,
+        });
         const completed = isCompleted(legacy);
         const id = `notion-${digest(source.source_id || source.source_page_url).slice(0, 24)}`;
         if (data.items[id]) {
@@ -325,11 +329,11 @@ export function importNotionDepot({ store, exportData, exportDigest, configuredP
             text: rawIntake,
             source: source.source_page_url ?? `notion:${source.source_id}`,
             actor: "notion-depot-migration",
-            ...(configured ? { project_id: configured.id } : {}),
+            ...(assignedProject ? { project_id: assignedProject.id } : {}),
             ...(legacy.Project ? { project_hint: legacy.Project } : {}),
           },
-          project_id: configured?.id ?? null,
-          project_candidate_id: projectCandidate?.id ?? null,
+          project_id: assignedProject?.id ?? null,
+          legacy_project_candidate_id: projectCandidate?.id ?? null,
           priority: legacy.Priority || null,
           priority_rank: priorityRank(legacy.Priority),
           execution_eligible: false,

@@ -61,6 +61,36 @@ that could materially change the product outcome, scope, risk, authority, or an
 irreversible action. Automated tests establish what they actually check, not
 arbitrary product correctness; select meaningful project checks.
 
+Repository requirements and execution capabilities are separate contracts. Existing
+software projects remain repository-backed by default. A project can set
+`repository_required: false` and omit `repository` and executable verification
+commands; each generated slice then records its own `repository_required` value and
+`required_capabilities`. Capability identifiers can describe research, integration,
+scheduling, artifact production, external actions, human tasks, or installation-
+specific facilities. Requirements do not need to be currently available in
+`execution.capabilities`: unavailable requirements keep the slice unallocated and
+produce durable, specific readiness and scheduler evidence. Repository-free projects
+use `shipping: durable_output` (their default). That provider versions structured
+results and workspace files, records hashes and provenance in authoritative state,
+and writes a local inspection manifest. File bodies stay in the durable record so a
+PostgreSQL reader does not depend on the originating worker filesystem. `artifact`
+is accepted as a compatibility alias.
+
+`execution.providers` registers replaceable execution adapters. Every provider has a
+stable ID and declares the capability combinations it can handle. `kind: project`
+uses the project's existing Codex or command executor; `kind: command` invokes the
+provider's configured argv contract. Selection is provider-neutral: Roundhouse picks
+the matching provider with the fewest unrelated capabilities and uses its ID as the
+stable tie-breaker. Capabilities that exist only across separate providers are not
+silently composed, so unsupported combinations remain Ready but unallocated with
+durable `provider_unavailable` evidence. Research, connected-source work, scheduling,
+artifact persistence, external actions, and human-task handling are ordinary
+capability identifiers; the workflow contains no policy specific to any provider.
+Repository-free command providers may return a summary and other JSON records and
+may write artifact files in their workspace. At least one structured result or file
+is required. Roundhouse records a run UUID, provider ID, input digest, attempt state,
+failures, evidence, immutable output reference, and reconciliation state.
+
 ## Agent roles and skills
 
 Agent roles are context and skill bundles, separate from the executor and local
@@ -212,7 +242,7 @@ the durable `review_required` project gate remains until an operator resumes it.
 Weighted dispatch progress is stored in `system_metadata.execution_scheduler`.
 Its allocation counters, selection sequence, and timestamps survive worker restarts,
 so restarting a worker does not reset a project's place in weighted allocation.
-Every scheduling round also persists the considered project candidates and their
+Every scheduling round also persists the considered project/job options and their
 allocation or deferral result. Status projections expose each slice's eligibility,
 project queue position, weight and weighted-allocation rank, capability fit, and
 the capacity, project-limit, counted-resource, dependency, or lock constraint that

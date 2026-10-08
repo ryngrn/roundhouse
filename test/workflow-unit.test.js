@@ -39,6 +39,18 @@ test("unit: threshold boundaries, authority, configuration routing and readiness
   assert.throws(() => validateDecision({ ...decision, project_confidence: 2 }));
   assert.throws(() => validateDecision({ ...decision, private_reasoning: "not allowed" }));
 });
+test("unit: slice contracts preserve explicit repository and capability requirements", () => {
+  const modeled = structuredClone(decision);
+  Object.assign(modeled.work_items[0], {
+    repository_required: false,
+    required_capabilities: ["research", "integration", "scheduling", "artifact", "external-action", "human-task"],
+  });
+  assert.equal(validateDecision(modeled).work_items[0].repository_required, false);
+  assert.deepEqual(modeled.work_items[0].required_capabilities, ["research", "integration", "scheduling", "artifact", "external-action", "human-task"]);
+  assert.throws(() => validateDecision({ ...structuredClone(decision), work_items: [{
+    ...decision.work_items[0], repository_required: false, required_capabilities: ["Human Task"],
+  }] }), /stable lowercase/);
+});
 test("unit: idempotent submission, conflicting keys and owner-safe lock release", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-store-"));
   const store = new Store(directory);

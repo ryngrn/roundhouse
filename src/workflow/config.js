@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import { agentRoleIds } from "./roles.js";
 
-export const shippingModes = ["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy"];
+export const shippingModes = ["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy", "durable_output", "artifact"];
 const check = (value, message) => { if (!value) throw new Error(message); };
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 export const commandValid = (command) => Array.isArray(command) && command.length > 0 && command.every((value) => nonempty(value));
@@ -43,9 +43,6 @@ function normalizeProjects(raw, root, execution) {
     check(Number.isInteger(max_concurrent_runs) && max_concurrent_runs > 0, "Project concurrency must be a positive integer.");
     check(max_concurrent_runs <= execution.capacity, `Project ${project.id} concurrency cannot exceed global execution capacity.`);
     const required_capabilities = stringSet(project.required_capabilities ?? [], `Project ${project.id} required_capabilities`);
-    for (const capability of required_capabilities) {
-      check(execution.capabilities.includes(capability), `Project ${project.id} requires undeclared execution capability: ${capability}`);
-    }
     const resource_requirements = resourceMap(project.resource_requirements ?? {}, `Project ${project.id} resource_requirements`);
     for (const [resource, amount] of Object.entries(resource_requirements)) {
       check(execution.resource_limits[resource] !== undefined, `Project ${project.id} requires resource without a global limit: ${resource}`);
@@ -67,7 +64,7 @@ function normalizeProjects(raw, root, execution) {
       review_after_shipping: false,
       project_confidence: 0.85,
       execution_confidence: 0.85,
-      shipping: "push_branch",
+      shipping: project.repository_required === false ? "durable_output" : "push_branch",
       continuation: "stop_after_job",
       max_rework_attempts: 1,
       ...(project.policy ?? {}),
@@ -81,11 +78,18 @@ function normalizeProjects(raw, root, execution) {
     check(["local", "herdr"].includes(runtime), "Runtime must be local or herdr.");
     const herdr = runtime === "herdr" ? { workspace_mode: "shared_worktree", ...(project.herdr ?? {}) } : null;
     const machineLocal = herdr?.workspace_mode === "machine_local";
-    if (!machineLocal) check(nonempty(project.repository), `Project ${project.id} requires repository for this software runtime.`);
+    const repository_required = project.repository_required ?? true;
+    check(typeof repository_required === "boolean", `Project ${project.id} repository_required must be boolean.`);
+    check(!repository_required || machineLocal || nonempty(project.repository), `Project ${project.id} requires a repository.`);
+    if (runtime === "herdr" && !machineLocal) check(nonempty(project.repository), `Project ${project.id} shared-worktree Herdr runtime requires a repository.`);
+    check(machineLocal || repository_required || ["durable_output", "artifact"].includes(policy.shipping),
+      `Repository-free project ${project.id} requires durable_output shipping.`);
     const repository = nonempty(project.repository) ? fs.realpathSync(path.resolve(root, project.repository)) : null;
-    check(Array.isArray(project.verification) && project.verification.length > 0, "At least one verification command is required.");
+    const verification = project.verification ?? [];
+    check(Array.isArray(verification), "Verification must be an array.");
+    check(!repository_required || verification.length > 0, "Repository-backed projects require at least one verification command.");
     const verificationKeys = new Set();
-    for (const rule of project.verification) {
+    for (const rule of verification) {
       check(nonempty(rule.id) && !verificationKeys.has(rule.id), "Verification IDs must be nonempty and unique.");
       verificationKeys.add(rule.id);
       check(commandValid(rule.command), "Verification command must be an argv array.");
@@ -114,6 +118,7 @@ function normalizeProjects(raw, root, execution) {
     const self_hosting = project.self_hosting ?? null;
     if (self_hosting !== null) {
       check(!machineLocal, "Machine-local Herdr projects cannot use local self_hosting worktree controls.");
+      check(repository, "Self-hosted projects require a configured repository.");
       check(self_hosting && typeof self_hosting === "object" && !Array.isArray(self_hosting), "self_hosting must be an object.");
       check(self_hosting.isolated_worktree === true, "Self-hosted projects must require an isolated worktree.");
       check(self_hosting.restart_after_delivery === false, "Self-hosted projects cannot restart the live service during delivery.");
@@ -121,6 +126,7 @@ function normalizeProjects(raw, root, execution) {
       check(!["merge_to_main", "deploy"].includes(policy.shipping), "Self-hosted projects cannot auto-merge or deploy.");
     }
     check(project.context_sources === undefined || (Array.isArray(project.context_sources) && project.context_sources.every((source) => typeof source === "string")), "context_sources must be file paths.");
+    check(repository || !(project.context_sources?.length), "context_sources require a configured repository.");
     const suppliedAgent = project.agent ?? {};
     check(suppliedAgent && typeof suppliedAgent === "object" && !Array.isArray(suppliedAgent), "agent must be an object.");
     const agent = {
@@ -139,6 +145,7 @@ function normalizeProjects(raw, root, execution) {
       for (const [role, sources] of Object.entries(mapping)) {
         check(agentRoleIds.includes(role), `Unknown role in agent.${field}: ${role}`);
         check(Array.isArray(sources) && sources.every(nonempty), `agent.${field}.${role} must contain file paths.`);
+        check(repository || sources.length === 0, `agent.${field}.${role} requires a configured repository.`);
       }
     }
     if (!repository) {
@@ -167,7 +174,8 @@ function normalizeProjects(raw, root, execution) {
       check(deployment && typeof deployment === "object" && !Array.isArray(deployment), "Invalid deployment configuration.");
     }
     return {
-      ...project, repository, weight, max_concurrent_runs, required_capabilities, resource_requirements, metric_definitions, policy, executor,
+      ...project, repository, repository_required, verification, weight, max_concurrent_runs,
+      required_capabilities, resource_requirements, metric_definitions, policy, executor,
       runtime, ...(herdr ? { herdr } : {}), timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
       ...(deployment ? { deployment } : {}),
@@ -179,12 +187,29 @@ export function validateWorkflowConfig(raw, filename) {
   check(raw && typeof raw === "object" && !Array.isArray(raw), "Configuration must be an object.");
   const absolute = path.resolve(filename);
   check(raw.execution === undefined || plainObject(raw.execution), "execution must be an object.");
-  for (const key of Object.keys(raw.execution ?? {})) check(["capacity", "capabilities", "resource_limits"].includes(key), `Unknown execution setting: ${key}`);
+  for (const key of Object.keys(raw.execution ?? {})) check(["capacity", "capabilities", "resource_limits", "providers"].includes(key), `Unknown execution setting: ${key}`);
   const suppliedExecution = raw.execution ?? {};
+  const capabilities = stringSet(suppliedExecution.capabilities ?? [], "execution.capabilities");
+  const suppliedProviders = suppliedExecution.providers;
+  check(suppliedProviders === undefined || Array.isArray(suppliedProviders), "execution.providers must be an array.");
+  const providers = (suppliedProviders ?? [{ id: "local-project", kind: "project", capabilities }]).map((provider) => {
+    check(plainObject(provider), "Execution provider must be an object.");
+    for (const key of Object.keys(provider)) check(["id", "kind", "capabilities", "command"].includes(key), `Unknown execution provider setting: ${key}`);
+    check(nonempty(provider.id) && contractKey.test(provider.id), "Execution provider id must be a stable lowercase identifier.");
+    check(["project", "command"].includes(provider.kind), `Execution provider ${provider.id} kind must be project or command.`);
+    const declared = stringSet(provider.capabilities ?? [], `Execution provider ${provider.id} capabilities`);
+    check(declared.every((capability) => capabilities.includes(capability)), `Execution provider ${provider.id} declares a capability unavailable on this installation.`);
+    if (provider.kind === "command") check(commandValid(provider.command), `Execution provider ${provider.id} requires an argv array.`);
+    else check(provider.command === undefined, `Project execution provider ${provider.id} cannot define a command.`);
+    return { ...provider, capabilities: declared };
+  });
+  check(new Set(providers.map((provider) => provider.id)).size === providers.length, "Execution provider ids must be unique.");
+  check(providers.length > 0, "At least one execution provider is required.");
   const execution = {
     capacity: suppliedExecution.capacity ?? 1,
-    capabilities: stringSet(suppliedExecution.capabilities ?? [], "execution.capabilities"),
+    capabilities,
     resource_limits: resourceMap(suppliedExecution.resource_limits ?? {}, "execution.resource_limits"),
+    providers,
   };
   check(Number.isInteger(execution.capacity) && execution.capacity > 0 && execution.capacity <= 256, "execution.capacity must be 1–256.");
   const projects = normalizeProjects(raw, path.dirname(absolute), execution);
@@ -237,6 +262,7 @@ export function projectContext(project, { role } = {}) {
   const uniqueSources = [...new Set(sources)];
   check(uniqueSources.length <= project.context_limits.max_files, `Project context exceeds ${project.context_limits.max_files} files.`);
   let total = 0;
+  check(project.repository || uniqueSources.length === 0, "Project context files require a configured repository.");
   return { ...project, context: uniqueSources.map((relative) => {
     const filename = fs.realpathSync(path.resolve(project.repository, relative));
     const rel = path.relative(project.repository, filename);

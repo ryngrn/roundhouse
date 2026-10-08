@@ -5,8 +5,9 @@ import path from "node:path";
 import test from "node:test";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { Store } from "../src/workflow/store.js";
-import { compareDispatchCandidates, dispatchConsiderations, eligibleProjectHead, executionReservation, projectExecutionEligible, projectQueueHead, recordAllocation, recordDispatchRound, reservationAssessment, reservationFits, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
+import { compareDispatchCandidates, dispatchConsiderations, eligibleProjectHead, executionEligibility, executionReservation, projectExecutionEligible, projectQueueHead, recordAllocation, recordDispatchRound, reservationAssessment, reservationFits, schedulerState, weightedAllocation } from "../src/workflow/scheduler.js";
 import { statusView } from "../src/workflow/views.js";
+import { CapabilityRuntime, ExecutionAdapterRegistry, selectExecutionProvider } from "../src/workflow/execution-adapters.js";
 
 function manifest(repository, changes = {}) {
   return {
@@ -20,7 +21,8 @@ function manifest(repository, changes = {}) {
 test("scheduler contract: execution capacity defaults to one without changing single-slot projects", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-capacity-"));
   const config = validateWorkflowConfig(manifest(directory), path.join(directory, "config.yaml"));
-  assert.deepEqual(config.execution, { capacity: 1, capabilities: [], resource_limits: {} });
+  assert.deepEqual(config.execution, { capacity: 1, capabilities: [], resource_limits: {},
+    providers: [{ id: "local-project", kind: "project", capabilities: [] }] });
   assert.equal(config.projects[0].max_concurrent_runs, 1);
   assert.deepEqual(config.projects[0].required_capabilities, []);
   assert.deepEqual(config.projects[0].resource_requirements, {});
@@ -33,9 +35,114 @@ test("scheduler contract: invalid capacity, capability, project limit, and resou
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { capacity: 0 } }, filename), /execution.capacity/);
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { capacity: 2, capabilities: ["GPU"] } }, filename), /stable lowercase/);
   assert.throws(() => validateWorkflowConfig(manifest(directory, { max_concurrent_runs: 2 }), filename), /global execution capacity/);
-  assert.throws(() => validateWorkflowConfig({ ...manifest(directory, { required_capabilities: ["gpu"] }), execution: { capabilities: [] } }, filename), /undeclared execution capability/);
+  const unavailable = validateWorkflowConfig({ ...manifest(directory, { required_capabilities: ["gpu"] }), execution: { capabilities: [] } }, filename);
+  assert.deepEqual(unavailable.projects[0].required_capabilities, ["gpu"]);
+  assert.equal(projectExecutionEligible(unavailable.projects[0], unavailable.execution), false);
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { resource_limits: { gpu: 0 } } }, filename), /positive integer/);
   assert.throws(() => validateWorkflowConfig({ ...manifest(directory, { resource_requirements: { gpu: 2 } }), execution: { resource_limits: { gpu: 1 } } }, filename), /more gpu/);
+  assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { capabilities: ["research"], providers: [
+    { id: "research", kind: "command", capabilities: ["external-action"], command: ["provider"] },
+  ] } }, filename), /unavailable on this installation/);
+  assert.throws(() => validateWorkflowConfig({ ...manifest(directory), execution: { providers: [
+    { id: "duplicate", kind: "project", capabilities: [] }, { id: "duplicate", kind: "command", capabilities: [], command: ["provider"] },
+  ] } }, filename), /ids must be unique/);
+});
+
+test("execution providers: registration and selection depend only on complete capability fit", () => {
+  const execute = async () => ({ passed: true });
+  const registry = new ExecutionAdapterRegistry([
+    { id: "wide", capabilities: ["research", "connected-source", "scheduling", "artifact", "human-task"], execute },
+    { id: "zeta", capabilities: ["research", "artifact"], execute },
+    { id: "alpha", capabilities: ["research", "artifact"], execute },
+    { id: "scheduling", capabilities: ["scheduling"], execute },
+  ]);
+  assert.equal(registry.select(["research", "artifact"]).id, "alpha");
+  assert.equal(registry.select(["research", "scheduling"]).id, "wide");
+  assert.equal(registry.select(["research", "human-task"]).id, "wide");
+  assert.equal(registry.select(["connected-source", "artifact"]).id, "wide");
+  assert.equal(registry.select(["research", "unknown"]), null);
+  assert.throws(() => registry.require(["research", "unknown"]), /research, unknown/);
+  assert.throws(() => registry.register({ id: "alpha", capabilities: [], execute }), /Duplicate/);
+});
+
+test("execution providers: capabilities split across providers are an unsupported combination", () => {
+  const providers = [
+    { id: "research", capabilities: ["research"] },
+    { id: "calendar", capabilities: ["scheduling"] },
+  ];
+  assert.equal(selectExecutionProvider(providers, ["research"]), providers[0]);
+  assert.equal(selectExecutionProvider(providers, ["research", "scheduling"]), null);
+  const eligibility = executionEligibility({ max_concurrent_runs: 1, repository_required: false,
+    required_capabilities: ["research", "scheduling"], resource_requirements: {} }, {
+    capacity: 1, capabilities: ["research", "scheduling"], resource_limits: {}, providers,
+  });
+  assert.equal(eligibility.eligible, false);
+  assert.equal(eligibility.reasons[0].code, "provider_unavailable");
+});
+
+test("execution providers: command adapters and the existing project runtime share one contract", async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-provider-runtime-"));
+  let projectCalls = 0;
+  const runtime = new CapabilityRuntime([
+    { id: "software", kind: "project", capabilities: [] },
+    { id: "operations", kind: "command", capabilities: ["research", "scheduling"], command: [
+      process.execPath, "-e", "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({received:JSON.parse(s).provider})))",
+    ] },
+  ], { execute: async () => { projectCalls += 1; return { passed: true, exit_code: 0 }; } });
+  const project = { required_capabilities: [], timeout_ms: 10_000 };
+  const baseJob = { work: { required_capabilities: [] }, project_context: { agent_profile: { id: "general" }, purpose: "test" } };
+  const software = await runtime.execute({ project, job: baseJob, workspace, previous_failure: null, onStart: () => {} });
+  assert.equal(projectCalls, 1);
+  assert.deepEqual(software.provider, { id: "software", capabilities: [], required: [] });
+  const operations = await runtime.execute({ project, job: { ...baseJob, work: { required_capabilities: ["research", "scheduling"] } },
+    workspace, previous_failure: null, onStart: () => {} });
+  assert.equal(projectCalls, 1);
+  assert.equal(operations.output.received.id, "operations");
+  assert.deepEqual(operations.provider.required, ["research", "scheduling"]);
+});
+
+test("scheduler contract: repository requirements are independent from capability requirements", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-repository-optional-"));
+  const filename = path.join(directory, "config.yaml");
+  const config = validateWorkflowConfig({
+    execution: { capabilities: ["research"] },
+    projects: [{
+      id: "research", name: "Research", purpose: "Trace sources", success_state: "A reviewable artifact exists", status: "active",
+      repository_required: false, required_capabilities: ["research", "artifact"], verification: [],
+    }],
+  }, filename);
+  assert.equal(config.projects[0].repository, null);
+  assert.equal(config.projects[0].repository_required, false);
+  assert.deepEqual(config.projects[0].required_capabilities, ["research", "artifact"]);
+  assert.equal(projectExecutionEligible(config.projects[0], config.execution), false);
+  assert.throws(() => validateWorkflowConfig({
+    projects: [{ id: "invalid", name: "Invalid", purpose: "Test", success_state: "Done", status: "active", verification: [] }],
+  }, filename), /requires a repository/);
+});
+
+test("scheduler contract: slice capabilities produce durable, specific ineligibility evidence", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-slice-capability-"));
+  const store = new Store(directory);
+  const project = { id: "operations", status: "active", weight: 1, max_concurrent_runs: 1, repository_required: false,
+    required_capabilities: ["research"], resource_requirements: {}, policy: { shipping: "commit_only" } };
+  const job = { id: "operations-job", parent_id: "item", project_id: "operations", position: 0, state: "Ready", dependencies: [],
+    attempts: [], history: [], work: { title: "Coordinate follow-up", repository_required: false,
+      required_capabilities: ["integration", "scheduling", "artifact", "external-action", "human-task"] } };
+  store.change((data) => {
+    data.projects.operations = {};
+    data.items.item = { id: "item", project_id: "operations", state: "Ready", input: { text: "Coordinate" }, questions: [], history: [], job_ids: [job.id] };
+    data.jobs[job.id] = job;
+    const considerations = dispatchConsiderations(data, [project], {
+      capacity: 1, capabilities: ["research", "integration", "scheduling", "artifact"], resource_limits: {},
+    }, { canDispatch: () => true });
+    assert.equal(considerations[0].eligible, false);
+    assert.deepEqual(considerations[0].reservation.constraints.capability.missing, ["external-action", "human-task"]);
+    recordDispatchRound(data, considerations, null, 1, "2026-01-01T00:00:00.000Z");
+  });
+  const evidence = statusView(new Store(directory).read()).allocations.latest.operations;
+  assert.equal(evidence.reason.code, "capability_mismatch");
+  assert.match(evidence.reason.message, /external-action, human-task/);
+  assert.deepEqual(evidence.constraints.repository, { required: false, configured: false, value: null, fits: true });
 });
 
 test("scheduler contract: weighted allocation state is durable across store reconstruction", () => {
@@ -87,6 +194,7 @@ test("scheduler contract: allocation explanations persist every eligibility and 
   assert.deepEqual(alpha.queue, { position: 1, length: 1, slice_position: 0 });
   assert.deepEqual(alpha.fairness, { weight: 3, allocations_before: 0, weighted_allocation: 0, rank: 1, recovery_precedence: false });
   assert.deepEqual(alpha.constraints.capability, { required: ["cpu"], available: ["cpu"], missing: [], fits: true });
+  assert.deepEqual(alpha.constraints.provider, { selected: null, fits: true });
   assert.equal(alpha.constraints.capacity.limit, 2);
   assert.equal(alpha.constraints.resources[0].resource, "browser");
   assert.match(view.allocations.latest.beta.reason.message, /weighted allocation/);

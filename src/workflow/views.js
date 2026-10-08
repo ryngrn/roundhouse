@@ -1,5 +1,6 @@
 import { displayState } from "./presentation.js";
 import { digest } from "../storage/repository.js";
+import { projectSlug } from "./project-model.js";
 
 const activeStates = new Set(["Decision", "Executing", "Verification", "Rework"]);
 const queuedStates = new Set(["Depot", "Ready", "Imported Pending"]);
@@ -44,11 +45,11 @@ export function itemView(data, item) {
   }));
   const completionReports = completedJobs.map((job) => job.attempts.at(-1)?.execution?.report).filter(Boolean);
   const completionResults = completedJobs.map((job) => job.shipping?.result).filter((value) => value !== undefined && value !== null);
-  const outputs = completedJobs.flatMap((job) => job.shipping?.outputs ?? []);
   const deliveryUrls = deliveries.map((delivery) => delivery.deployment?.url ?? delivery.deployment?.deploy_url).filter(Boolean);
   const importedOutcome = item.legacy_depot?.Outcome || item.legacy_depot?.["Delivery Summary"] || null;
   const outcome = state === "Shipped"
     ? [completionReports.map((report) => report.summary).join(" "),
+        completionResults.map((result) => result.summary).filter(Boolean).join(" "),
         `${completedJobs.length} work item${completedJobs.length === 1 ? "" : "s"} verified and shipped by Roundhouse.`,
         deliveryUrls.length ? `Delivery: ${deliveryUrls.join(", ")}` : ""].filter(Boolean).join(" ")
     : state === "Imported History" ? importedOutcome ?? "Imported completed history from the archived Notion Depot."
@@ -63,12 +64,14 @@ export function itemView(data, item) {
     answered_at: question.answer?.at ?? question.updated_at ?? null,
   }));
   const allocationDecisions = data.system_metadata?.execution_scheduler?.decisions ?? [];
+  const legacyProject = item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id] : null;
+  const assignedProject = item.project_id ?? (legacyProject?.name && legacyProject.name.toLowerCase() !== "unassigned"
+    ? projectSlug(legacyProject.name) : null);
   return {
     id: item.id,
     state,
     revision: item.revision,
-    project: item.project_id ?? null,
-    project_candidate: item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id] ?? null : null,
+    project: assignedProject,
     priority: item.priority ?? null,
     title,
     summary: item.input.text.slice(0, 240),
@@ -98,6 +101,7 @@ export function itemView(data, item) {
     legacy,
     requires_reevaluation: item.requires_reevaluation === true,
     execution_eligible: item.execution_eligible !== false,
+    execution_ineligibility_reasons: item.execution_ineligibility_reasons ?? [],
     triage: item.triage ? {
       status: item.triage.status ?? null,
       reason: item.triage.reason ?? item.history.at(-1)?.reason ?? null,
@@ -110,18 +114,23 @@ export function itemView(data, item) {
     agent_role: currentJob?.agent_role ?? item.agent_role ?? null,
     owning_node: currentJob?.owning_node ?? item.owning_node ?? data.projects?.[item.project_id]?.owning_node ?? null,
     verification_status: checks.length ? (checks.every((check) => check.passed) ? "Passed" : "Failed") : (state === "Verification" ? "Running" : "Not run"),
-    shipping_status: deliveries.length ? (deliveries.every((delivery) => delivery.deployment?.status === "succeeded" || delivery.pushed || delivery.commit) ? "Delivered" : "Pending") : (state === "Shipped" ? "Shipped" : "Not shipped"),
+    shipping_status: deliveries.length ? (deliveries.every((delivery) => delivery.deployment?.status === "succeeded" || delivery.pushed || delivery.commit || delivery.reference) ? "Delivered" : "Pending") : (state === "Shipped" ? "Shipped" : "Not shipped"),
     prior_decisions: answeredQuestions,
     supersedes: item.supersedes ?? null,
     superseded_by: item.superseded_by ?? null,
     history: (item.history ?? []).map((event) => ({ from: event.from ?? null, to: event.to, reason: event.reason, at: event.at })),
-    evidence: { checks, deliveries, completion_reports: completionReports, completion_results: completionResults, outputs },
+    evidence: { checks, deliveries, completion_reports: completionReports, completion_results: completionResults,
+      outputs: deliveries.flatMap((delivery) => delivery.outputs.map((output) => ({ ...output,
+        reference: `${delivery.reference}/${encodeURIComponent(output.path)}` }))) },
     jobs: jobs.map((job) => ({
       id: job.id,
       title: job.work.title,
       state: job.state,
       reason: job.history.at(-1)?.reason ?? null,
       attempts: job.attempts.length,
+      latest_run: job.attempts.at(-1)?.run ?? null,
+      latest_failure: job.attempts.at(-1)?.failure ?? null,
+      reconciliation: job.reconciliation ?? job.delivery_intent?.reconciliation ?? null,
       agent_role: job.agent_role ?? "general",
       shipping: job.shipping ?? null,
       latest_run: job.attempts?.at(-1)?.run ?? null,
@@ -255,6 +264,12 @@ function projectedStandaloneItem(data, item) {
 // they have no jobs, so every visible record has one stable authoritative ID.
 export function dashboardProjection(data, config, { connection = {} } = {}) {
   const parentStatus = statusView(data);
+  const projects = Object.fromEntries((config?.projects ?? []).map((project) => [project.id, {
+    ...data.projects?.[project.id], id: project.id, name: project.name, configured: true,
+    repository: project.repository ?? null, repository_required: project.repository_required,
+    status: project.status,
+  }]));
+  for (const [id, project] of Object.entries(data.projects ?? {})) projects[id] ??= project;
   const items = [
     ...Object.values(data.jobs ?? {}).map((job) => projectedJob(data, job, config)),
     ...Object.values(data.items ?? {}).filter((item) => !(item.job_ids ?? []).length)
@@ -277,6 +292,7 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
     projection_revision,
     overview: {
       ...parentStatus,
+      projects,
       projection_revision,
       items,
       counts,
@@ -323,7 +339,6 @@ export function statusView(data, filters = {}) {
       decisions,
     },
     projects: data.projects,
-    project_candidates: data.project_candidates ?? {},
     system_metadata: data.system_metadata ?? {},
   };
 }

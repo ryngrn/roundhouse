@@ -13,7 +13,7 @@ through the one-time archive importer.
 | Durable workflow | Authoritative Mac Studio local repository, state machine, Engine | Own claims, transitions, dependencies, human gates and delivery intent |
 | Hosted relay | Aiven dashboard projection and remote-command queue | Mirror canonical job records without becoming workflow authority |
 | Triage control plane | Independent bounded worker pass with durable attempts/backoff | Release imported work safely, classify, reconcile exact identities, slice, question, block, or make Ready |
-| Execution runtime | Per-project local subprocess or opt-in Herdr adapter | `execute({project, job, workspace, previous_failure, onStart, onRemoteStart})` returns operational result |
+| Execution runtime | Capability-selected provider over local Codex, opt-in Herdr, project command, or registered command adapters | Providers declare stable IDs/capabilities; `execute({project, job, workspace, previous_failure, onStart, onRemoteStart})` returns operational result |
 | Verification | Configured argv commands, sourced role evidence, plus unchanged-commit check | `verify({project, workspace, commit, onStart})` returns checks and commit evidence |
 | Shipping provider | Git worktree/commit/push plus fixture or command deployment | `supports`, `lock`, `prepare`, `snapshot`, `unchanged`, `ship` |
 | Human feedback | Batched browser decision sessions, CLI approval/clarification, durable questions, and MCP answers | Revision-bound atomic response set, durable audit record, exactly one readiness reevaluation |
@@ -82,7 +82,7 @@ when unavailable; it must never fall back to a stale local file. Conversely, rel
 failure does not transfer workflow authority away from the Studio's local store.
 
 One-time Notion Depot imports add immutable provenance, legacy metadata,
-non-executable project candidates, and a durable cutover marker. `Imported History`
+ordinary project assignments without execution configuration, and a durable cutover marker. `Imported History`
 is terminal. `Imported Pending` is eligible only for the triage control plane: triage
 first commits a release into Depot with legacy status and provenance recorded as
 non-authoritative evidence, then performs a normal native evaluation. It can never
@@ -111,6 +111,19 @@ facts with the assessment made inside the atomic claim transaction. The CLI, API
 and control room project these records after restart instead of interpreting logs.
 
 ## Extending execution
+
+Execution providers are registered under `execution.providers` and selected only by
+the union of project and slice capability requirements. A provider must support the
+entire set; Roundhouse never guesses an order for composing partial providers. The
+smallest matching capability set wins, with provider ID as a deterministic tie-break.
+The selected provider and required capabilities are retained with execution evidence.
+This generic contract covers research, connected-source actions, scheduling,
+artifact persistence, and human-task handling without importing their provider APIs
+or policy into the Engine. A command adapter receives the normalized work packet,
+durable run identity, and input digest on stdin in the prepared workspace. Exit zero
+means operational success; stdout may be empty or contain one JSON object with
+provider-owned results. Repository-free runs require a structured result or
+workspace artifact. Verification and delivery remain Roundhouse-owned boundaries.
 
 For a new CLI executor, configure `executor.kind: command` with an argv array.
 It receives JSON on stdin containing `work`, `project_context`, and
@@ -155,9 +168,12 @@ Implement a provider that acquires resource ownership, prepares the target,
 captures an immutable candidate identity, checks identity after verification, and
 ships only passing evidence. Return repository/resource reference, branch/version,
 commit/artifact identity, timestamp, verification and optional PR/deployment data.
-Register other supported policies explicitly. A document provider can use artifact
-versions in place of Git SHAs while retaining the same lifecycle. Non-code delivery
-is not implemented by the current Git adapter.
+`durable_output` embeds bounded artifact bodies, hashes, provider provenance, and a
+versioned reference in authoritative state while also writing an inspection
+manifest. It uses artifact versions in place of Git SHAs while retaining the same
+intent-before-delivery, verification, completion, failure, and reconciliation
+lifecycle. Structured results can represent sourced briefs, findings, plans,
+records, and next-action requests without a commit or deployment.
 
 ## Configuration and audit trust
 

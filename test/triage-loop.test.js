@@ -105,6 +105,24 @@ test("continuous triage automatically evaluates new Depot work without dispatch"
   assert.equal(state.jobs[`${item.id}-1`].attempts.length, 0);
 });
 
+test("readiness retains work while reporting unavailable slice capabilities", async () => {
+  const h = harness();
+  const item = h.submit("research, schedule, and publish the result");
+  const engine = engineWith(h, async ({ projects }) => executable(projects[0], {
+    work_items: [{ title: "Publish research", outcome: "A sourced artifact is coordinated and published.",
+      repository_required: true, required_capabilities: ["research", "scheduling", "artifact", "external-action"], acceptance_criteria: [] }],
+  }));
+  await engine.runTriage();
+  const ready = itemView(h.store.read(), h.store.read().items[item.id]);
+  assert.equal(ready.state, "Ready");
+  assert.equal(ready.execution_eligible, false);
+  assert.equal(ready.execution_ineligibility_reasons[0].code, "capability_mismatch");
+  assert.match(ready.execution_ineligibility_reasons[0].message, /research, scheduling, artifact, external-action/);
+  const dispatched = await engine.runDispatch();
+  assert.equal(dispatched.executed, 0);
+  assert.equal(itemView(dispatched, dispatched.items[item.id]).jobs[0].allocation.reason.code, "capability_mismatch");
+});
+
 test("Imported Pending is explicitly released, audited and triaged but never executed by triage", async () => {
   const h = harness();
   const item = h.submit("legacy Ready evidence");
