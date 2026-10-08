@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { deriveRelayHealth, RelayHealthMonitor, RELAY_STATES } from "../src/server/relay-health.js";
+import { deriveRelayHealth, relayHealthStatusView, RelayHealthMonitor, RELAY_STATES } from "../src/server/relay-health.js";
 import { HttpWakeSource } from "../src/server/wake-source.js";
 import { WakeChannelVerifier, probeWakeChannel, verifiedWakeConfiguration } from "../src/server/wake-channel-verifier.js";
 import { WorkerLoop } from "../src/server/worker.js";
@@ -31,6 +31,24 @@ test("relay health deterministically derives all four visible states and stale t
     RELAY_STATES.DISCONNECTED);
   assert.equal(deriveRelayHealth(evidence({ wake: -11 * minute, sync: -minute }), options).state, RELAY_STATES.HEARTBEAT_ONLY);
   assert.equal(deriveRelayHealth(evidence({ wake: -minute, sync: -6 * minute }), options).state, RELAY_STATES.DISCONNECTED);
+});
+
+test("public relay projection allowlists every visible state and unavailable telemetry", () => {
+  for (const state of Object.values(RELAY_STATES)) {
+    const projected = relayHealthStatusView({ enabled: true, state, observed_at: at(0),
+      evidence: { ...evidence({ wake: -minute, sync: -minute, verified: true }),
+        topic: "private-topic", token: "secret",
+        reconnect: { status: "backoff", consecutive_failures: 2, backoff_ms: 100, next_retry_at: at(minute) },
+        query_usage: { window_started_at: at(-minute), used: 4, budget: 10 } },
+      freshness: { wake: state === RELAY_STATES.CONNECTED, sync: true, wake_verification: true },
+      alert: state === RELAY_STATES.HEARTBEAT_ONLY ? { code: "persistent_relay_drift", since_ms: minute } : null,
+      subscribe_url: "https://wake.example/private-topic?token=secret" }, { now: base });
+    assert.equal(projected.state, state);
+    assert.equal(projected.available, true);
+    assert.doesNotMatch(JSON.stringify(projected), /private-topic|wake\.example|secret|subscribe_url/);
+  }
+  assert.deepEqual(relayHealthStatusView(null), { available: false, enabled: false, state: null,
+    observed_at: null, evidence: null, freshness: { sync: false, wake: false, wake_verification: false }, alert: null });
 });
 
 test("relay observations persist across restart with retry and bounded query evidence", async () => {
@@ -78,6 +96,11 @@ test("relay health stores only allowlisted non-secret evidence and emits persist
   const status = monitor.status();
   assert.equal(status.state, RELAY_STATES.HEARTBEAT_ONLY);
   assert.equal(status.alert.code, "persistent_relay_drift");
+
+  await monitor.recordWakeReceived();
+  const recovered = monitor.status();
+  assert.equal(recovered.state, RELAY_STATES.CONNECTED);
+  assert.equal(recovered.alert, null);
 });
 
 test("wake source emits only structured verification and retry observations", async () => {

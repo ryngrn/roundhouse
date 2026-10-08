@@ -10,7 +10,7 @@ import { handleMcpRequest } from "../mcp/http-server.js";
 import { McpEventBroker, McpEventDrainScheduler } from "../mcp/events.js";
 import { WorkerLoop } from "./worker.js";
 import { HttpWakeSource } from "./wake-source.js";
-import { RelayHealthMonitor } from "./relay-health.js";
+import { RelayHealthMonitor, relayHealthStatusView } from "./relay-health.js";
 import { WakeChannelVerifier, verifiedWakeConfiguration } from "./wake-channel-verifier.js";
 import { openPostgresRelay, RelayProjectionPublisher } from "../relay/postgres-relay.js";
 import { openStorage } from "../storage/open.js";
@@ -79,9 +79,13 @@ function localStorageIdentity(store) {
 }
 
 export async function overviewFor(roundhouse, loop) {
+  const worker = loop.status();
+  const relayHealth = relayHealthStatusView(worker.relay_health);
+  const projectedWorker = { ...worker, relay_health: relayHealth };
   const storage = await roundhouse.getStorageStatus();
   if (!storage.connected) return { items: [], active_jobs: [], untracked_activity: [], needs_you: [], counts: {},
-    connection: { local_service: "connected", storage, worker: loop.status() } };
+    relay_health: relayHealth,
+    connection: { local_service: "connected", storage, worker: projectedWorker } };
   const status = await roundhouse.getWorkStatus();
   const needs = await roundhouse.getNeedsHuman();
   return {
@@ -99,9 +103,10 @@ export async function overviewFor(roundhouse, loop) {
       mcp: "available",
       endpoint: "/mcp",
       chatgpt: "managed externally; local connection state is not observable",
-      worker: loop.status(),
+      worker: projectedWorker,
       storage,
     },
+    relay_health: relayHealth,
   };
 }
 
@@ -143,6 +148,7 @@ export async function startRoundhouseServer({
     captured_at: null,
     items: [], active_jobs: [], untracked_activity: [], needs_you: [], counts: { needs_you: 0, active: 0, queued: 0, completed: 0, blocked: 0 },
     notifications: [], cursor: null,
+    relay_health: relayHealthStatusView(loop.status().relay_health),
     connection: { local_service: "connected", worker: loop.status(), storage: localStorageIdentity(roundhouse.store) },
   };
   const notificationPositions = new Map();
@@ -211,7 +217,10 @@ export async function startRoundhouseServer({
         return send(response, 200, fs.readFileSync(path.join(webRoot, filename), "utf8"), type);
       }
       if (request.method === "GET" && url.pathname === "/health") {
-        return send(response, 200, { status: "ok", service: "roundhouse", storage: localStorageIdentity(roundhouse.store), worker: loop.status(), mcp: "/mcp" });
+        const workerStatus = loop.status();
+        const relayStatus = relayHealthStatusView(workerStatus.relay_health);
+        return send(response, 200, { status: "ok", service: "roundhouse", storage: localStorageIdentity(roundhouse.store),
+          worker: { ...workerStatus, relay_health: relayStatus }, relay_health: relayStatus, mcp: "/mcp" });
       }
       if (request.method === "GET" && url.pathname === "/api/local-snapshot") {
         await refreshLocalSnapshot();
@@ -337,7 +346,9 @@ export async function startRoundhouseServer({
         verifyOrigin(request, origins);
         await jsonBody(request);
         const result = await loop.tick();
-        return send(response, 200, { triaged: result.triaged ?? 0, executed: result.executed ?? 0, worker: loop.status() });
+        const workerStatus = loop.status();
+        return send(response, 200, { triaged: result.triaged ?? 0, executed: result.executed ?? 0,
+          worker: { ...workerStatus, relay_health: relayHealthStatusView(workerStatus.relay_health) } });
       }
       return send(response, 404, { error: "Not Found" });
     } catch (error) {

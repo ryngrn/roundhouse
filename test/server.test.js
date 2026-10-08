@@ -5,7 +5,7 @@ import http from "node:http";
 import vm from "node:vm";
 import { harness } from "./support/harness.js";
 import { RoundhouseService } from "../src/workflow/service.js";
-import { startRoundhouseServer } from "../src/server/app-server.js";
+import { overviewFor, startRoundhouseServer } from "../src/server/app-server.js";
 import { startFrontDoor } from "../src/server/front-door.js";
 import { WorkerLoop } from "../src/server/worker.js";
 import { record } from "../src/workflow/state.js";
@@ -92,6 +92,31 @@ function needsControls(document) {
 function elementText(element) {
   return [element?.textContent || "", ...(element?.children || []).map(elementText)].join(" ");
 }
+
+test("authoritative overview adds a secret-free relay projection without changing queued work", async () => {
+  const queued = { id: "queued-item", state: "Ready", needs_you: false };
+  const roundhouse = {
+    getStorageStatus: async () => ({ connected: true, kind: "local" }),
+    getWorkStatus: async () => ({ items: [queued], active_jobs: [], untracked_activity: [] }),
+    getNeedsHuman: async () => ({ questions: [] }),
+  };
+  const loop = { status: () => ({ running: false, relay_health: { enabled: true, state: "Heartbeat Only",
+    observed_at: "2026-10-08T12:00:00.000Z", evidence: {
+      last_successful_sync_at: "2026-10-08T11:59:00.000Z", topic: "private-topic", credential: "secret",
+      query_usage: { used: 1, budget: 5 } }, freshness: { sync: true },
+    alert: { code: "persistent_relay_drift", since_ms: 60000 } } }) };
+  const overview = await overviewFor(roundhouse, loop);
+
+  assert.equal(overview.items[0], queued);
+  assert.equal(overview.counts.queued, 1);
+  assert.equal(overview.relay_health.state, "Heartbeat Only");
+  assert.deepEqual(overview.connection.worker.relay_health, overview.relay_health);
+  assert.doesNotMatch(JSON.stringify(overview.relay_health), /private-topic|credential|secret/);
+
+  const unavailable = await overviewFor(roundhouse, { status: () => ({ running: false }) });
+  assert.equal(unavailable.counts.queued, 1);
+  assert.equal(unavailable.relay_health.available, false);
+});
 
 test("local server: protected UI, health, API, worker, evidence, config, and notifications form one slice", async (t) => {
   const h = harness({ policy: { shipping: "deploy" }, deployment: { kind: "fixture", environment: "preview" } });
@@ -324,6 +349,63 @@ test("served browser client renders local and machine-local active jobs from the
   assert.match(untracked, /Untracked\s+Possible executor process · PID 909\s+Executable · codex/);
   assert.match(untracked, /Repository worktree · manual-agent\s+\/tmp\/manual-agent/);
   assert.match(untracked, /Observed only · no job, owner, completion, or delivery inferred/);
+});
+
+test("served browser client renders all relay states, stale evidence, budgets, alerts, and unavailable telemetry", async () => {
+  const script = fs.readFileSync(new URL("../src/web/app.js", import.meta.url), "utf8");
+  const states = ["Connected", "Wake Verified", "Heartbeat Only", "Disconnected"];
+  for (const state of states) {
+    const health = {
+      available: true,
+      state,
+      observed_at: "2026-10-08T12:00:00.000Z",
+      evidence: {
+        last_wake_received_at: "2026-10-08T10:00:00.000Z",
+        last_successful_sync_at: "2026-10-08T11:59:00.000Z",
+        wake_verification: { status: "verified", checked_at: "2026-10-08T11:00:00.000Z",
+          failure: null, configuration: "matched", reconciled: false },
+        reconnect: { status: "backoff", consecutive_failures: 2, backoff_ms: 30000,
+          next_retry_at: "2026-10-08T12:00:30.000Z" },
+        query_usage: { used: 7, budget: 20, exhausted: false },
+      },
+      freshness: { wake: state === "Connected", sync: state !== "Disconnected", wake_verification: state === "Wake Verified" },
+      alert: state === "Heartbeat Only" ? { code: "persistent_relay_drift", since_ms: 3600000 } : null,
+    };
+    const overview = { items: [], active_jobs: [], untracked_activity: [], projects: {}, project_candidates: {},
+      allocations: { latest: {} }, counts: { needs_you: 0, active: 0, queued: 0, completed: 0, blocked: 0 },
+      connection: { worker: { running: false, relay_health: health }, storage: { kind: "local", node: null } },
+      relay_health: health };
+    const responses = { "/api/overview": overview, "/api/config": { configuration: { projects: [] } } };
+    const document = browserDocument();
+    const browserFetch = async (pathname) => ({ ok: Boolean(responses[pathname]), status: responses[pathname] ? 200 : 404,
+      text: async () => JSON.stringify(responses[pathname] || { error: "Not found" }) });
+    vm.runInNewContext(script, { document, fetch: browserFetch, crypto: {}, setTimeout: () => 1 }, { filename: "served-app.js" });
+    await settleUntil(() => document.querySelector("#relay-health-heading").textContent === state);
+
+    const rendered = ["relay-health-heading", "relay-health-observed", "relay-last-wake", "relay-last-sync",
+      "relay-verification", "relay-retry", "relay-budget", "relay-alert"]
+      .map((id) => elementText(document.querySelector("#" + id))).join(" ");
+    assert.match(rendered, new RegExp(state));
+    assert.match(rendered, /2026-10-08T10:00:00\.000Z/);
+    assert.match(rendered, /Backoff · 2 failures · 30000 ms/);
+    assert.match(rendered, /7 \/ 20/);
+    assert.equal(document.querySelector("#relay-last-wake").textContent.endsWith(" · stale"), state !== "Connected");
+    assert.equal(document.querySelector("#relay-alert").hidden, state !== "Heartbeat Only");
+    assert.doesNotMatch(rendered, /topic|token|credential/i);
+  }
+
+  const unavailable = { items: [], active_jobs: [], untracked_activity: [], projects: {}, project_candidates: {},
+    allocations: { latest: {} }, counts: { needs_you: 0, active: 0, queued: 0, completed: 0, blocked: 0 },
+    connection: { worker: { running: false }, storage: { kind: "local", node: null } },
+    relay_health: { available: false } };
+  const document = browserDocument();
+  const responses = { "/api/overview": unavailable, "/api/config": { configuration: { projects: [] } } };
+  vm.runInNewContext(script, { document,
+    fetch: async (pathname) => ({ ok: true, status: 200, text: async () => JSON.stringify(responses[pathname]) }),
+    crypto: {}, setTimeout: () => 1 }, { filename: "served-app.js" });
+  await settleUntil(() => document.querySelector("#relay-health-heading").textContent === "Unavailable");
+  assert.match(document.querySelector("#relay-last-wake").textContent, /Unavailable/);
+  assert.equal(document.querySelector("#relay-alert").hidden, true);
 });
 
 test("served browser client renders the authoritative execution summary and drill-down without filling absent provenance", async () => {

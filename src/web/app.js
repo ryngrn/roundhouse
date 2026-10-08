@@ -141,6 +141,58 @@ function renderConnection(overview) {
   for (const [key, id] of Object.entries(countIds)) $("#count-" + id).textContent = overview.counts[key];
 }
 
+function relayTimestamp(value, fresh) {
+  if (!value || Number.isNaN(Date.parse(value))) return "Unavailable";
+  return `${value}${fresh ? "" : " · stale"}`;
+}
+
+function renderRelayHealth(overview) {
+  const health = overview.relay_health ?? overview.connection?.worker?.relay_health;
+  const panel = $("#relay-health");
+  const alert = $("#relay-alert");
+  if (!health?.available) {
+    panel.className = "relay-health relay-unavailable";
+    $("#relay-health-heading").textContent = "Unavailable";
+    $("#relay-health-observed").textContent = "Telemetry is unavailable or not configured.";
+    for (const id of ["relay-last-wake", "relay-last-sync", "relay-verification", "relay-retry", "relay-budget"]) {
+      $("#" + id).textContent = "Unavailable";
+    }
+    alert.hidden = true;
+    alert.replaceChildren();
+    return;
+  }
+
+  const evidence = health.evidence || {};
+  const verification = evidence.wake_verification || {};
+  const reconnect = evidence.reconnect || {};
+  const usage = evidence.query_usage || {};
+  panel.className = `relay-health relay-${slug(health.state)}`;
+  $("#relay-health-heading").textContent = health.state;
+  $("#relay-health-observed").textContent = health.observed_at ? `Observed ${health.observed_at}` : "Observation time unavailable";
+  $("#relay-last-wake").textContent = relayTimestamp(evidence.last_wake_received_at, health.freshness?.wake);
+  $("#relay-last-sync").textContent = relayTimestamp(evidence.last_successful_sync_at, health.freshness?.sync);
+  const verificationStatus = verification.status === "verified" ? "Verified"
+    : verification.status === "failed" ? `Failed${verification.failure ? ` · ${outcomeLabel(verification.failure)}` : ""}` : "Unknown";
+  const configurationStatus = verification.configuration === "matched" ? "configuration matched"
+    : verification.configuration === "mismatched" ? "configuration drift" : null;
+  $("#relay-verification").textContent = [verificationStatus,
+    verification.checked_at && !health.freshness?.wake_verification ? "stale" : null,
+    configurationStatus, verification.reconciled ? "reconciled" : null].filter(Boolean).join(" · ");
+  $("#relay-retry").textContent = reconnect.status === "backoff"
+    ? `Backoff · ${reconnect.consecutive_failures ?? 0} failures · ${reconnect.backoff_ms ?? 0} ms${reconnect.next_retry_at ? ` · next ${reconnect.next_retry_at}` : ""}`
+    : reconnect.status === "connected" ? "Connected · no retry pending" : "Idle · no retry pending";
+  $("#relay-budget").textContent = Number.isFinite(usage.used) && Number.isFinite(usage.budget)
+    ? `${usage.used} / ${usage.budget}${usage.exhausted ? " · exhausted" : ""}` : "Unavailable";
+  if (health.alert?.code === "persistent_relay_drift") {
+    alert.hidden = false;
+    alert.replaceChildren(node("strong", "Persistent relay drift"),
+      node("span", "Check wake configuration and relay database connectivity; queued local work continues safely."));
+  } else {
+    alert.hidden = true;
+    alert.replaceChildren();
+  }
+}
+
 function executionPathLabel(path) {
   return (path || []).map((component) => [outcomeLabel(component.kind), component.provider, component.machine]
     .filter(Boolean).join(" · ")).join(" → ");
@@ -632,7 +684,7 @@ let pendingLoads = 0;
 async function readAndRender() {
   try {
     const [overview, config] = await Promise.all([api("/api/overview"), api("/api/config")]); currentOverview = overview; configuration = config.configuration;
-    renderConnection(overview); renderExecutionOutcomes(overview); renderActiveJobs(overview); renderUntrackedActivity(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
+    renderConnection(overview); renderRelayHealth(overview); renderExecutionOutcomes(overview); renderActiveJobs(overview); renderUntrackedActivity(overview); updateFilterControls(); renderBoard(overview); reconcileOpenSession(overview);
   } catch (error) { $("#connection").textContent = `● App unavailable · ${error.message}`; $("#connection").className = "connection failed"; }
 }
 function load() {

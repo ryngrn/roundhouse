@@ -28,6 +28,22 @@
       </div>
     </section>
 
+    <section id="relay-health" class="relay-health" aria-labelledby="relay-health-heading">
+      <div class="relay-health-summary">
+        <span class="eyebrow">Relay health</span>
+        <h2 id="relay-health-heading">Unavailable</h2>
+        <p id="relay-health-observed">Telemetry is unavailable or not configured.</p>
+      </div>
+      <dl class="relay-health-facts">
+        <div><dt>Last wake</dt><dd id="relay-last-wake">Unavailable</dd></div>
+        <div><dt>Last sync</dt><dd id="relay-last-sync">Unavailable</dd></div>
+        <div><dt>Wake verification</dt><dd id="relay-verification">Unavailable</dd></div>
+        <div><dt>Retry</dt><dd id="relay-retry">Unavailable</dd></div>
+        <div><dt>Query budget</dt><dd id="relay-budget">Unavailable</dd></div>
+      </dl>
+      <div id="relay-alert" class="relay-alert" role="alert" hidden></div>
+    </section>
+
     <details id="execution-outcomes-section" class="execution-outcomes" hidden>
       <summary>
         <span class="execution-outcomes-copy"><span class="eyebrow">Execution paths</span><strong>Autonomous completion</strong><small id="execution-outcomes-coverage"></small></span>

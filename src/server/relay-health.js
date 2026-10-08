@@ -85,6 +85,36 @@ export function deriveRelayHealth(evidence, { now = Date.now(), wakeFreshMs = HO
   };
 }
 
+// Status and dashboard payloads cross a wider trust boundary than the private
+// monitor. Re-project every field so future transport/configuration details can
+// never become public merely because they were added to persisted evidence.
+export function relayHealthStatusView(value, { now = Date.now() } = {}) {
+  if (!value || value.enabled !== true) {
+    return { available: false, enabled: false, state: null, observed_at: null,
+      evidence: null, freshness: { sync: false, wake: false, wake_verification: false }, alert: null };
+  }
+  const clean = sanitizeRelayHealthEvidence(value.evidence, { now });
+  const states = new Set(Object.values(RELAY_STATES));
+  const state = states.has(value.state) ? value.state : RELAY_STATES.DISCONNECTED;
+  const alert = state !== RELAY_STATES.CONNECTED && value.alert?.code === "persistent_relay_drift"
+    && Number.isSafeInteger(value.alert.since_ms)
+    && value.alert.since_ms >= 0
+    ? { code: "persistent_relay_drift", since_ms: value.alert.since_ms } : null;
+  return {
+    available: true,
+    enabled: true,
+    state,
+    observed_at: iso(value.observed_at),
+    evidence: clean,
+    freshness: {
+      sync: value.freshness?.sync === true,
+      wake: value.freshness?.wake === true,
+      wake_verification: value.freshness?.wake_verification === true,
+    },
+    alert,
+  };
+}
+
 export class RelayHealthMonitor {
   constructor({ store, enabled = true, now = () => Date.now(), queryBudget = 500,
     queryWindowMs = DAY_MS, derivation = {} } = {}) {
