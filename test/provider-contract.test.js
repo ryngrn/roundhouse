@@ -6,7 +6,7 @@ import test from "node:test";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { claudeDecisionArgs, decisionSchema } from "../src/workflow/decision.js";
 import { claudeDefaultTools, claudeExecutorArgs, claudeResult } from "../src/workflow/runtime.js";
-import { providerCapabilities, providerContract, validateProviderSelection } from "../src/workflow/provider-contract.js";
+import { providerCapabilities, providerCapabilityEvidence, providerContract, providerIdentity, validateProviderSelection } from "../src/workflow/provider-contract.js";
 
 function manifest(root, changes = {}) {
   return { projects: [{ id: "example", name: "Example", purpose: "Exercise provider contracts", success_state: "Checks pass",
@@ -22,6 +22,19 @@ test("provider contract separates decision, conversation, and execution capabili
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-provider-conversation-"));
   const config = validateWorkflowConfig({ ...manifest(root), conversation: { kind: "claude", bin: "/opt/claude" } }, path.join(root, "conversation.yaml"));
   assert.deepEqual(config.conversation, { kind: "claude", bin: "/opt/claude" });
+});
+
+test("provider audit evidence is capability-specific and excludes executable or credential configuration", () => {
+  const configured = { id: "private-provider", kind: "command", capabilities: ["decision", "execution"],
+    command: ["agent", "--token", "secret"], api_key: "secret", reasoning: "private" };
+  assert.deepEqual(providerIdentity(configured), {
+    id: "private-provider", kind: "command", capabilities: ["decision", "execution"],
+  });
+  const evidence = providerCapabilityEvidence([configured], ["execution", "artifact"], null);
+  assert.deepEqual(evidence.capability_probe.results, [{ provider_id: "private-provider",
+    required: ["execution", "artifact"], missing: ["artifact"], supported: false }]);
+  assert.equal(JSON.stringify(evidence).includes("secret"), false);
+  assert.equal(JSON.stringify(evidence).includes("reasoning"), false);
 });
 
 test("legacy Codex defaults and explicit Codex configuration remain unchanged", () => {

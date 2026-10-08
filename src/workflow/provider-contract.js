@@ -12,6 +12,35 @@ export function providerContract(kind) {
   return contracts[kind] ?? null;
 }
 
+// Provider evidence is deliberately an allowlisted projection. Provider
+// configuration may contain executable paths, arguments, tool policy, or future
+// credentials; none of those belong in workflow state or status responses.
+export function providerIdentity(provider, fallbackId = null) {
+  if (!provider || typeof provider !== "object" || Array.isArray(provider)) return null;
+  const contract = providerContract(provider.kind);
+  return {
+    id: provider.id ?? fallbackId ?? provider.kind ?? null,
+    kind: provider.kind ?? null,
+    capabilities: [...(provider.capabilities ?? contract?.capabilities ?? [])],
+  };
+}
+
+export function providerCapabilityEvidence(providers, requiredCapabilities, selected = null) {
+  const required = [...new Set(requiredCapabilities ?? [])];
+  const configured = (providers ?? []).map((provider) => providerIdentity(provider)).filter(Boolean);
+  const probes = configured.map((provider) => {
+    const missing = required.filter((capability) => !provider.capabilities.includes(capability));
+    return { provider_id: provider.id, required: [...required], missing, supported: missing.length === 0 };
+  });
+  const selectedIdentity = selected ? providerIdentity(selected) : null;
+  return {
+    configured,
+    selected: selectedIdentity,
+    invoked: null,
+    capability_probe: { required, results: probes },
+  };
+}
+
 export function validateProviderSelection(provider, capability, label) {
   if (!provider || typeof provider !== "object" || Array.isArray(provider)) throw new Error(`${label} must be a provider object.`);
   if (!providerCapabilities.includes(capability)) throw new Error(`Unknown provider capability: ${capability}.`);

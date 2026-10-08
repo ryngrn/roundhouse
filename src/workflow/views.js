@@ -27,6 +27,9 @@ function jobView(job) {
     attempts: job.attempts?.length ?? 0,
     latest_run: attempt?.run ?? null,
     latest_failure: attempt?.failure ?? null,
+    provider_evidence: job.provider_evidence ?? attempt?.provider_evidence ?? null,
+    latest_attempt_provider: attempt?.provider_evidence ?? null,
+    provider_transitions: job.provider_transitions ?? [],
     reconciliation: job.reconciliation ?? job.delivery_intent?.reconciliation ?? attempt?.run?.reconciliation ?? null,
     agent_role: job.agent_role ?? "general",
     runtime,
@@ -116,6 +119,8 @@ export function itemView(data, item) {
     summary: item.input.text.slice(0, 240),
     raw_intake: item.input.text,
     brief: legacy?.["Normalized Brief"] || item.decision?.reason || null,
+    decision_provider: item.decision?.provider_evidence ?? item.triage?.attempts?.at(-1)?.provider_evidence ?? null,
+    decision_provider_transitions: item.provider_transitions ?? [],
     context: item.input.context ?? null,
     acceptance_criteria: acceptance,
     reason: waitingJob ? assessJobEligibility(waitingJob, data.system_metadata?.condition_signals ?? {}).reason

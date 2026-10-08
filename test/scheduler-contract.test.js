@@ -102,6 +102,17 @@ test("execution providers: command adapters and the existing project runtime sha
   assert.deepEqual(operations.provider.required, ["research", "scheduling"]);
 });
 
+test("execution providers: an active attempt is pinned to its selected provider", async () => {
+  let calls = 0;
+  const runtime = new CapabilityRuntime([{ id: "selected", kind: "project", capabilities: [] }], {
+    execute: async () => { calls += 1; return { passed: true }; },
+  });
+  const request = { project: { required_capabilities: [] }, job: { work: { required_capabilities: [] } },
+    run: { attempt: 1, provider_id: "different" } };
+  await assert.rejects(runtime.execute(request), /cannot change within attempt 1/);
+  assert.equal(calls, 0);
+});
+
 test("execution boundary: Remote Desktop Commander retains operational uses but cannot become a project runtime", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-rdc-boundary-"));
   const filename = path.join(directory, "config.yaml");

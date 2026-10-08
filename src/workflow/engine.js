@@ -5,7 +5,8 @@ import { record } from "./state.js";
 import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
 import { createRuntime, CommandVerifier } from "./runtime.js";
-import { CapabilityRuntime } from "./execution-adapters.js";
+import { CapabilityRuntime, executionProviderEvidence, requiredExecutionCapabilities } from "./execution-adapters.js";
+import { providerCapabilityEvidence, providerIdentity } from "./provider-contract.js";
 import { DeliveryRouter } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
@@ -15,6 +16,17 @@ import { assessJobEligibility, ensureNextOccurrence, initializeJobSchedule, next
 import { actionPolicy, approvalScope, assertProviderAuthorized, classifyAction } from "./actions.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
+
+function configuredDecisionProviderEvidence(configuration) {
+  const selected = providerIdentity(configuration, configuration?.kind ?? "decision-provider");
+  return providerCapabilityEvidence(configuration ? [configuration] : [], ["decision"], selected);
+}
+
+function recordProviderTransition(entity, previousProviderId, providerId, attempt, at) {
+  if (!previousProviderId || !providerId || previousProviderId === providerId) return;
+  entity.provider_transitions ??= [];
+  entity.provider_transitions.push({ from: previousProviderId, to: providerId, attempt, at, reason: "Provider selected for a later attempt." });
+}
 
 function machineLocalEvidence(project, job, execution) {
   const report = execution.remote_report;
@@ -131,8 +143,14 @@ export class Engine {
       }
       item.triage ??= { attempts: [], failure_count: 0 };
       item.triage.attempts ??= [];
+      const providerEvidence = configuredDecisionProviderEvidence(this.config.decision);
+      const previousProviderId = item.triage.attempts.at(-1)?.provider_evidence?.selected?.id ?? null;
+      const providerId = providerEvidence.selected?.id ?? null;
+      const startedAt = new Date(this.clock()).toISOString();
+      recordProviderTransition(item, previousProviderId, providerId, item.triage.attempts.length + 1, startedAt);
       item.triage.attempts.push({ number: item.triage.attempts.length + 1, item_revision: item.revision,
-        started_at: new Date(this.clock()).toISOString(), node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null });
+        started_at: startedAt, node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null,
+        provider_evidence: providerEvidence });
       item.triage.status = "evaluating";
       item.triage.retry_requested_at = null;
       item.triage.next_attempt_at = null;
@@ -142,13 +160,23 @@ export class Engine {
       const item = snapshot.items[id];
       const projects = this.config.projects.map((project) => projectContext(project));
       const selectedProject = item.selected_project ?? item.input.project_id;
+      await this.store.change((data) => {
+        const attempt = data.items[id].triage?.attempts?.at(-1);
+        if (attempt?.provider_evidence?.selected) {
+          attempt.provider_evidence.invoked = structuredClone(attempt.provider_evidence.selected);
+          attempt.provider_evidence.invoked_at = new Date(this.clock()).toISOString();
+        }
+      });
       const proposed = await this.decision.decide({ item: { ...item, related_work: relatedWork(snapshot, item),
         input: { ...item.input, ...(selectedProject ? { project_id: selectedProject } : {}) } }, projects,
         directory: path.join(this.store.directory, "decisions", id, String(item.revision)), onStart: this.processRecorder("items", id) });
       const configuredProject = this.config.projects.find((project) => project.id === proposed.project);
       const role = configuredProject ? inferAgentRole({ item, decision: proposed, project: configuredProject }) : "general";
       const project = configuredProject ? executionProjectContext(configuredProject, role) : null;
-      const decision = project ? inferRoutineAcceptanceCriteria(proposed, project, item, role) : proposed;
+      const modeledDecision = project ? inferRoutineAcceptanceCriteria(proposed, project, item, role) : proposed;
+      const latest = (await this.store.read()).items[id].triage?.attempts?.at(-1);
+      const decision = modeledDecision;
+      const decisionProviderEvidence = structuredClone(latest?.provider_evidence ?? configuredDecisionProviderEvidence(this.config.decision));
       let route = routeDecision(decision, project ? [project] : projects, selectedProject);
       const executionEligibilityReasons = route.state === "Ready" && project
         ? decision.work_items.flatMap((work) => executionEligibility(project, this.config.execution,
@@ -189,7 +217,7 @@ export class Engine {
         }
         current.decision_history ??= [];
         if (current.decision) current.decision_history.push(current.decision);
-        current.decision = decision;
+        current.decision = { ...decision, provider_evidence: decisionProviderEvidence };
         current.decision_key = decisionKey;
         current.decision_id = randomUUID();
         current.project_id = project?.id ?? null;
@@ -306,8 +334,11 @@ export class Engine {
       const approval = item.approval ? { actor: item.approval.actor, item_revision: item.approval.revision,
         approved_at: item.approval.at, scope_digest: approvalScope(work, item.policy_hash) } : null;
       const policy = actionPolicy(work, item.policy_hash, approval);
+      const requiredCapabilities = requiredExecutionCapabilities(item.project_context, { work });
+      const providerEvidence = executionProviderEvidence(this.config.execution.providers, requiredCapabilities);
       data.jobs[id] = record(id, { state: classification === "human_task" ? "Review" : "Ready", parent_id: item.id, project_id: item.project_id,
         work, agent_role: item.agent_role ?? "general", project_context: item.project_context, policy_hash: item.policy_hash,
+        provider_evidence: providerEvidence, provider_transitions: [],
         action_policy: policy,
         ...(classification === "human_task" ? { human_task: { status: "unassigned", assignment: null, evidence: [], completion: null,
           history: [{ from: null, to: "unassigned", actor: item.approval?.actor ?? null, at: new Date().toISOString(),
@@ -334,7 +365,8 @@ export class Engine {
       const contextualProject = project ? executionProjectContext(project, item.agent_role ?? "general") : null;
       if (!contextualProject || digest(contextualProject) !== item.policy_hash) throw new Error("Project context/policy changed. Clarify and re-decide first.");
       // Human approval resolves authority, not missing verification or confidence.
-      const decision = { ...item.decision, safe_to_execute: true, approval_required: false, decision: "execute" };
+      const { provider_evidence: _providerEvidence, ...storedDecision } = item.decision;
+      const decision = { ...storedDecision, safe_to_execute: true, approval_required: false, decision: "execute" };
       const authorized = { ...contextualProject, policy: { ...contextualProject.policy, allow_autonomous: true, approval_required: false } };
       const route = routeDecision(decision, [authorized], item.selected_project ?? item.input.project_id, { approved: true });
       if (route.state !== "Ready") throw new Error(`Approval cannot bypass readiness: ${route.reason}`);
@@ -737,25 +769,51 @@ export class Engine {
       await this.store.change((data) => { data.jobs[id].prepared = prepared; });
       for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {
         const current = (await this.store.read()).jobs[id];
-        const run = { id: randomUUID(), job_id: id, attempt: attempt + 1, provider_id: null, status: "executing",
+        const requiredCapabilities = requiredExecutionCapabilities(project, current);
+        const providerEvidence = executionProviderEvidence(this.config.execution.providers, requiredCapabilities);
+        if (!providerEvidence.selected) throw new Error(`No execution provider supports the required capability combination: ${requiredCapabilities.length ? requiredCapabilities.join(", ") : "(none)"}.`);
+        const run = { id: randomUUID(), job_id: id, attempt: attempt + 1, provider_id: providerEvidence.selected.id, status: "executing",
           input_digest: current.input_digest ?? digest({ work: current.work, project_context: current.project_context }),
           inputs: { work: structuredClone(current.work), project_context_digest: digest(current.project_context),
             previous_failure_attempt: current.attempts.at(-1)?.number ?? null },
           reconciliation: { required: false, status: "not_required" } };
         await this.store.change((data) => {
           const j = data.jobs[id];
+          const previousProviderId = j.attempts.at(-1)?.provider_evidence?.selected?.id ?? j.provider_evidence?.selected?.id ?? null;
+          recordProviderTransition(j, previousProviderId, providerEvidence.selected.id, attempt + 1, new Date().toISOString());
+          j.provider_evidence = structuredClone(providerEvidence);
           this.store.move(data, j, "Executing", `Execution attempt ${attempt + 1}.`);
           j.attempts.push({ number: attempt + 1, run, started_at: new Date().toISOString(), status: "executing",
-            node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null });
+            node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null,
+            provider_evidence: structuredClone(providerEvidence) });
         });
         let failure;
         let deliveryAttempted = false;
         try {
           const providerJob = (await this.store.read()).jobs[id];
           assertProviderAuthorized(providerJob);
+          const onProviderStart = async (invokedProvider = providerEvidence.selected) => {
+            const invokedIdentity = { ...providerEvidence.selected, ...invokedProvider,
+              kind: invokedProvider?.kind ?? providerEvidence.selected.kind };
+            await this.store.change((data) => {
+              const recorded = data.jobs[id].attempts.at(-1);
+              const selectedId = recorded.provider_evidence?.selected?.id;
+              if (selectedId !== invokedIdentity.id) {
+                throw new Error(`Execution provider cannot change within attempt ${recorded.number}: selected ${selectedId}, invoked ${invokedIdentity.id ?? "unknown"}.`);
+              }
+              if (recorded.provider_evidence.invoked && recorded.provider_evidence.invoked.id !== invokedIdentity.id) {
+                throw new Error(`Execution provider cannot change within active attempt ${recorded.number}.`);
+              }
+              recorded.provider_evidence.invoked = structuredClone(invokedIdentity);
+              recorded.provider_evidence.invoked_at ??= new Date().toISOString();
+              data.jobs[id].provider_evidence = structuredClone(recorded.provider_evidence);
+            });
+          };
+          await onProviderStart();
           const execution = await this.runtime.execute({ project, job: providerJob, workspace: prepared.workspace,
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
             previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id),
+            onProviderStart,
             onRemoteStart: (remote_execution) => this.store.change((data) => {
               const j = data.jobs[id];
               j.attempts.at(-1).execution = { passed: null, started_at: new Date().toISOString(), remote_execution };
@@ -766,8 +824,11 @@ export class Engine {
             }) });
           await this.store.change((data) => {
             const recorded = data.jobs[id].attempts.at(-1);
+            if (execution.provider?.id && execution.provider.id !== recorded.provider_evidence?.selected?.id) {
+              throw new Error(`Execution provider cannot change within attempt ${recorded.number}: selected ${recorded.provider_evidence?.selected?.id}, returned ${execution.provider.id}.`);
+            }
             recorded.execution = execution;
-            recorded.run.provider_id = execution.provider?.id ?? null;
+            recorded.run.provider_id = execution.provider?.id ?? recorded.run.provider_id;
             recorded.status = execution.passed ? "executed" : "failed";
             recorded.run.status = recorded.status;
           });

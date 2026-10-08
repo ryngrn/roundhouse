@@ -14,6 +14,27 @@ test("completed Designer outcome appends Roundhouse delivery evidence to the exe
   assert.match(view.outcome, /https:\/\/preview\.example/);
 });
 
+test("status exposes durable decision, job, and attempt provider evidence while legacy state remains readable", () => {
+  const evidence = { configured: [{ id: "software", kind: "project", capabilities: [] }],
+    selected: { id: "software", kind: "project", capabilities: [] },
+    invoked: { id: "software", kind: "project", capabilities: [] },
+    capability_probe: { required: [], results: [{ provider_id: "software", required: [], missing: [], supported: true }] } };
+  const item = { id: "item", state: "Ready", revision: 1, project_id: "example", input: { text: "Build" },
+    history: [], questions: [], job_ids: ["job"], decision: { work_items: [], provider_evidence: evidence } };
+  const job = { id: "job", parent_id: "item", project_id: "example", state: "Executing", history: [],
+    work: { title: "Build" }, attempts: [{ number: 1, provider_evidence: evidence }], provider_evidence: evidence };
+  const view = itemView({ items: { item }, jobs: { job }, projects: {} }, item);
+  assert.equal(view.decision_provider.invoked.id, "software");
+  assert.equal(view.jobs[0].provider_evidence.selected.id, "software");
+  assert.equal(view.jobs[0].latest_attempt_provider.invoked.id, "software");
+
+  const legacyItem = { ...item, decision: { work_items: [] } };
+  const legacyJob = { ...job, attempts: [], provider_evidence: undefined };
+  const legacyView = itemView({ items: { item: legacyItem }, jobs: { job: legacyJob }, projects: {} }, legacyItem);
+  assert.equal(legacyView.decision_provider, null);
+  assert.equal(legacyView.jobs[0].provider_evidence, null);
+});
+
 test("notification projection keeps only meaningful events and deduplicates event IDs", () => {
   const events = [
     { id: "quiet", item_id: "item", entity_id: "item", state: "Decision", reason: "routing", at: "2026-01-01T00:00:00Z" },

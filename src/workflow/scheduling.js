@@ -141,6 +141,8 @@ export function nextOccurrence(job, { position, now = Date.now() } = {}) {
   const next = {
     ...structuredClone(job), id, revision: 1, state: "Ready", position, created_at: new Date(now).toISOString(), updated_at: undefined,
     history: [], attempts: [], processes: [], prepared: undefined, shipping: undefined, delivery_intent: undefined, reconciliation: undefined,
+    provider_evidence: job.provider_evidence ? { ...structuredClone(job.provider_evidence), invoked: null, invoked_at: undefined } : undefined,
+    provider_transitions: [],
     owning_node_id: null, owning_node: null,
     recurrence: { ...job.recurrence, occurrence }, occurrence_key: `${job.recurrence.series_id}:${occurrence}`,
     eligibility: { kind: "time", status: Date.parse(eligibleAt) > now ? "waiting" : "eligible", eligible_at: eligibleAt, condition: null,

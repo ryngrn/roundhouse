@@ -1,4 +1,4 @@
-import { requiredExecutionCapabilities, selectExecutionProvider } from "./execution-adapters.js";
+import { executionProviderEvidence, requiredExecutionCapabilities, selectExecutionProvider } from "./execution-adapters.js";
 import { assessJobEligibility } from "./scheduling.js";
 
 const emptyScheduler = (capacity) => ({
@@ -147,6 +147,7 @@ export function reservationAssessment(active, candidate, execution, capabilities
       const selected = selectExecutionProvider(execution.providers, candidate.required_capabilities ?? []);
       return { selected: selected?.id ?? null, fits: Boolean(selected) };
     })(),
+    ...(execution.providers ? { provider_capability_probe: executionProviderEvidence(execution.providers, candidate.required_capabilities ?? []).capability_probe } : {}),
     capacity: { requested: candidate.capacity_units ?? 1, used: capacityUsed, limit: execution.capacity, fits: capacityUsed + (candidate.capacity_units ?? 1) <= execution.capacity },
     project: { project_id: candidate.project_id, active: projectUsed, limit: candidate.project_limit ?? 1, fits: projectUsed < (candidate.project_limit ?? 1) },
     resources,

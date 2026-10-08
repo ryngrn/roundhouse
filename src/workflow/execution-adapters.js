@@ -1,5 +1,6 @@
 import { runProcess } from "./runtime.js";
 import { assertNotRemoteDesktopCommanderCommand } from "./remote-desktop-policy.js";
+import { providerCapabilityEvidence, providerIdentity } from "./provider-contract.js";
 
 const providerId = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
 
@@ -16,6 +17,11 @@ export function selectExecutionProvider(providers, requiredCapabilities) {
       const rightExtra = right.capabilities.filter((capability) => !required.has(capability)).length;
       return leftExtra - rightExtra || left.id.localeCompare(right.id);
     })[0] ?? null;
+}
+
+export function executionProviderEvidence(providers, requiredCapabilities) {
+  const selected = selectExecutionProvider(providers, requiredCapabilities);
+  return providerCapabilityEvidence(providers, requiredCapabilities, selected);
 }
 
 export class ExecutionAdapterRegistry {
@@ -111,7 +117,11 @@ export class CapabilityRuntime {
   async execute(request) {
     const required = requiredExecutionCapabilities(request.project, request.job);
     const adapter = this.registry.require(required);
+    if (request.run?.provider_id && request.run.provider_id !== adapter.id) {
+      throw new Error(`Execution provider cannot change within attempt ${request.run.attempt}: selected ${request.run.provider_id}, resolved ${adapter.id}.`);
+    }
     if (request.run) request.run.provider_id = adapter.id;
+    await request.onProviderStart?.(providerIdentity(adapter));
     const result = await adapter.execute(request);
     return { ...result, provider: { id: adapter.id, capabilities: [...adapter.capabilities], required } };
   }
