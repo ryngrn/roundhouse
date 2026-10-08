@@ -207,27 +207,33 @@ export class Engine {
       data.projects[job.project_id] = { ...data.projects[job.project_id], blocked: true, active: false };
     });
   }
-  async run({ projectId } = {}) {
+  async run({ projectId, dispatchOnly = false, jobId = null, maxJobs = this.config.max_jobs_per_run } = {}) {
+    if (!Number.isSafeInteger(maxJobs) || maxJobs < 1 || maxJobs > this.config.max_jobs_per_run) throw new Error("Invalid dispatch job limit.");
+    if (jobId && (!dispatchOnly || typeof jobId !== "string")) throw new Error("A specific job requires dispatch-only mode.");
     const release = acquireLock(this.store.workerLock);
     let executed = 0;
     try {
       if (projectId && !this.config.projects.some((p) => p.id === projectId)) throw new Error("Unknown project filter.");
       const snapshot = this.store.read();
       if ([...Object.values(snapshot.items), ...Object.values(snapshot.jobs)].some((j) => ["Executing", "Verification", "Rework"].includes(j.state) || (j.state === "Decision" && !j.awaiting_decision))) throw new Error("Interrupted work requires recovery, not automatic replay.");
-      for (const item of Object.values(snapshot.items)) {
+      for (const item of dispatchOnly ? [] : Object.values(snapshot.items)) {
         if (item.state !== "Depot" && !item.awaiting_decision) continue;
         if (projectId && item.input.project_id && item.input.project_id !== projectId) continue;
         await this.decide(item.id);
       }
       const stopped = new Set();
-      while (executed < this.config.max_jobs_per_run) {
+      while (executed < maxJobs) {
         const state = this.store.read();
         const candidates = this.config.projects.filter((p) => (!projectId || p.id === projectId) && p.status === "active" && p.runtime === "local" && !stopped.has(p.id) && !state.projects[p.id]?.blocked && !state.projects[p.id]?.stop && !state.projects[p.id]?.review_required && !Object.values(state.items).some((i) => i.project_id === p.id && i.state === "Review"));
         // Weighted turns across projects; each project's own order is preserved.
         candidates.sort((a, b) => ((state.projects[a.id]?.turns ?? 0) / a.weight) - ((state.projects[b.id]?.turns ?? 0) / b.weight) || a.id.localeCompare(b.id));
         let selected;
         for (const project of candidates) {
-          const job = Object.values(state.jobs).filter((j) => j.project_id === project.id && j.state === "Ready" && j.dependencies.every((id) => state.jobs[id]?.state === "Shipped")).sort((a, b) => a.position - b.position)[0];
+          const job = Object.values(state.jobs).filter((j) => j.project_id === project.id && j.state === "Ready" &&
+            (!jobId || j.id === jobId) && j.dependencies.every((id) => state.jobs[id]?.state === "Shipped") &&
+            (!dispatchOnly || (hasExecutableAcceptanceCriteria(j.work, project) &&
+              digest(projectContext(project)) === j.policy_hash)))
+            .sort((a, b) => a.position - b.position)[0];
           if (job) { selected = { project, job }; break; }
         }
         if (!selected) break;
@@ -239,7 +245,7 @@ export class Engine {
         executed++;
         if (project.policy.continuation === "stop_after_job") stopped.add(project.id);
       }
-      return { executed, limit_reached: executed >= this.config.max_jobs_per_run, ...this.store.read() };
+      return { executed, limit_reached: executed >= maxJobs, ...this.store.read() };
     } finally { release(); }
   }
 }

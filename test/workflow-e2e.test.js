@@ -283,3 +283,34 @@ test("e2e: a Claude Code error result is a failed attempt even with exit 0", asy
   assert.equal(job.state, "Blocked");
   assert.equal(job.shipping, undefined);
 });
+
+test("dispatch-only skips Depot interpretation and executes at most one validated Ready job", async () => {
+  const h = harness({ policy: { continuation: "continue_project_queue" } });
+  const first = h.submit("dispatcher first");
+  const second = h.submit("dispatcher second");
+  const idle = await h.engine.run({ dispatchOnly: true, maxJobs: 1 });
+  assert.equal(idle.executed, 0);
+  assert.equal(idle.items[first.id].state, "Depot");
+  await h.engine.decide(first.id);
+  await h.engine.decide(second.id);
+  const result = await h.engine.run({ dispatchOnly: true, maxJobs: 1 });
+  assert.equal(result.executed, 1);
+  assert.equal(Object.values(result.jobs).filter((j) => j.state === "Shipped").length, 1);
+  assert.equal(Object.values(result.jobs).filter((j) => j.state === "Ready").length, 1);
+  const final = await h.engine.run({ dispatchOnly: true, maxJobs: 1 });
+  assert.equal(final.executed, 1);
+  assert.equal(Object.values(final.jobs).filter((j) => j.state === "Shipped").length, 2);
+});
+
+test("dispatch-only refuses invalid acceptance criteria and never attempts that job", async () => {
+  const h = harness();
+  const item = h.submit("unverifiable legacy work");
+  await h.engine.decide(item.id);
+  const job = Object.values(h.store.read().jobs)[0];
+  h.store.change((data) => { data.jobs[job.id].work.acceptance_criteria[0].verification_ids = []; });
+  const result = await h.engine.run({ dispatchOnly: true, maxJobs: 1, jobId: job.id });
+  assert.equal(result.executed, 0);
+  assert.equal(result.jobs[job.id].state, "Ready");
+  assert.equal(result.jobs[job.id].attempts.length, 0);
+  await assert.rejects(() => h.engine.run({ dispatchOnly: true, maxJobs: 1000000 }), /Invalid dispatch job limit/);
+});

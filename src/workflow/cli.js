@@ -5,6 +5,7 @@ import { Engine } from "./engine.js";
 import { loadWorkflowConfig } from "./config.js";
 import { pickup, updates, acknowledge } from "./notion-bridge.js";
 import { processRemoteCommands, publishDashboardProjection, watchRemoteCommands } from "./relay.js";
+import { listIssues, respondToIssue } from "./issues.js";
 
 export function statusView(data) {
   return {
@@ -48,7 +49,10 @@ export async function depotCommand(argv) {
     "notion-ack": ["--state-dir", "--input"],
     submit: ["--state-dir", "--input", "--key", "--text", "--project", "--goal", "--config", "--notion"],
     run: ["--state-dir", "--config", "--project"],
+    dispatch: ["--state-dir", "--config", "--project", "--job"],
     status: ["--state-dir"], outbox: ["--state-dir"],
+    issues: ["--state-dir", "--config", "--project"],
+    "issue-respond": ["--state-dir", "--config", "--id", "--revision", "--actor", "--text", "--action"],
     approve: ["--state-dir", "--config", "--id", "--revision", "--actor"],
     clarify: ["--state-dir", "--config", "--id", "--text", "--actor", "--project"],
     stop: ["--state-dir", "--project"], resume: ["--state-dir", "--project", "--actor", "--note"],
@@ -69,6 +73,13 @@ export async function depotCommand(argv) {
   if (command === "notion-updates") return updates(store.read(), statusView);
   if (command === "notion-ack") return acknowledge(store, JSON.parse(fs.readFileSync(required("--input"), "utf8")), statusView);
   if (command === "status") return statusView(store.read());
+  if (command === "issues") return { issues: listIssues(store.read(), { projectId: options["--project"],
+    config: options["--config"] ? loadWorkflowConfig(path.resolve(options["--config"])) : undefined }) };
+  if (command === "issue-respond") return respondToIssue(store, {
+    issueId: required("--id"), expectedRevision: Number(required("--revision")),
+    actor: required("--actor"), message: required("--text"), action: options["--action"] ?? "note",
+    config: options["--config"] ? loadWorkflowConfig(path.resolve(options["--config"])) : undefined,
+  });
   if (command === "outbox") {
     const data = store.read();
     return { events: data.outbox, current: statusView(data) };
@@ -116,6 +127,20 @@ export async function depotCommand(argv) {
   const engine = new Engine({ store, config: loadWorkflowConfig(path.resolve(required("--config"))) });
   if (command === "approve") return engine.approve(required("--id"), Number(required("--revision")), required("--actor"));
   if (command === "clarify") return engine.clarify(required("--id"), required("--text"), required("--actor"), options["--project"]);
+  if (command === "dispatch") {
+    const result = await engine.run({
+      projectId: options["--project"],
+      dispatchOnly: true,
+      jobId: options["--job"] ?? null,
+      maxJobs: 1,
+    });
+    // Avoid a database write on empty ticks; the relay watcher already publishes heartbeats.
+    if (result.executed && (process.env.ROUNDHOUSE_RELAY_DATABASE_URL || process.env.DATABASE_URL)) {
+      await publishDashboardProjection({ store, config: engine.config });
+    }
+    return { executed: result.executed, limit_reached: result.limit_reached,
+      job_id: options["--job"] ?? null, at: new Date().toISOString() };
+  }
   if (command === "run" && (process.env.ROUNDHOUSE_RELAY_DATABASE_URL || process.env.DATABASE_URL)) {
     await processRemoteCommands({ store, config: engine.config });
   }

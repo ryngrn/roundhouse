@@ -4,6 +4,7 @@ import { digest } from "./store.js";
 import { projectContext } from "./config.js";
 import { Engine } from "./engine.js";
 import { cleanupDownloadedAssets, downloadRemoteAssets, projectedAttachments } from "./assets.js";
+import { respondToIssue, listIssues, dispatchHoldReason } from "./issues.js";
 
 const { Pool } = pg;
 let pool;
@@ -185,6 +186,12 @@ export async function applyRemoteCommand({
       return { item_id: payload.item_id, job_ids: jobs.map((job) => job.id) };
     });
   }
+  if (command.kind === "issue_resolution") {
+    return respondToIssue(store, {
+      issueId: payload.issue_id, expectedRevision: payload.expected_revision,
+      actor: "remote-dashboard", message: payload.message, action: payload.action ?? "note", config,
+    });
+  }
   if (command.kind === "decision_session") {
     const answers = payload.answers ?? [];
     if (!Array.isArray(answers) || answers.length !== 1) throw new Error("Decision session must answer exactly one current question.");
@@ -207,7 +214,7 @@ function questionFor(entity) {
   return [{ id: active?.id ?? `${entity.id}:decision`, prompt, revision: active?.revision ?? entity.revision }];
 }
 
-function workItemFromJob(job, data) {
+function workItemFromJob(job, data, config) {
   const parent = data.items[job.parent_id];
   const attempt = latestAttempt(job);
   return {
@@ -239,6 +246,8 @@ function workItemFromJob(job, data) {
     prior_decisions: parent?.decision_history ?? [],
     history: job.history,
     questions: questionFor(job),
+    issue_resolution: job.issue_resolution ?? null,
+    dispatch_hold: dispatchHoldReason(job, data, config),
     assets: projectedAttachments(parent?.input?.attachments),
   };
 }
@@ -273,13 +282,14 @@ function workItemFromItem(item) {
     prior_decisions: item.decision_history ?? [],
     history: item.history,
     questions: questionFor(item),
+    issue_resolution: item.issue_resolution ?? null,
     assets: projectedAttachments(item.input?.attachments),
   };
 }
 
 export function dashboardProjection(data, config, { connection = {} } = {}) {
   const items = [
-    ...Object.values(data.jobs).map((job) => workItemFromJob(job, data)),
+    ...Object.values(data.jobs).map((job) => workItemFromJob(job, data, config)),
     ...Object.values(data.items).filter((item) => !item.job_ids?.length).map(workItemFromItem),
   ].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
   const counts = {
@@ -307,6 +317,7 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
       counts,
       items,
       project_candidates: projectCandidates,
+      issues: listIssues(data, { config }),
     },
   };
 }
