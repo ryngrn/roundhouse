@@ -141,6 +141,14 @@ function parseJsonOutput(output, label) {
   }
 }
 
+function herdrAgentState(output) {
+  try {
+    const response = parseJsonOutput(output, "Herdr agent state");
+    const agent = response?.result?.agent ?? response?.result ?? response?.agent ?? response;
+    return agent?.agent_status ?? agent?.status ?? null;
+  } catch { return null; }
+}
+
 function correlation(value, depth = 0) {
   if (!value || typeof value !== "object" || depth > 3) return {};
   const result = {};
@@ -182,15 +190,52 @@ export class HerdrRuntime {
     const prompt = machineLocal
       ? machineLocalPrompt(project, job, previous_failure, reportToken)
       : sharedWorktreePrompt(job, workspace, previous_failure);
-    const command = [bin, "--machine", machine, "agent", "prompt", agent, prompt, "--wait", "--timeout", String(project.timeout_ms)];
-    const result = await runProcess(command, { cwd: localCwd, timeout: project.timeout_ms, onStart });
-    let returned = {};
-    if (result.stdout.trim()) {
-      try { returned = correlation(parseJsonOutput(result.stdout, "Herdr agent prompt")); } catch {}
+    const agentCommand = [bin, "--machine", machine, "agent"];
+    const invoke = (args, timeout = project.timeout_ms) => runProcess([...agentCommand, ...args], {
+      cwd: localCwd, timeout, onStart,
+    });
+    // Do not inject another turn into an agent that is already working or blocked.
+    // Herdr's prompt --wait enforces an internal 5s startup detector; a slow Codex
+    // transition can fail *after input was accepted*. A retry can duplicate work.
+    const readiness = await invoke(["get", agent], Math.min(project.timeout_ms, 15_000));
+    const initialState = readiness.passed ? herdrAgentState(readiness.stdout) : null;
+    if (!readiness.passed || !["idle", "done"].includes(initialState)) {
+      return { ...readiness, passed: false, error: `Herdr agent ${machine}/${agent} is not safely idle for a new prompt (status: ${initialState ?? "unavailable"}).`,
+        remote_execution: { ...remoteExecution, phase: "agent_not_ready", initial_state: initialState } };
     }
-    if (!result.passed || !machineLocal) {
-      return { ...result, ...(result.passed ? {} : { error: `Herdr remote agent execution failed for ${machine}/${agent}.` }),
-        remote_execution: { ...remoteExecution, phase: result.passed ? "completed" : "failed", ...returned } };
+    // Submit exactly once. Observe startup and completion in separate calls, so the
+    // CLI's short prompt-and-wait grace window cannot misclassify a slow start.
+    const submission = await invoke(["prompt", agent, prompt]);
+    if (!submission.passed) {
+      return { ...submission, error: `Herdr prompt submission failed or has uncertain delivery for ${machine}/${agent}; never replay automatically.`,
+        remote_execution: { ...remoteExecution, phase: "submission_uncertain", initial_state: initialState } };
+    }
+    const startup = await invoke(["wait", agent, "--until", "working", "--until", "blocked", "--timeout",
+      String(Math.min(project.timeout_ms, 30_000))], Math.min(project.timeout_ms, 35_000));
+    const startupState = startup.passed ? herdrAgentState(startup.stdout) : null;
+    if (!startup.passed || startupState !== "working") {
+      return { ...startup, passed: false,
+        error: `Herdr prompt was submitted but remote startup was not confirmed for ${machine}/${agent} (status: ${startupState ?? "unavailable"}). Inspect remote activity before any recovery; do not replay.`,
+        remote_execution: { ...remoteExecution, phase: startupState === "blocked" ? "agent_blocked" : "startup_unconfirmed",
+          initial_state: initialState, startup_state: startupState, prompt_submitted: true } };
+    }
+    const completion = await invoke(["wait", agent, "--until", "idle", "--until", "done",
+      "--until", "blocked", "--timeout", String(project.timeout_ms)]);
+    const completionState = completion.passed ? herdrAgentState(completion.stdout) : null;
+    if (!completion.passed || !["idle", "done"].includes(completionState)) {
+      return { ...completion, passed: false,
+        error: `Herdr remote completion was not safely confirmed for ${machine}/${agent} (status: ${completionState ?? "unavailable"}); do not replay.`,
+        remote_execution: { ...remoteExecution, phase: completionState === "blocked" ? "agent_blocked" : "completion_unconfirmed",
+          initial_state: initialState, startup_state: startupState, completion_state: completionState, prompt_submitted: true } };
+    }
+    const result = { ...completion, command: submission.command, started_at: submission.started_at,
+      remote_submission: { command: submission.command.slice(0, 5).concat("[redacted prompt]"),
+        exit_code: submission.exit_code, accepted: true },
+    };
+    const returned = correlation(parseJsonOutput(completion.stdout, "Herdr agent completion"));
+    if (!machineLocal) {
+      return { ...result, remote_execution: { ...remoteExecution, phase: "completed", initial_state: initialState,
+        startup_state: startupState, completion_state: completionState, ...returned } };
     }
     const read = await runProcess([bin, "--machine", machine, "agent", "read", agent, "--source", "recent-unwrapped", "--lines", "200", "--format", "text"], {
       cwd: localCwd, timeout: project.timeout_ms, onStart,

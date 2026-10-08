@@ -8,7 +8,7 @@ import { HerdrRuntime, RuntimeRouter } from "../src/workflow/runtime.js";
 import { Store } from "../src/workflow/store.js";
 import { harness } from "./support/harness.js";
 
-function fakeHerdr(root) {
+function fakeHerdr(root, { startupState = "working" } = {}) {
   const filename = path.join(root, "fake-herdr.mjs");
   const log = path.join(root, "herdr-argv.jsonl");
   fs.writeFileSync(filename, `#!/usr/bin/env node
@@ -18,6 +18,11 @@ fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
 if (args[0] === "machine" && args[1] === "status") {
   if (args[2] === "unavailable") { console.error("machine unreachable"); process.exit(23); }
   console.log(JSON.stringify({ id: "machine-17", status: "online", label: args[2] }));
+} else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "get") {
+  console.log(JSON.stringify({ result: { agent: { agent_status: "idle" } } }));
+} else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "wait") {
+  const state = args.includes("working") ? ${JSON.stringify(startupState)} : "done";
+  console.log(JSON.stringify({ execution_id: "remote-run-42", status: "completed", result: { agent: { agent_status: state } } }));
 } else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "prompt") {
   fs.appendFileSync("feature.txt", "implemented: remote agent\\n");
   console.log(JSON.stringify({ execution_id: "remote-run-42", status: "completed", agent_id: args[4] }));
@@ -37,6 +42,10 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
 if (args[0] === "machine" && args[1] === "status") {
   console.log(JSON.stringify({ id: "imac-id", status: "online", label: args[2] }));
+} else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "get") {
+  console.log(JSON.stringify({ result: { agent: { agent_status: "idle" } } }));
+} else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "wait") {
+  console.log(JSON.stringify({ result: { agent: { agent_status: args.includes("working") ? "working" : "done" } } }));
 } else if (args[0] === "--machine" && args[2] === "agent" && args[3] === "prompt") {
   const prompt = args[5];
   const token = prompt.match(/ROUNDHOUSE_RESULT_([0-9a-f-]+)=/)[1];
@@ -106,12 +115,32 @@ test("Herdr probes first, passes the prompt as one argv value, and returns corre
   assert.equal(result.remote_execution.status, "completed");
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
   assert.deepEqual(calls[0], ["machine", "status", "builder", "--json"]);
-  assert.equal(calls[1][0], "--machine");
-  assert.equal(calls[1][5].includes("Do work"), true);
-  assert.match(calls[1][5], /# Original request\n\nPreserve the user's structured intent\./);
-  assert.match(calls[1][5], /Newest constraint\./);
-  assert.ok(calls[1][5].indexOf("# Original request") < calls[1][5].indexOf("Do work"));
-  assert.equal(calls[1].length, 9);
+  assert.deepEqual(calls.map((args) => args[3]).slice(1), ["get", "prompt", "wait", "wait"]);
+  assert.equal(calls[2][0], "--machine");
+  assert.equal(calls[2][5].includes("Do work"), true);
+  assert.match(calls[2][5], /# Original request\n\nPreserve the user's structured intent\./);
+  assert.match(calls[2][5], /Newest constraint\./);
+  assert.ok(calls[2][5].indexOf("# Original request") < calls[2][5].indexOf("Do work"));
+  assert.equal(calls[2].length, 6);
+  assert.equal(calls.filter((args) => args[3] === "prompt").length, 1);
+  assert.deepEqual(calls.filter((args) => args[3] === "wait").map((args) => args.slice(5, 9)),
+    [["--until", "working", "--until", "blocked"], ["--until", "idle", "--until", "done"]]);
+});
+
+test("Herdr does not replay submitted prompts when startup is blocked", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-herdr-approval-"));
+  const { filename, log } = fakeHerdr(root, { startupState: "blocked" });
+  const result = await new HerdrRuntime().execute({
+    project: { timeout_ms: 10_000, herdr: { bin: filename, machine: "builder", agent: "agent-main" } },
+    job: { work: { title: "Remote work with approval" }, project_context: {} },
+    workspace: root, previous_failure: null,
+  });
+  assert.equal(result.passed, false);
+  assert.equal(result.remote_execution.phase, "agent_blocked");
+  assert.equal(result.remote_execution.prompt_submitted, true);
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(calls.filter((args) => args[3] === "prompt").length, 1);
+  assert.equal(calls.filter((args) => args[3] === "wait").length, 1);
 });
 
 test("machine-local Herdr dispatch names the remote directory and collects correlated evidence", async () => {
@@ -127,10 +156,10 @@ test("machine-local Herdr dispatch names the remote directory and collects corre
   assert.equal(result.remote_report.commit, "a".repeat(40));
   assert.equal(result.remote_execution.working_directory, "/home/ryngrn/kmac");
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
-  assert.equal(calls.length, 3);
-  assert.match(calls[1][5], /directly on the remote machine in the existing repository at \/home\/ryngrn\/kmac/);
-  assert.match(calls[1][5], /do not use or infer any Studio\/Roundhouse-local path/);
-  assert.deepEqual(calls[2].slice(0, 5), ["--machine", "iMac", "agent", "read", "roundhouse-imac"]);
+  assert.equal(calls.length, 6);
+  assert.match(calls[2][5], /directly on the remote machine in the existing repository at \/home\/ryngrn\/kmac/);
+  assert.match(calls[2][5], /do not use or infer any Studio\/Roundhouse-local path/);
+  assert.deepEqual(calls[5].slice(0, 5), ["--machine", "iMac", "agent", "read", "roundhouse-imac"]);
 });
 
 test("unavailable Herdr machine blocks explicitly without fallback while local project progresses", async () => {
@@ -187,7 +216,7 @@ test("machine-local completion ships only from remote evidence and never prepare
   assert.equal(job.shipping.commit, "a".repeat(40));
   assert.equal(job.delivery_intent.machine_selector, "iMac");
   assert.equal(fs.existsSync(path.join(h.repository, "feature.txt")), false);
-  assert.equal(fs.readFileSync(log, "utf8").trim().split("\n").length, 3);
+  assert.equal(fs.readFileSync(log, "utf8").trim().split("\n").length, 6);
 });
 
 test("machine-local missing evidence blocks without local fallback or prompt replay", async () => {
