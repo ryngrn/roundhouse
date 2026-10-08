@@ -52,7 +52,9 @@ failed user-service bootstrap is cleared and retried once. The smoke paths are
 idempotent and do not unload either service. The menu helper reports app-service
 and front-door failures separately and labels counts unavailable when the app
 cannot provide its in-memory snapshot. Its periodic requests use only `/health`
-and `/api/local-snapshot`; neither endpoint queries PostgreSQL.
+and `/api/local-snapshot`. Health remains a local liveness check; each explicit
+local-snapshot request refreshes its response from authoritative storage without
+waking the worker or performing workflow work.
 
 Uninstall removes both launchd jobs and the marked host entry. It deliberately
 keeps state and private project configuration in Application Support; the operator
