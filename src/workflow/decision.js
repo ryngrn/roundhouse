@@ -21,6 +21,34 @@ export const decisionSchema = object({
     acceptance_criteria: { type: "array", items: object({ description: string, verification_ids: strings }) } }) },
 });
 
+export const cleanupDecisionSchema = object({
+  action: { type: "string", enum: ["delete", "repurpose", "ask", "keep"] },
+  confidence: { type: "number" },
+  reason: string,
+  active_scope: string,
+  removed_scope: strings,
+  question: { type: ["string", "null"] },
+  options: strings,
+  dependent_actions: { type: "array", items: object({ id: string, confidence: { type: "number" }, active_scope: string, removed_scope: strings }) },
+});
+
+export function validateCleanupDecision(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cleanup decision.");
+  const allowed = new Set(Object.keys(cleanupDecisionSchema.properties));
+  if (Object.keys(value).some((key) => !allowed.has(key)) || [...allowed].some((key) => !Object.hasOwn(value, key))) throw new Error("Invalid cleanup decision fields.");
+  if (!["delete", "repurpose", "ask", "keep"].includes(value.action)) throw new Error("Invalid cleanup action.");
+  if (!Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) throw new Error("Cleanup confidence must be 0–1.");
+  if (typeof value.reason !== "string" || !value.reason.trim() || value.reason.length > 2_000) throw new Error("Cleanup requires a concise reason.");
+  if (typeof value.active_scope !== "string" || value.active_scope.length > 20_000) throw new Error("Invalid cleanup active scope.");
+  if (!Array.isArray(value.removed_scope) || value.removed_scope.some((entry) => typeof entry !== "string" || !entry.trim())) throw new Error("Invalid removed scope.");
+  if (value.question !== null && (typeof value.question !== "string" || !value.question.trim())) throw new Error("Invalid cleanup question.");
+  if (!Array.isArray(value.options) || value.options.some((entry) => typeof entry !== "string" || !entry.trim())) throw new Error("Invalid cleanup options.");
+  if (!Array.isArray(value.dependent_actions) || value.dependent_actions.some((entry) => !entry || typeof entry.id !== "string" || !entry.id.trim() || !Number.isFinite(entry.confidence) || entry.confidence < 0 || entry.confidence > 1 || typeof entry.active_scope !== "string" || !Array.isArray(entry.removed_scope))) throw new Error("Invalid dependent cleanup action.");
+  if (value.confidence < 0.7 && (value.action !== "ask" || !value.question || value.options.length !== 2)) throw new Error("Low-confidence cleanup requires one question and exactly two proposed options.");
+  if (["delete", "repurpose"].includes(value.action) && value.confidence < 0.7) throw new Error("Destructive cleanup requires at least 70% confidence.");
+  return value;
+}
+
 export function validateDecision(value) {
   // Structured-output providers require every declared property to appear in
   // `required`. Normalize older command providers and test doubles before
@@ -155,6 +183,31 @@ export class DecisionProvider {
     const result = await runProcess([this.config.bin ?? "codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--output-schema", schemaFile, "--output-last-message", responseFile, "-"], { cwd: directory, input: prompt, timeout: 180000, onStart });
     if (!result.passed) throw new Error(`Decision agent failed (exit ${result.exit_code}, timeout ${result.timed_out}).`);
     const decision = validateDecision(JSON.parse(fs.readFileSync(responseFile, "utf8")));
+    fs.chmodSync(responseFile, 0o600);
+    return decision;
+  }
+
+  async decideCleanup({ candidate, dependents, projects, directory, onStart }) {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const packet = { candidate, dependents, projects };
+    if (this.config.kind === "command") {
+      const result = await runProcess([...this.config.command, "cleanup"], { cwd: directory, input: JSON.stringify(packet), timeout: 120000, onStart });
+      try {
+        if (!result.passed) throw new Error(`exit ${result.exit_code}`);
+        return validateCleanupDecision(JSON.parse(result.stdout));
+      } catch {
+        return validateCleanupDecision({ action: "ask", confidence: 0, reason: "The configured cleanup decision provider did not return a valid decision.",
+          active_scope: "", removed_scope: [], question: `Should I preserve and replan “${candidate.title}”, or delete it from the queue?`,
+          options: ["Preserve it and propose a smaller useful plan", "Delete it and retain only the audit record"], dependent_actions: [] });
+      }
+    }
+    const schemaFile = path.join(directory, "cleanup-schema.json");
+    const responseFile = path.join(directory, "cleanup-response.json");
+    fs.writeFileSync(schemaFile, JSON.stringify(cleanupDecisionSchema), { mode: 0o600 });
+    const prompt = `Act as Roundhouse's cleanup decision agent. Evaluate only the supplied Needs Clarification or Blocked record. Reconstruct the operator's intent from the immutable request, transcript snapshot, live conversation reference/context, history, attempts, and dependent work. The goal is a smaller useful queue: delete obsolete, superseded, incoherent, duplicate, or valueless work; keep or repurpose work whose outcome is still useful. Never claim uncertain work succeeded. Never act on Ready, executing, verification, shipped, archived, or reconciled work. A delete is permanent but leaves a concise tombstone. Repurposing preserves the existing identity and history: active_scope states what remains; removed_scope contains the clauses the UI will strike through. For every dependent of deleted work, include one dependent_actions entry, preserve its ID, propose a useful active scope, and give that repurposing its own confidence. Choose delete or repurpose only at confidence >= 0.70. Every dependent repurposing must also be at least 0.70; otherwise ask the operator instead of deleting. Below 0.70 choose ask, provide one concise question with enough context, and exactly two concrete options; Roundhouse automatically adds a third free-form “Take my own path” option. If an operator response is present, treat it as authoritative context. Return only the schema object and a concise audit reason, never private reasoning.\n${JSON.stringify(packet)}`;
+    const result = await runProcess([this.config.bin ?? "codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--output-schema", schemaFile, "--output-last-message", responseFile, "-"], { cwd: directory, input: prompt, timeout: 180000, onStart });
+    if (!result.passed) throw new Error(`Cleanup decision agent failed (exit ${result.exit_code}, timeout ${result.timed_out}).`);
+    const decision = validateCleanupDecision(JSON.parse(fs.readFileSync(responseFile, "utf8")));
     fs.chmodSync(responseFile, 0o600);
     return decision;
   }

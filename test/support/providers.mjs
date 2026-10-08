@@ -4,6 +4,20 @@ let input = "";
 for await (const chunk of process.stdin) input += chunk;
 const packet = JSON.parse(input);
 if (process.argv[2] === "decide") {
+  if (process.argv[3] === "cleanup") {
+    const text = packet.candidate.original_request ?? packet.candidate.title ?? "";
+    const action = text.includes("cleanup delete") ? "delete" : text.includes("cleanup repurpose") ? "repurpose" : text.includes("cleanup ask") ? "ask" : "keep";
+    process.stdout.write(JSON.stringify({
+      action, confidence: action === "ask" ? 0.55 : 0.91,
+      reason: action === "delete" ? "The fixture is obsolete." : action === "repurpose" ? "A smaller useful outcome remains." : action === "ask" ? "Two plausible paths remain." : "The fixture should remain held.",
+      active_scope: action === "repurpose" ? "Deliver the still-relevant smaller outcome." : "",
+      removed_scope: action === "repurpose" ? ["The obsolete prerequisite and its old implementation path."] : [],
+      question: action === "ask" ? "Should I preserve the smaller outcome or delete this work?" : null,
+      options: action === "ask" ? ["Preserve and replan the smaller outcome", "Delete the work"] : [],
+      dependent_actions: packet.dependents.map((entry) => ({ id: entry.id, confidence: 0.91, active_scope: entry.outcome ?? entry.title, removed_scope: [`Dependency on ${packet.candidate.id}`] })),
+    }));
+    process.exit(0);
+  }
   const project = packet.projects.find((p) => p.id === packet.input.project_id) ?? packet.projects[0];
   const text = packet.input.text;
   const low = text.includes("ambiguous") && packet.clarifications.length === 0;

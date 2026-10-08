@@ -73,6 +73,11 @@ export function itemView(data, item) {
     raw_intake: item.input.text,
     brief: legacy?.["Normalized Brief"] || item.decision?.reason || null,
     context: item.input.context ?? null,
+    conversation: item.input.conversation ? { link: item.input.conversation.link,
+      snapshot_captured_at: item.input.conversation.snapshot?.captured_at ?? null,
+      live_updated_at: item.input.conversation.live_context?.updated_at ?? null } : null,
+    scope_revision: item.scope_revision ?? null,
+    issue_resolution: item.issue_resolution ?? null,
     acceptance_criteria: acceptance,
     reason: currentJob?.history.at(-1)?.reason ?? item.history.at(-1)?.reason ?? null,
     question: openQuestion?.prompt ?? null,
@@ -119,6 +124,8 @@ export function itemView(data, item) {
       reconciliation: job.reconciliation ?? job.attempts?.at(-1)?.run?.reconciliation ?? null,
       allocation: allocationDecisions.findLast((decision) => decision.job_id === job.id) ?? null,
       allocation_history: allocationDecisions.filter((decision) => decision.job_id === job.id),
+      scope_revision: job.scope_revision ?? null,
+      issue_resolution: job.issue_resolution ?? null,
     })),
   };
 }
@@ -213,6 +220,7 @@ function projectedJob(data, job, config) {
     history: (job.history ?? []).map((event) => ({ from: event.from ?? null, to: event.to, reason: event.reason, at: event.at })),
     questions: [],
     issue_resolution: job.issue_resolution ?? null,
+    scope_revision: job.scope_revision ?? null,
     allocation: allocationDecisions.at(-1) ?? null,
     allocation_history: allocationDecisions,
     dispatch_hold: dispatchHold,
