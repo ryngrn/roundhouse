@@ -2,12 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { get } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { harness } from "./support/harness.js";
 import { Store } from "../src/workflow/store.js";
 import { RoundhouseService } from "../src/workflow/service.js";
 import { startMcpHttpServer } from "../src/mcp/http-server.js";
-import { CHATGPT_INTEGRATION_INSTRUCTIONS, callRoundhouseTool, roundhouseToolCatalog } from "../src/mcp/server.js";
+import { CHATGPT_INTEGRATION_INSTRUCTIONS, callRoundhouseTool, createRoundhouseMcpServer, roundhouseToolCatalog } from "../src/mcp/server.js";
 
 async function connected(h) {
   const service = new RoundhouseService({ store: h.store, engine: h.engine });
@@ -94,6 +95,10 @@ test("integration: MCP transport provides polling fallback when Events are unava
   const status = await client.callTool({ name: "get_work_status", arguments: { item_id: itemId } });
   assert.equal(status.structuredContent.items[0].state, "Ready");
   assert.equal(status.structuredContent.items[0].project, "example");
+  assert.deepEqual(status.structuredContent.execution_metrics.population, {
+    total_jobs: 1, measured_jobs: 0, completed_jobs: 0, excluded_jobs: 1,
+    exclusions: { historical_import: 0, unclassified: 1 },
+  });
   assert.equal((await client.callTool({ name: "get_needs_human", arguments: { item_id: itemId } })).structuredContent.questions.length, 0);
 });
 
@@ -103,6 +108,7 @@ test("service: intake validation and idempotency conflicts stay in the normalize
   const statusTool = roundhouseToolCatalog.find((tool) => tool.name === "get_work_status");
   assert.ok(statusTool.outputSchema.properties.allocations);
   assert.ok(statusTool.outputSchema.properties.project_gates);
+  assert.ok(statusTool.outputSchema.properties.execution_metrics);
   const jobProperties = statusTool.outputSchema.properties.items.items.properties.jobs.items.properties;
   assert.ok(jobProperties.action_policy);
   assert.ok(jobProperties.human_task);
@@ -111,6 +117,21 @@ test("service: intake validation and idempotency conflicts stay in the normalize
   service.addToDepot({ content: "first", idempotency_key: "same" });
   assert.throws(() => service.addToDepot({ content: "changed", idempotency_key: "same" }), /different content/);
   assert.throws(() => service.getWorkStatus({ unknown: "filter" }), /Unknown filter/);
+});
+
+test("MCP status output schema includes authoritative execution metrics", async (t) => {
+  const h = harness();
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const server = createRoundhouseMcpServer(service);
+  const client = new Client({ name: "roundhouse-schema-test", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  t.after(async () => { await client.close(); await server.close(); });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+  const status = await client.callTool({ name: "get_work_status", arguments: {} });
+  assert.equal(status.isError, undefined);
+  assert.equal(status.structuredContent.execution_metrics.schema_version, 1);
+  assert.equal(status.structuredContent.execution_metrics.kpis.tasks_completed_without_intervention.denominator, 0);
 });
 
 test("Claude conversation intake, clarification, and status retain durable origin contracts", async () => {

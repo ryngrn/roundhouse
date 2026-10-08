@@ -74,6 +74,69 @@ const allocationsSchema = z.object({
   latest: z.record(z.string(), z.unknown()),
   decisions: z.array(z.unknown()),
 });
+const nullableRateSchema = z.number().nonnegative().nullable();
+const classificationCountsSchema = z.object({
+  native_success: z.number().int().nonnegative(),
+  recovered_success: z.number().int().nonnegative(),
+  exception_success: z.number().int().nonnegative(),
+  failed_or_abandoned: z.number().int().nonnegative(),
+});
+const executionRateSchema = z.object({
+  numerator: z.number().int().nonnegative(), denominator: z.number().int().nonnegative(),
+  rate: nullableRateSchema, percentage: nullableRateSchema,
+});
+const executionDimensionSchema = z.object({
+  value: z.string(), measured_jobs: z.number().int().nonnegative(), completed_jobs: z.number().int().nonnegative(),
+  exception_count: z.number().int().nonnegative(), exception_rate: nullableRateSchema,
+  classification_counts: classificationCountsSchema,
+});
+const executionTrendSchema = z.object({
+  period: z.string(), measured_jobs: z.number().int().nonnegative(), completed_jobs: z.number().int().nonnegative(),
+  classification_counts: classificationCountsSchema, native_success_rate: nullableRateSchema,
+  exception_rate: nullableRateSchema, average_human_interventions: nullableRateSchema,
+});
+const executionMetricsSchema = z.object({
+  schema_version: z.literal(1),
+  population: z.object({
+    total_jobs: z.number().int().nonnegative(), measured_jobs: z.number().int().nonnegative(),
+    completed_jobs: z.number().int().nonnegative(), excluded_jobs: z.number().int().nonnegative(),
+    exclusions: z.object({ historical_import: z.number().int().nonnegative(), unclassified: z.number().int().nonnegative() }),
+  }),
+  classification_counts: classificationCountsSchema,
+  kpis: z.object({
+    tasks_completed_without_intervention: executionRateSchema,
+    native_path_success_rate: executionRateSchema,
+    recovered_vs_bypassed: z.object({
+      denominator: z.number().int().nonnegative(), recovered_count: z.number().int().nonnegative(),
+      bypassed_count: z.number().int().nonnegative(), recovered_share: nullableRateSchema,
+      bypassed_share: nullableRateSchema, recovered_share_of_completed: nullableRateSchema,
+      bypassed_share_of_completed: nullableRateSchema,
+    }),
+  }),
+  exception_reasons: z.array(z.object({ reason: z.string(), count: z.number().int().nonnegative(), share: nullableRateSchema })),
+  exception_expectation: z.object({ expected: z.number().int().nonnegative(), unexpected: z.number().int().nonnegative() }),
+  dimensions: z.object({
+    project: z.array(executionDimensionSchema), executor: z.array(executionDimensionSchema),
+    provider: z.array(executionDimensionSchema), executor_provider: z.array(executionDimensionSchema),
+    machine: z.array(executionDimensionSchema), runtime: z.array(executionDimensionSchema),
+    machine_runtime: z.array(executionDimensionSchema), job_type: z.array(executionDimensionSchema),
+  }),
+  interventions: z.object({
+    completed_jobs: z.number().int().nonnegative(), total: z.number().int().nonnegative(),
+    average_per_completed_job: nullableRateSchema, median_per_completed_job: nullableRateSchema,
+    human_minutes: z.object({
+      reported_jobs: z.number().int().nonnegative(), total: z.number().nonnegative(),
+      average_per_reported_job: nullableRateSchema, median_per_reported_job: nullableRateSchema,
+    }),
+  }),
+  trends: z.object({ daily: z.array(executionTrendSchema), monthly: z.array(executionTrendSchema) }),
+  drill_down: z.array(z.object({
+    job_id: z.string(), item_id: z.string(), project_id: z.string().nullable(), job_type: z.string(),
+    classification: z.string(), reason: z.unknown().nullable(), exception_expected: z.boolean().nullable(),
+    human_intervention_count: z.number().int().nonnegative(), human_minutes: z.number().nonnegative().nullable(),
+    recorded_at: z.string(), execution_path: z.array(z.unknown()), evidence_links: z.array(z.unknown()),
+  })),
+});
 const followSchema = z.object({
   event: z.literal("roundhouse.work.updated"),
   arguments: z.object({ item_id: z.string(), include_progress: z.boolean() }),
@@ -156,7 +219,8 @@ const toolSpecs = [
     title: "Get Roundhouse work status",
     description: "Get compact durable status for Roundhouse Depot items and their work. Use this for progress or outcome questions; it does not change or advance work.",
     input: filterSchema,
-    output: z.object({ items: z.array(itemSchema), active_jobs: z.array(activeJobSchema), untracked_activity: z.array(untrackedActivitySchema),
+    output: z.object({ items: z.array(itemSchema), execution_metrics: executionMetricsSchema,
+      active_jobs: z.array(activeJobSchema), untracked_activity: z.array(untrackedActivitySchema),
       activity_inspection: activityInspectionSchema, next_departure: nextDepartureSchema.nullable(), allocations: allocationsSchema,
       projects: z.record(z.string(), z.unknown()),
       project_gates: z.record(z.string(), z.unknown()),
