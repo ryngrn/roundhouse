@@ -1,4 +1,5 @@
 export const providerCapabilities = Object.freeze(["decision", "conversation", "execution"]);
+export const fallbackProviderFailureCategories = Object.freeze(["quota", "authentication", "availability"]);
 
 const contracts = Object.freeze({
   codex: Object.freeze({ capabilities: Object.freeze([...providerCapabilities]) }),
@@ -39,6 +40,48 @@ export function providerCapabilityEvidence(providers, requiredCapabilities, sele
     invoked: null,
     capability_probe: { required, results: probes },
   };
+}
+
+const normalizedFailureCategory = (value) => {
+  const text = String(value ?? "").toLowerCase().replaceAll("-", "_");
+  if (text.includes("quota") || text.includes("rate_limit") || text.includes("capacity")) return "quota";
+  if (text.includes("auth") || text.includes("credential") || text.includes("permission")) return "authentication";
+  if (text.includes("avail") || text.includes("outage") || text.includes("dependency")) return "availability";
+  return null;
+};
+
+/**
+ * Providers may report a pre-action operational failure as structured evidence.
+ * Fallback is deliberately opt-in: a category alone is insufficient because an
+ * unavailable connection can still have left an external action uncertain.
+ */
+export function providerFailureEvidence(value) {
+  const candidates = [value?.provider_failure, value?.output?.provider_failure,
+    value?.failure?.provider, value?.details?.provider_failure].filter(Boolean);
+  const reported = candidates.find((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate));
+  if (!reported) return null;
+  const category = normalizedFailureCategory(reported.category ?? reported.kind ?? reported.code);
+  if (!fallbackProviderFailureCategories.includes(category)) return null;
+  const actionStatus = reported.action_status ?? reported.external_actions ?? reported.side_effects ?? null;
+  const replaySafe = reported.safe_to_retry === true || reported.replay_safe === true
+    || ["none", "not_started", "pre_action"].includes(actionStatus);
+  return {
+    category,
+    code: reported.code ?? null,
+    dependency: reported.dependency ?? reported.capability ?? null,
+    message: reported.message ?? value?.error ?? null,
+    action_status: actionStatus,
+    fallback_eligible: replaySafe,
+  };
+}
+
+export function externallyUncertain(value) {
+  const reported = value?.provider_failure ?? value?.output?.provider_failure
+    ?? value?.failure?.provider ?? value?.details?.provider_failure;
+  const status = reported?.action_status ?? reported?.external_actions ?? reported?.side_effects
+    ?? value?.action_status ?? value?.external_action_status;
+  return ["uncertain", "unknown", "started", "possibly_completed"].includes(status)
+    || reported?.safe_to_retry === false || reported?.replay_safe === false;
 }
 
 export function validateProviderSelection(provider, capability, label) {

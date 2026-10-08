@@ -455,6 +455,17 @@ The next attempt receives the previous failure evidence. Shipping errors do not
 trigger automated execution retries: a network failure may hide a successful push.
 Blocked projects stop taking new jobs until reconciled. Other projects can progress.
 
+Execution-provider fallback is limited to providers explicitly listed in
+`execution.providers` that satisfy the job's required capabilities. A provider may
+report a structured `provider_failure` with category `quota`, `authentication`, or
+`availability` and either `safe_to_retry: true` or an `action_status` of `none`,
+`not_started`, or `pre_action`. Roundhouse then records the failure, closes that
+attempt, and selects a different compatible provider for a new attempt. Provider
+selection never changes inside an active attempt, and safe provider fallback does
+not consume the work-repair budget. An uncertain or started external action blocks
+for reconciliation; it is never replayed. Exhausting compatible providers produces
+a durable Blocked result naming the unavailable capability or dependency.
+
 With the local adapter, state writes are atomic fsynced snapshots and recovery
 refuses live/remote filesystem owners. With PostgreSQL, nodes use expiring heartbeat
 leases; claims, dependencies, capacity, project limits, counted resources, and

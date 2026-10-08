@@ -6,7 +6,8 @@ import test from "node:test";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
 import { claudeDecisionArgs, decisionSchema } from "../src/workflow/decision.js";
 import { claudeDefaultTools, claudeExecutorArgs, claudeResult } from "../src/workflow/runtime.js";
-import { providerCapabilities, providerCapabilityEvidence, providerContract, providerIdentity, validateProviderSelection } from "../src/workflow/provider-contract.js";
+import { externallyUncertain, providerCapabilities, providerCapabilityEvidence, providerContract, providerFailureEvidence,
+  providerIdentity, validateProviderSelection } from "../src/workflow/provider-contract.js";
 
 function manifest(root, changes = {}) {
   return { projects: [{ id: "example", name: "Example", purpose: "Exercise provider contracts", success_state: "Checks pass",
@@ -35,6 +36,16 @@ test("provider audit evidence is capability-specific and excludes executable or 
     required: ["execution", "artifact"], missing: ["artifact"], supported: false }]);
   assert.equal(JSON.stringify(evidence).includes("secret"), false);
   assert.equal(JSON.stringify(evidence).includes("reasoning"), false);
+});
+
+test("provider fallback requires explicit safe pre-action failure evidence", () => {
+  assert.deepEqual(providerFailureEvidence({ provider_failure: { code: "quota_exhausted", replay_safe: true,
+    dependency: "model quota" } }), {
+    category: "quota", code: "quota_exhausted", dependency: "model quota", message: null,
+    action_status: null, fallback_eligible: true,
+  });
+  assert.equal(providerFailureEvidence({ provider_failure: { category: "availability" } }).fallback_eligible, false);
+  assert.equal(externallyUncertain({ provider_failure: { category: "availability", action_status: "uncertain" } }), true);
 });
 
 test("legacy Codex defaults and explicit Codex configuration remain unchanged", () => {

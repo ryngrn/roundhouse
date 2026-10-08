@@ -133,6 +133,72 @@ test("e2e: bounded repair can fix failed verification and then ship", async () =
   assert.equal(job.attempts[0].verification.passed, false);
   assert.equal(job.attempts[1].verification.passed, true);
 });
+
+test("e2e: safe provider failure falls back only at a new attempt boundary", async () => {
+  const h = harness({ policy: { max_rework_attempts: 0 } });
+  h.config.execution.providers = [
+    { id: "a-primary", kind: "project", capabilities: [] },
+    { id: "b-secondary", kind: "project", capabilities: [] },
+  ];
+  const invoked = [];
+  const runtime = { execute: async ({ run, workspace }) => {
+    invoked.push(run.provider_id);
+    if (run.provider_id === "a-primary") return { passed: false, exit_code: 1, error: "Primary quota exhausted",
+      provider_failure: { category: "quota", safe_to_retry: true, action_status: "not_started", dependency: "primary quota" },
+      provider: { id: run.provider_id, capabilities: [], required: [] } };
+    fs.appendFileSync(path.join(workspace, "feature.txt"), "implemented: provider fallback\n");
+    return { passed: true, exit_code: 0, stdout: "done", stderr: "",
+      provider: { id: run.provider_id, capabilities: [], required: [] } };
+  } };
+  h.submit("provider fallback");
+  const result = await new Engine({ store: h.store, config: h.config, runtime }).run();
+  const job = Object.values(result.jobs)[0];
+  assert.equal(job.state, "Shipped");
+  assert.deepEqual(invoked, ["a-primary", "b-secondary"]);
+  assert.equal(job.attempts.length, 2);
+  assert.equal(job.attempts[0].provider_failure.category, "quota");
+  assert.equal(job.attempts[1].previous_failure.number, 1);
+  assert.deepEqual(job.attempts[1].provider_transition.from, "a-primary");
+  assert.deepEqual(job.attempts[1].provider_transition.to, "b-secondary");
+  assert.equal(job.attempts[1].provider_evidence.fallback.excluded_provider_ids[0], "a-primary");
+});
+
+test("e2e: externally uncertain provider failure blocks reconciliation without fallback", async () => {
+  const h = harness();
+  h.config.execution.providers = [
+    { id: "a-primary", kind: "project", capabilities: [] },
+    { id: "b-secondary", kind: "project", capabilities: [] },
+  ];
+  let calls = 0;
+  const runtime = { execute: async ({ run }) => {
+    calls += 1;
+    return { passed: false, exit_code: 1, error: "Connection ended after action started",
+      provider_failure: { category: "availability", safe_to_retry: false, action_status: "uncertain" },
+      provider: { id: run.provider_id, capabilities: [], required: [] } };
+  } };
+  h.submit("uncertain provider action");
+  const result = await new Engine({ store: h.store, config: h.config, runtime }).run();
+  const job = Object.values(result.jobs)[0];
+  assert.equal(job.state, "Blocked");
+  assert.equal(calls, 1);
+  assert.equal(job.attempts.length, 1);
+  assert.equal(job.reconciliation.status, "required");
+  assert.match(job.history.at(-1).reason, /will not be replayed/);
+});
+
+test("e2e: exhausted compatible providers record the unavailable dependency", async () => {
+  const h = harness({ policy: { max_rework_attempts: 0 } });
+  h.config.execution.providers = [{ id: "only-provider", kind: "project", capabilities: [] }];
+  const runtime = { execute: async ({ run }) => ({ passed: false, exit_code: 1, error: "Authentication unavailable",
+    provider_failure: { category: "authentication", safe_to_retry: true, action_status: "none", dependency: "agent credentials" },
+    provider: { id: run.provider_id, capabilities: [], required: [] } }) };
+  h.submit("provider dependency unavailable");
+  const result = await new Engine({ store: h.store, config: h.config, runtime }).run();
+  const job = Object.values(result.jobs)[0];
+  assert.equal(job.state, "Blocked");
+  assert.deepEqual(job.blocked_on, [{ kind: "unavailable_dependency", dependency: "agent credentials" }]);
+  assert.match(job.history.at(-1).reason, /Unavailable agent credentials.*no eligible configured provider remains/);
+});
 test("e2e: human approval stops execution; current-revision approval resumes", async () => {
   const h = harness(); const item = h.submit("requires approval");
   let result = await h.engine.run();

@@ -6,7 +6,7 @@ import { projectContext } from "./config.js";
 import { DecisionProvider, inferRoutineAcceptanceCriteria, routeDecision } from "./decision.js";
 import { createRuntime, CommandVerifier, executionBranch } from "./runtime.js";
 import { CapabilityRuntime, executionProviderEvidence, requiredExecutionCapabilities } from "./execution-adapters.js";
-import { providerCapabilityEvidence, providerIdentity } from "./provider-contract.js";
+import { externallyUncertain, providerCapabilityEvidence, providerFailureEvidence, providerIdentity } from "./provider-contract.js";
 import { DeliveryRouter } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
@@ -22,10 +22,29 @@ function configuredDecisionProviderEvidence(configuration) {
   return providerCapabilityEvidence(configuration ? [configuration] : [], ["decision"], selected);
 }
 
-function recordProviderTransition(entity, previousProviderId, providerId, attempt, at) {
-  if (!previousProviderId || !providerId || previousProviderId === providerId) return;
+function recordProviderTransition(entity, previousProviderId, providerId, attempt, at, priorFailure = null) {
+  if (!previousProviderId || !providerId || previousProviderId === providerId) return null;
+  const transition = { from: previousProviderId, to: providerId, attempt, at,
+    reason: priorFailure?.provider_failure?.category
+      ? `Provider ${previousProviderId} reported ${priorFailure.provider_failure.category}; a new attempt selected a configured compatible provider.`
+      : "Provider selected for a later attempt.",
+    ...(priorFailure ? { prior_failure_attempt: priorFailure.number ?? null } : {}) };
   entity.provider_transitions ??= [];
-  entity.provider_transitions.push({ from: previousProviderId, to: providerId, attempt, at, reason: "Provider selected for a later attempt." });
+  entity.provider_transitions.push(transition);
+  return transition;
+}
+
+function previousFailureRecord(attempt) {
+  if (!attempt) return null;
+  return {
+    number: attempt.number ?? null,
+    failure: attempt.failure ?? null,
+    status: attempt.status ?? null,
+    provider_failure: attempt.provider_failure ? structuredClone(attempt.provider_failure) : null,
+    provider_evidence: attempt.provider_evidence ? structuredClone(attempt.provider_evidence) : null,
+    run_id: attempt.run?.id ?? null,
+    finished_at: attempt.finished_at ?? null,
+  };
 }
 
 function machineLocalEvidence(project, job, execution) {
@@ -774,27 +793,45 @@ export class Engine {
         ? { kind: "machine_local", branch: executionBranch(project, job), working_directory: project.herdr.working_directory }
         : this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
       await this.store.change((data) => { data.jobs[id].prepared = prepared; });
-      for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {
+      let reworkAttempts = 0;
+      for (let attempt = 0; ; attempt++) {
         const current = (await this.store.read()).jobs[id];
         const requiredCapabilities = requiredExecutionCapabilities(project, current);
-        const providerEvidence = executionProviderEvidence(this.config.execution.providers, requiredCapabilities);
-        if (!providerEvidence.selected) throw new Error(`No execution provider supports the required capability combination: ${requiredCapabilities.length ? requiredCapabilities.join(", ") : "(none)"}.`);
+        const previousFailure = current.attempts.at(-1) ?? null;
+        const excludedProviderIds = current.attempts
+          .filter((entry) => entry.provider_failure?.fallback_eligible)
+          .map((entry) => entry.provider_evidence?.selected?.id)
+          .filter(Boolean);
+        const providerEvidence = executionProviderEvidence(this.config.execution.providers, requiredCapabilities, { exclude: excludedProviderIds });
+        if (!providerEvidence.selected) {
+          const capability = requiredCapabilities.length ? requiredCapabilities.join(", ") : "execution";
+          const compatible = this.config.execution.providers
+            .filter((provider) => requiredCapabilities.every((required) => provider.capabilities.includes(required)))
+            .map((provider) => provider.id);
+          const dependency = compatible.length ? `configured provider (${compatible.join(", ")})` : `capability (${capability})`;
+          await this.block(id, `Unavailable ${dependency}: no eligible execution provider remains for ${capability}.`, { dependency });
+          return true;
+        }
         const run = { id: randomUUID(), job_id: id, attempt: attempt + 1, provider_id: providerEvidence.selected.id, status: "executing",
           input_digest: current.input_digest ?? digest({ work: current.work, project_context: current.project_context }),
           inputs: { work: structuredClone(current.work), project_context_digest: digest(current.project_context),
-            previous_failure_attempt: current.attempts.at(-1)?.number ?? null },
+            previous_failure_attempt: previousFailure?.number ?? null },
           reconciliation: { required: false, status: "not_required" } };
         await this.store.change((data) => {
           const j = data.jobs[id];
           const previousProviderId = j.attempts.at(-1)?.provider_evidence?.selected?.id ?? j.provider_evidence?.selected?.id ?? null;
-          recordProviderTransition(j, previousProviderId, providerEvidence.selected.id, attempt + 1, new Date().toISOString());
+          const transition = recordProviderTransition(j, previousProviderId, providerEvidence.selected.id, attempt + 1, new Date().toISOString(), previousFailure);
           j.provider_evidence = structuredClone(providerEvidence);
           this.store.move(data, j, "Executing", `Execution attempt ${attempt + 1}.`);
           j.attempts.push({ number: attempt + 1, run, started_at: new Date().toISOString(), status: "executing",
             node_id: this.store.node?.id ?? null, node_name: this.store.node?.name ?? null,
-            provider_evidence: structuredClone(providerEvidence) });
+            provider_evidence: structuredClone(providerEvidence),
+            ...(previousFailure ? { previous_failure: previousFailureRecord(previousFailure) } : {}),
+            ...(transition ? { provider_transition: structuredClone(transition) } : {}) });
         });
         let failure;
+        let execution;
+        let providerFailure;
         let deliveryAttempted = false;
         try {
           const providerJob = (await this.store.read()).jobs[id];
@@ -817,7 +854,7 @@ export class Engine {
             });
           };
           await onProviderStart();
-          const execution = await this.runtime.execute({ project, job: providerJob, workspace: prepared.workspace,
+          execution = await this.runtime.execute({ project, job: providerJob, workspace: prepared.workspace,
             directory: path.join(this.store.directory, "executions", id, String(attempt + 1)),
             previous_failure: current.attempts.at(-1) ?? null, run, onStart: this.processRecorder("jobs", id),
             onProviderStart,
@@ -919,6 +956,16 @@ export class Engine {
           });
           return true;
         } catch (error) {
+          providerFailure = providerFailureEvidence(execution ?? error);
+          if (externallyUncertain(execution ?? error)) {
+            await this.store.change((data) => {
+              const recorded = data.jobs[id].attempts.at(-1);
+              recorded.failure = error.message;
+              if (providerFailure) recorded.provider_failure = providerFailure;
+            });
+            await this.block(id, `Provider outcome is externally uncertain and requires reconciliation; attempt will not be replayed: ${error.message}`, { reconciliation: true });
+            return true;
+          }
           if (machineLocal) {
             const latest = (await this.store.read()).jobs[id];
             if (latest.delivery_intent?.reconciliation?.required_on_interruption) {
@@ -933,12 +980,25 @@ export class Engine {
         await this.store.change((data) => {
           const failed = data.jobs[id].attempts.at(-1);
           failed.failure = failure;
+          if (providerFailure) failed.provider_failure = providerFailure;
           failed.status = "failed";
           failed.run.provider_id ??= run.provider_id;
           failed.run.status = "failed";
           failed.finished_at = new Date().toISOString();
         });
-        if (attempt === project.policy.max_rework_attempts) { await this.block(id, `Rework limit reached: ${failure}`); return true; }
+        if (providerFailure?.fallback_eligible) {
+          const remaining = this.config.execution.providers.some((provider) => !excludedProviderIds.includes(provider.id)
+            && provider.id !== providerEvidence.selected.id
+            && requiredCapabilities.every((required) => provider.capabilities.includes(required)));
+          if (!remaining) {
+            const dependency = providerFailure.dependency ?? `execution provider for ${requiredCapabilities.join(", ") || "execution"}`;
+            await this.block(id, `Unavailable ${dependency}: no eligible configured provider remains after ${providerFailure.category} failure from ${providerEvidence.selected.id}.`, { dependency });
+            return true;
+          }
+        } else if (reworkAttempts >= project.policy.max_rework_attempts) {
+          await this.block(id, `Rework limit reached: ${failure}`);
+          return true;
+        } else reworkAttempts += 1;
         if ((await this.store.read()).projects[project.id]?.stop) { await this.block(id, "Operator stopped the project before automated rework."); return true; }
         await this.store.change((data) => this.store.move(data, data.jobs[id], "Rework", failure));
       }
@@ -953,11 +1013,12 @@ export class Engine {
       if (projectLease) await this.store.releaseLease(projectLease).catch(() => {});
     }
   }
-  block(id, reason) {
+  block(id, reason, { reconciliation = false, dependency = null } = {}) {
     return this.store.change((data) => {
       const job = data.jobs[id];
-      if (job.delivery_intent) job.reconciliation = { required: true, status: "required", reason,
-        intent: structuredClone(job.delivery_intent), recorded_at: new Date().toISOString() };
+      if (dependency) job.blocked_on = [{ kind: "unavailable_dependency", dependency }];
+      if (job.delivery_intent || reconciliation) job.reconciliation = { required: true, status: "required", reason,
+        intent: job.delivery_intent ? structuredClone(job.delivery_intent) : null, recorded_at: new Date().toISOString() };
       const attempt = job.attempts.at(-1);
       if (attempt && attempt.status !== "completed") {
         attempt.failure ??= reason;

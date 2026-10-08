@@ -8,9 +8,11 @@ export function requiredExecutionCapabilities(project, job = null) {
   return [...new Set([...(project.required_capabilities ?? []), ...(job?.work?.required_capabilities ?? [])])];
 }
 
-export function selectExecutionProvider(providers, requiredCapabilities) {
+export function selectExecutionProvider(providers, requiredCapabilities, { exclude = [] } = {}) {
   const required = new Set(requiredCapabilities);
+  const excluded = new Set(exclude);
   return (providers ?? [])
+    .filter((provider) => !excluded.has(provider.id))
     .filter((provider) => requiredCapabilities.every((capability) => provider.capabilities.includes(capability)))
     .sort((left, right) => {
       const leftExtra = left.capabilities.filter((capability) => !required.has(capability)).length;
@@ -19,9 +21,12 @@ export function selectExecutionProvider(providers, requiredCapabilities) {
     })[0] ?? null;
 }
 
-export function executionProviderEvidence(providers, requiredCapabilities) {
-  const selected = selectExecutionProvider(providers, requiredCapabilities);
-  return providerCapabilityEvidence(providers, requiredCapabilities, selected);
+export function executionProviderEvidence(providers, requiredCapabilities, options = {}) {
+  const selected = selectExecutionProvider(providers, requiredCapabilities, options);
+  const evidence = providerCapabilityEvidence(providers, requiredCapabilities, selected);
+  const excluded = [...new Set(options.exclude ?? [])];
+  if (excluded.length) evidence.fallback = { excluded_provider_ids: excluded };
+  return evidence;
 }
 
 export class ExecutionAdapterRegistry {
@@ -50,6 +55,12 @@ export class ExecutionAdapterRegistry {
 
   select(requiredCapabilities) {
     return selectExecutionProvider([...this.adapters.values()], requiredCapabilities);
+  }
+
+  get(id, requiredCapabilities) {
+    const adapter = this.adapters.get(id);
+    if (!adapter || !requiredCapabilities.every((capability) => adapter.capabilities.includes(capability))) return null;
+    return adapter;
   }
 
   require(requiredCapabilities) {
@@ -96,7 +107,7 @@ class CommandExecutionAdapter {
       onStart,
     });
     let output = null;
-    if (result.passed && result.stdout.trim()) {
+    if (result.stdout.trim()) {
       try { output = JSON.parse(result.stdout); }
       catch { throw new Error(`Execution provider ${this.id} returned invalid JSON.`); }
       if (!output || typeof output !== "object" || Array.isArray(output)) {
@@ -116,9 +127,12 @@ export class CapabilityRuntime {
 
   async execute(request) {
     const required = requiredExecutionCapabilities(request.project, request.job);
-    const adapter = this.registry.require(required);
-    if (request.run?.provider_id && request.run.provider_id !== adapter.id) {
-      throw new Error(`Execution provider cannot change within attempt ${request.run.attempt}: selected ${request.run.provider_id}, resolved ${adapter.id}.`);
+    const adapter = request.run?.provider_id
+      ? this.registry.get(request.run.provider_id, required)
+      : this.registry.require(required);
+    if (!adapter) {
+      const resolved = this.registry.select(required);
+      throw new Error(`Execution provider cannot change within attempt ${request.run.attempt}: selected ${request.run.provider_id}, resolved ${resolved?.id ?? "none"}.`);
     }
     if (request.run) request.run.provider_id = adapter.id;
     await request.onProviderStart?.(providerIdentity(adapter));
