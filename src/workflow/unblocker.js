@@ -263,7 +263,19 @@ function deleteCandidate(data, root, decision, brief, at) {
     delete data.items[entity.id];
   }
   for (const [id, item] of Object.entries(data.items ?? {})) {
-    if (item.blocker_followup?.original_id === entity.id || item.input?.context?.blocker_entity_id === entity.id) delete data.items[id];
+    if (item.blocker_followup?.original_id !== entity.id && item.input?.context?.blocker_entity_id !== entity.id) continue;
+    tombstones(data).push({
+      id, kind: "item", project_id: item.project_id ?? null,
+      title: item.input?.text?.split("\n")[0]?.slice(0, 160) ?? id,
+      prior_state: item.state, prior_revision: item.revision,
+      confidence: decision.confidence,
+      reason: `Linked recovery card retired with deleted blocker ${entity.id}; no delivery or execution success is claimed.`,
+      blocker_category: "linked_recovery",
+      desired_outcome: `Remove obsolete recovery scaffolding for ${entity.id}.`,
+      evidence: [`linked_to:${entity.id}`], related_blocker_id: entity.id,
+      deleted_at: at, actor: "roundhouse-unblocker",
+    });
+    delete data.items[id];
   }
   if (data.system_metadata.cleanup_tombstones.length > 1_000) data.system_metadata.cleanup_tombstones.splice(0, data.system_metadata.cleanup_tombstones.length - 1_000);
   return record;

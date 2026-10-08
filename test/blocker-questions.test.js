@@ -23,6 +23,29 @@ test("cleanup agent permanently deletes low-value blocked work and keeps a conci
   assert.equal(tombstone.original_request, undefined);
 });
 
+test("deleting a blocker also tombstones linked recovery cards", async () => {
+  const h = harness();
+  const id = blockStandalone(h, "cleanup delete obsolete ecosystem blocker");
+  const recovery = h.submit("Recovery decision for obsolete ecosystem blocker", "linked-recovery-tombstone");
+  h.store.change((data) => {
+    const item = data.items[recovery.id];
+    item.blocker_followup = { original_id: id, kind: "item" };
+    item.input.context = { blocker_entity_id: id, blocker_entity_type: "item" };
+    h.store.move(data, item, "Decision", "Evaluate the linked recovery path.");
+    h.store.move(data, item, "Needs Clarification", "Choose whether to retain this recovery path.");
+  });
+
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup.action, "delete");
+  const state = h.store.read();
+  assert.equal(state.items[id], undefined);
+  assert.equal(state.items[recovery.id], undefined);
+  const records = state.system_metadata.cleanup_tombstones.filter((entry) => [id, recovery.id].includes(entry.id));
+  assert.equal(records.length, 2);
+  assert.equal(records.find((entry) => entry.id === recovery.id).related_blocker_id, id);
+  assert.match(records.find((entry) => entry.id === recovery.id).reason, /no delivery or execution success is claimed/i);
+});
+
 test("fresh recovery supersedes the blocked card, inherits urgency, and never replays the old attempt", async () => {
   const h = harness();
   const original = h.submit("Implement tested UI update", "blocked-original");
