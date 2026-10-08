@@ -159,6 +159,7 @@ const toolSpecs = [
     output: z.object({ items: z.array(itemSchema), active_jobs: z.array(activeJobSchema), untracked_activity: z.array(untrackedActivitySchema),
       activity_inspection: activityInspectionSchema, next_departure: nextDepartureSchema.nullable(), allocations: allocationsSchema,
       projects: z.record(z.string(), z.unknown()),
+      project_gates: z.record(z.string(), z.unknown()),
       project_candidates: z.record(z.string(), z.unknown()), system_metadata: z.record(z.string(), z.unknown()) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async (service, filters) => {
