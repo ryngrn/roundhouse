@@ -15,6 +15,7 @@ import { digest } from "../src/storage/repository.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const enabled = Boolean(connectionString);
+const remoteDatabase = enabled && !["localhost", "127.0.0.1", "::1"].includes(new URL(connectionString).hostname);
 const databaseName = enabled ? decodeURIComponent(new URL(connectionString).pathname.slice(1)) : "";
 if (enabled && !/test/i.test(databaseName)) throw new Error("TEST_DATABASE_URL must name a dedicated database containing 'test'.");
 
@@ -29,9 +30,9 @@ function node(directory, name) {
   return loadNodeIdentity(directory, { ROUNDHOUSE_NODE_NAME: name, ROUNDHOUSE_NODE_CAPABILITIES: "execution,shipping" });
 }
 
-async function open(name, leaseMs = 1000) {
+async function open(name, leaseMs = 60000) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), `roundhouse-pg-${name}-`));
-  return PostgresStorageRepository.open({ connectionString, directory, node: node(directory, name), allowInsecure: true, leaseMs });
+  return PostgresStorageRepository.open({ connectionString, directory, node: node(directory, name), allowInsecure: !remoteDatabase, leaseMs });
 }
 
 function seed(data, { deliveryIntent = false } = {}) {
@@ -178,7 +179,7 @@ test("postgres: racing workers execute and ship one claimed job exactly once", {
     id: "project-1", name: "Project", purpose: "Test claims", success_state: "One delivery", status: "active", repository,
     context_sources: [], context_limits: { max_files: 10, max_file_bytes: 10_000, max_total_bytes: 20_000 },
     agent: { default_role: "general", allowed_roles: ["general"], context_sources: {}, skill_sources: {} },
-    executor: { kind: "command", command: ["true"] }, runtime: "local", remote: "origin", timeout_ms: 10_000, weight: 1,
+    executor: { kind: "command", command: ["true"] }, runtime: "local", remote: "origin", timeout_ms: 10_000, weight: 1, max_concurrent_runs: 1,
     policy: { allow_autonomous: true, approval_required: false, shipping: "commit_only", continuation: "continue_project_queue",
       max_rework_attempts: 0, review_after_shipping: false }, verification: [],
   };
@@ -263,7 +264,7 @@ test("postgres: native state import preserves IDs/history and never starts pendi
   local.jobs["job-1"].state = "Shipped";
   const localBytes = JSON.stringify(local);
   fs.writeFileSync(path.join(directory, "state.json"), localBytes);
-  const report = await importLocalStateToPostgres({ stateDirectory: directory, connectionString, allowInsecure: true,
+  const report = await importLocalStateToPostgres({ stateDirectory: directory, connectionString, allowInsecure: !remoteDatabase,
     env: { ROUNDHOUSE_NODE_NAME: "importer" } });
   assert.equal(report.imported_pending_count, 1);
   assert.equal(report.shipped_job_count, 1);
