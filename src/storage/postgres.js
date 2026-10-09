@@ -93,73 +93,65 @@ async function readSnapshot(client) {
   return data;
 }
 
-async function clearDomain(client) {
-  await client.query(`TRUNCATE TABLE
-    roundhouse.mcp_deliveries,
-    roundhouse.mcp_subscriptions,
-    roundhouse.mcp_event_state,
-    roundhouse.deployments,
-    roundhouse.shipping_records,
-    roundhouse.verification_checks,
-    roundhouse.verification_results,
-    roundhouse.execution_metadata,
-    roundhouse.agent_role_refs,
-    roundhouse.job_attempts,
-    roundhouse.job_dependencies,
-    roundhouse.transition_audit,
-    roundhouse.import_provenance,
-    roundhouse.answers,
-    roundhouse.questions,
-    roundhouse.decisions,
-    roundhouse.outbox_events,
-    roundhouse.jobs,
-    roundhouse.depot_items,
-    roundhouse.project_candidates,
-    roundhouse.projects,
-    roundhouse.system_metadata
-    RESTART IDENTITY`);
+function changedEntries(before = {}, after = {}) {
+  return Object.entries(after).filter(([key, value]) => JSON.stringify(before[key]) !== JSON.stringify(value));
 }
 
-async function writeSnapshot(client, data) {
-  await clearDomain(client);
-  for (const [key, value] of Object.entries(data.system_metadata ?? {})) {
-    await client.query("INSERT INTO roundhouse.system_metadata(key, value) VALUES ($1, $2)", [key, json(value)]);
-  }
-  for (const project of Object.values(data.projects ?? {})) {
-    const id = project.id ?? Object.entries(data.projects).find(([, value]) => value === project)?.[0];
+function removedKeys(before = {}, after = {}) {
+  return Object.keys(before).filter((key) => !(key in after));
+}
+
+async function writeProject(client, id, project) {
     await client.query(`INSERT INTO roundhouse.projects
       (id, name, status, last_commit, stopped, blocked, active, revision, payload)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [id, project.name ?? null, project.status ?? null, project.last_commit ?? null,
-      Boolean(project.stop), Boolean(project.blocked), Boolean(project.active), project.revision ?? 1, { ...project, id }]);
-  }
-  for (const candidate of Object.values(data.project_candidates ?? {})) {
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,status=EXCLUDED.status,last_commit=EXCLUDED.last_commit,
+        stopped=EXCLUDED.stopped,blocked=EXCLUDED.blocked,active=EXCLUDED.active,revision=EXCLUDED.revision,
+        payload=EXCLUDED.payload,updated_at=clock_timestamp()`, [id, project.name ?? null, project.status ?? null, project.last_commit ?? null,
+    Boolean(project.stop), Boolean(project.blocked), Boolean(project.active), project.revision ?? 1, { ...project, id }]);
+}
+
+async function writeCandidate(client, id, candidate) {
     await client.query(`INSERT INTO roundhouse.project_candidates
-      (id, name, status, executable, source_system, record_count, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [candidate.id, candidate.name, candidate.status, Boolean(candidate.executable), candidate.source_system ?? null, candidate.record_count ?? 0, candidate]);
-  }
-  for (const item of Object.values(data.items ?? {})) {
+      (id, name, status, executable, source_system, record_count, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,status=EXCLUDED.status,executable=EXCLUDED.executable,
+        source_system=EXCLUDED.source_system,record_count=EXCLUDED.record_count,payload=EXCLUDED.payload,updated_at=clock_timestamp()`,
+    [id, candidate.name, candidate.status, Boolean(candidate.executable), candidate.source_system ?? null, candidate.record_count ?? 0,
+      { ...candidate, id }]);
+}
+
+async function writeItem(client, id, item) {
     await client.query(`INSERT INTO roundhouse.depot_items
       (id,state,revision,project_id,project_candidate_id,priority_rank,execution_eligible,requires_reevaluation,input_text,input_source,input_actor,payload,created_at,updated_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, [item.id, item.state, item.revision, item.project_id ?? null,
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      ON CONFLICT (id) DO UPDATE SET state=EXCLUDED.state,revision=EXCLUDED.revision,project_id=EXCLUDED.project_id,
+        project_candidate_id=EXCLUDED.project_candidate_id,priority_rank=EXCLUDED.priority_rank,execution_eligible=EXCLUDED.execution_eligible,
+        requires_reevaluation=EXCLUDED.requires_reevaluation,input_text=EXCLUDED.input_text,input_source=EXCLUDED.input_source,
+        input_actor=EXCLUDED.input_actor,payload=EXCLUDED.payload,created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at`, [id, item.state, item.revision, item.project_id ?? null,
       item.project_candidate_id ?? null, Number.isFinite(item.priority_rank) ? item.priority_rank : null, item.execution_eligible !== false,
-      Boolean(item.requires_reevaluation), item.input?.text ?? "", item.input?.source ?? null, item.input?.actor ?? null, item,
+      Boolean(item.requires_reevaluation), item.input?.text ?? "", item.input?.source ?? null, item.input?.actor ?? null, { ...item, id },
       date(item.created_at), date(item.updated_at, date(item.created_at))]);
     await client.query(`INSERT INTO roundhouse.depot_item_revisions(item_id,revision,state,recorded_at,payload)
       VALUES ($1,$2,$3,$4,$5) ON CONFLICT (item_id,revision) DO NOTHING`,
-    [item.id, item.revision, item.state, date(item.updated_at, date(item.created_at)), item]);
+    [id, item.revision, item.state, date(item.updated_at, date(item.created_at)), { ...item, id }]);
+
+    await client.query("DELETE FROM roundhouse.decisions WHERE item_id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.questions WHERE item_id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.import_provenance WHERE item_id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.transition_audit WHERE entity_type='item' AND entity_id=$1", [id]);
 
     const decisionHistory = [...(item.decision_history ?? []), ...(item.decision ? [item.decision] : [])];
     for (let index = 0; index < decisionHistory.length; index += 1) {
       const decision = decisionHistory[index];
-      const id = index === decisionHistory.length - 1 && item.decision_id ? item.decision_id : `${item.id}:decision:${index + 1}`;
+      const decisionId = index === decisionHistory.length - 1 && item.decision_id ? item.decision_id : `${id}:decision:${index + 1}`;
       await client.query(`INSERT INTO roundhouse.decisions(id,item_id,item_revision,decision_key,disposition,body,created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING`, [id, item.id, item.revision, decision.decision_key ?? item.decision_key ?? null,
+        VALUES ($1,$2,$3,$4,$5,$6,$7)`, [decisionId, id, item.revision, decision.decision_key ?? item.decision_key ?? null,
         decision.decision ?? null, decision, date(decision.created_at, date(item.updated_at, date(item.created_at)))]);
     }
     for (const question of item.questions ?? []) {
       await client.query(`INSERT INTO roundhouse.questions
         (id,item_id,decision_id,decision_key,item_revision,revision,kind,prompt,status,created_at,updated_at,payload)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [question.id, item.id, question.decision_id ?? null,
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [question.id, id, question.decision_id ?? null,
         question.decision_key ?? null, question.item_revision ?? item.revision, question.revision, question.kind, question.prompt, question.status,
         date(question.created_at), date(question.updated_at, date(question.created_at)), question]);
       if (question.answer) await client.query(`INSERT INTO roundhouse.answers(question_id,text,actor,answered_at,payload) VALUES ($1,$2,$3,$4,$5)`,
@@ -168,77 +160,142 @@ async function writeSnapshot(client, data) {
     const provenances = [item.provenance, ...(item.legacy_sources ?? [])].filter((entry) => entry?.source_system && entry?.source_id);
     for (const provenance of provenances) await client.query(`INSERT INTO roundhouse.import_provenance
       (item_id,source_system,source_id,source_page_url,source_record_digest,export_digest,imported_at,reconciled,payload)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (item_id,source_system,source_id) DO NOTHING`, [item.id, provenance.source_system,
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [id, provenance.source_system,
       provenance.source_id, provenance.source_page_url ?? null, provenance.source_record_digest ?? null, provenance.export_digest ?? null,
       date(provenance.imported_at, date(item.created_at)), Boolean(provenance.reconciled), provenance]);
-  }
+    for (let index = 0; index < (item.history ?? []).length; index += 1) {
+      const event = item.history[index];
+      await client.query(`INSERT INTO roundhouse.transition_audit(entity_type,entity_id,revision,from_state,to_state,reason,occurred_at)
+        VALUES ('item',$1,$2,$3,$4,$5,$6)`, [id, index + 1, event.from ?? null, event.to, event.reason ?? null, date(event.at)]);
+    }
+}
 
-  for (const job of Object.values(data.jobs ?? {})) {
+async function writeJob(client, id, job) {
     await client.query(`INSERT INTO roundhouse.jobs
       (id,item_id,project_id,state,revision,position,agent_role,policy_hash,delivery_intent,payload,created_at,updated_at,owning_node_id)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, [job.id, job.parent_id, job.project_id, job.state, job.revision,
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      ON CONFLICT (id) DO UPDATE SET item_id=EXCLUDED.item_id,project_id=EXCLUDED.project_id,state=EXCLUDED.state,
+        revision=EXCLUDED.revision,position=EXCLUDED.position,agent_role=EXCLUDED.agent_role,policy_hash=EXCLUDED.policy_hash,
+        delivery_intent=EXCLUDED.delivery_intent,payload=EXCLUDED.payload,created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at,
+        owning_node_id=EXCLUDED.owning_node_id`, [id, job.parent_id, job.project_id, job.state, job.revision,
       job.position ?? 0, job.agent_role ?? "general", job.policy_hash ?? null, job.delivery_intent ?? null, job, date(job.created_at), date(job.updated_at, date(job.created_at)),
       job.owning_node_id ?? null]);
+    await client.query("DELETE FROM roundhouse.job_dependencies WHERE job_id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.agent_role_refs WHERE job_id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.job_attempts WHERE job_id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.shipping_records WHERE job_id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.deployments WHERE job_id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.transition_audit WHERE entity_type='job' AND entity_id=$1", [id]);
     for (const dependency of job.dependencies ?? []) await client.query(
-      "INSERT INTO roundhouse.job_dependencies(job_id,depends_on_job_id) VALUES ($1,$2)", [job.id, dependency]);
+      "INSERT INTO roundhouse.job_dependencies(job_id,depends_on_job_id) VALUES ($1,$2)", [id, dependency]);
     await client.query(`INSERT INTO roundhouse.agent_role_refs(job_id,role_id,profile_hash,profile) VALUES ($1,$2,$3,$4)`,
-      [job.id, job.agent_role ?? "general", job.project_context?.agent_profile ? digest(job.project_context.agent_profile) : null, job.project_context?.agent_profile ?? {}]);
+      [id, job.agent_role ?? "general", job.project_context?.agent_profile ? digest(job.project_context.agent_profile) : null, job.project_context?.agent_profile ?? {}]);
     for (const attempt of job.attempts ?? []) {
       const number = attempt.number;
       await client.query(`INSERT INTO roundhouse.job_attempts(job_id,attempt_number,started_at,finished_at,node_id,node_name,failure,payload)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [job.id, number, date(attempt.started_at), attempt.finished_at ? date(attempt.finished_at) : null,
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [id, number, date(attempt.started_at), attempt.finished_at ? date(attempt.finished_at) : null,
         attempt.node_id ?? null, attempt.node_name ?? null, attempt.failure ?? null, attempt]);
       if (attempt.execution) await client.query(`INSERT INTO roundhouse.execution_metadata
         (job_id,attempt_number,command,started_at,finished_at,exit_code,passed,timed_out,overflow,report)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [job.id, number, json(attempt.execution.command), attempt.execution.started_at ? date(attempt.execution.started_at) : null,
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [id, number, json(attempt.execution.command), attempt.execution.started_at ? date(attempt.execution.started_at) : null,
         attempt.execution.finished_at ? date(attempt.execution.finished_at) : null, attempt.execution.exit_code ?? null, attempt.execution.passed ?? null,
         attempt.execution.timed_out ?? null, attempt.execution.overflow ?? null, attempt.execution.report ?? null]);
       if (attempt.verification) {
         await client.query(`INSERT INTO roundhouse.verification_results(job_id,attempt_number,commit,verified_at,passed,payload)
-          VALUES ($1,$2,$3,$4,$5,$6)`, [job.id, number, attempt.verification.commit ?? null, attempt.verification.at ? date(attempt.verification.at) : null,
+          VALUES ($1,$2,$3,$4,$5,$6)`, [id, number, attempt.verification.commit ?? null, attempt.verification.at ? date(attempt.verification.at) : null,
           Boolean(attempt.verification.passed), attempt.verification]);
         for (let index = 0; index < (attempt.verification.checks ?? []).length; index += 1) {
           const check = attempt.verification.checks[index];
           await client.query(`INSERT INTO roundhouse.verification_checks(job_id,attempt_number,check_index,check_id,source,passed,payload)
-            VALUES ($1,$2,$3,$4,$5,$6,$7)`, [job.id, number, index, check.id, check.source ?? null, Boolean(check.passed), check]);
+            VALUES ($1,$2,$3,$4,$5,$6,$7)`, [id, number, index, check.id, check.source ?? null, Boolean(check.passed), check]);
         }
       }
     }
     if (job.shipping) {
       await client.query(`INSERT INTO roundhouse.shipping_records(job_id,commit,branch,pushed,shipped_at,payload) VALUES ($1,$2,$3,$4,$5,$6)`,
-        [job.id, job.shipping.commit ?? null, job.shipping.branch ?? null, job.shipping.pushed ?? null, job.shipping.timestamp ? date(job.shipping.timestamp) : null, job.shipping]);
+        [id, job.shipping.commit ?? null, job.shipping.branch ?? null, job.shipping.pushed ?? null, job.shipping.timestamp ? date(job.shipping.timestamp) : null, job.shipping]);
       if (job.shipping.deployment) {
         const deployment = job.shipping.deployment;
         await client.query(`INSERT INTO roundhouse.deployments(job_id,provider,environment,revision,status,url,payload) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-          [job.id, deployment.provider ?? null, deployment.environment ?? null, deployment.revision ?? null, deployment.status ?? null, deployment.url ?? null, deployment]);
+          [id, deployment.provider ?? null, deployment.environment ?? null, deployment.revision ?? null, deployment.status ?? null, deployment.url ?? null, deployment]);
       }
     }
-  }
-
-  for (const entity of [...Object.values(data.items ?? {}).map((value) => ["item", value]), ...Object.values(data.jobs ?? {}).map((value) => ["job", value])]) {
-    const [type, value] = entity;
-    for (let index = 0; index < (value.history ?? []).length; index += 1) {
-      const event = value.history[index];
+    for (let index = 0; index < (job.history ?? []).length; index += 1) {
+      const event = job.history[index];
       await client.query(`INSERT INTO roundhouse.transition_audit(entity_type,entity_id,revision,from_state,to_state,reason,occurred_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)`, [type, value.id, index + 1, event.from ?? null, event.to, event.reason ?? null, date(event.at)]);
+        VALUES ('job',$1,$2,$3,$4,$5,$6)`, [id, index + 1, event.from ?? null, event.to, event.reason ?? null, date(event.at)]);
     }
-  }
-  for (const event of data.outbox ?? []) await client.query(`INSERT INTO roundhouse.outbox_events
-    (id,entity_id,item_id,source,state,reason,occurred_at,delivered,question_id,question_revision,payload)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [event.id, event.entity_id, event.item_id, event.source ?? null, event.state,
-    event.reason ?? null, date(event.at), Boolean(event.delivered), event.question_id ?? null, event.question_revision ?? null, event]);
+}
 
-  for (const subscription of Object.values(data.mcp_events?.subscriptions ?? {})) await client.query(`INSERT INTO roundhouse.mcp_subscriptions
-    (id,owner,active,next_outbox_index,refresh_before,payload) VALUES ($1,$2,$3,$4,$5,$6)`, [subscription.id, subscription.owner,
-    Boolean(subscription.active), subscription.next_outbox_index ?? 0, subscription.refresh_before ? date(subscription.refresh_before) : null, subscription]);
-  for (const delivery of Object.values(data.mcp_events?.deliveries ?? {})) await client.query(`INSERT INTO roundhouse.mcp_deliveries
-    (id,subscription_id,outbox_id,status,attempts,next_attempt_at,lease_until,event_id,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-  [delivery.id, delivery.subscription_id, delivery.outbox_id, delivery.status, delivery.attempts ?? 0,
-    delivery.next_attempt_at ? date(delivery.next_attempt_at) : null, delivery.lease_until ? date(delivery.lease_until) : null, delivery.event_id, delivery]);
-  for (const [key, value] of Object.entries(data.mcp_events ?? {})) {
-    if (["subscriptions", "deliveries"].includes(key)) continue;
-    await client.query("INSERT INTO roundhouse.mcp_event_state(key,value) VALUES ($1,$2)", [key, json(value)]);
+async function writeOutboxEvent(client, event) {
+  await client.query(`INSERT INTO roundhouse.outbox_events
+    (id,entity_id,item_id,source,state,reason,occurred_at,delivered,question_id,question_revision,payload)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    ON CONFLICT (id) DO UPDATE SET entity_id=EXCLUDED.entity_id,item_id=EXCLUDED.item_id,source=EXCLUDED.source,
+      state=EXCLUDED.state,reason=EXCLUDED.reason,occurred_at=EXCLUDED.occurred_at,delivered=EXCLUDED.delivered,
+      question_id=EXCLUDED.question_id,question_revision=EXCLUDED.question_revision,payload=EXCLUDED.payload`, [event.id, event.entity_id, event.item_id, event.source ?? null, event.state,
+    event.reason ?? null, date(event.at), Boolean(event.delivered), event.question_id ?? null, event.question_revision ?? null, event]);
+}
+
+function validateSnapshotReferences(data, events, subscriptions, deliveries) {
+  for (const [id, job] of Object.entries(data.jobs ?? {})) {
+    if (!data.items?.[job.parent_id]) throw new Error(`Job ${id} references missing item ${job.parent_id}.`);
   }
+  for (const [id, delivery] of Object.entries(deliveries)) {
+    if (!subscriptions[delivery.subscription_id]) throw new Error(`MCP delivery ${id} references missing subscription ${delivery.subscription_id}.`);
+    if (!events[delivery.outbox_id]) throw new Error(`MCP delivery ${id} references missing outbox event ${delivery.outbox_id}.`);
+  }
+}
+
+async function writeChanges(client, before, data) {
+  const beforeEvents = Object.fromEntries((before.outbox ?? []).map((event) => [event.id, event]));
+  const events = Object.fromEntries((data.outbox ?? []).map((event) => [event.id, event]));
+  const beforeSubscriptions = before.mcp_events?.subscriptions ?? {};
+  const subscriptions = data.mcp_events?.subscriptions ?? {};
+  const beforeDeliveries = before.mcp_events?.deliveries ?? {};
+  const deliveries = data.mcp_events?.deliveries ?? {};
+  const eventState = Object.fromEntries(Object.entries(data.mcp_events ?? {}).filter(([key]) => !["subscriptions", "deliveries"].includes(key)));
+  const beforeEventState = Object.fromEntries(Object.entries(before.mcp_events ?? {}).filter(([key]) => !["subscriptions", "deliveries"].includes(key)));
+  validateSnapshotReferences(data, events, subscriptions, deliveries);
+
+  for (const id of removedKeys(beforeDeliveries, deliveries)) await client.query("DELETE FROM roundhouse.mcp_deliveries WHERE id=$1", [id]);
+  for (const id of removedKeys(before.jobs, data.jobs)) {
+    await client.query("DELETE FROM roundhouse.jobs WHERE id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.transition_audit WHERE entity_type='job' AND entity_id=$1", [id]);
+  }
+  for (const id of removedKeys(before.items, data.items)) {
+    await client.query("DELETE FROM roundhouse.depot_items WHERE id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.depot_item_revisions WHERE item_id=$1", [id]);
+    await client.query("DELETE FROM roundhouse.transition_audit WHERE entity_type='item' AND entity_id=$1", [id]);
+  }
+  for (const id of removedKeys(beforeEvents, events)) await client.query("DELETE FROM roundhouse.outbox_events WHERE id=$1", [id]);
+  for (const id of removedKeys(beforeSubscriptions, subscriptions)) await client.query("DELETE FROM roundhouse.mcp_subscriptions WHERE id=$1", [id]);
+  for (const id of removedKeys(before.projects, data.projects)) await client.query("DELETE FROM roundhouse.projects WHERE id=$1", [id]);
+  for (const id of removedKeys(before.project_candidates, data.project_candidates)) await client.query("DELETE FROM roundhouse.project_candidates WHERE id=$1", [id]);
+  for (const key of removedKeys(before.system_metadata, data.system_metadata)) await client.query("DELETE FROM roundhouse.system_metadata WHERE key=$1", [key]);
+  for (const key of removedKeys(beforeEventState, eventState)) await client.query("DELETE FROM roundhouse.mcp_event_state WHERE key=$1", [key]);
+
+  for (const [key, value] of changedEntries(before.system_metadata, data.system_metadata)) await client.query(`INSERT INTO roundhouse.system_metadata(key,value)
+    VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=clock_timestamp()`, [key, json(value)]);
+  for (const [id, project] of changedEntries(before.projects, data.projects)) await writeProject(client, id, project);
+  for (const [id, candidate] of changedEntries(before.project_candidates, data.project_candidates)) await writeCandidate(client, id, candidate);
+  for (const [id, item] of changedEntries(before.items, data.items)) await writeItem(client, id, item);
+  for (const [id, job] of changedEntries(before.jobs, data.jobs)) await writeJob(client, id, job);
+  for (const [, event] of changedEntries(beforeEvents, events)) await writeOutboxEvent(client, event);
+
+  for (const [id, subscription] of changedEntries(beforeSubscriptions, subscriptions)) await client.query(`INSERT INTO roundhouse.mcp_subscriptions
+    (id,owner,active,next_outbox_index,refresh_before,payload) VALUES ($1,$2,$3,$4,$5,$6)
+    ON CONFLICT (id) DO UPDATE SET owner=EXCLUDED.owner,active=EXCLUDED.active,next_outbox_index=EXCLUDED.next_outbox_index,
+      refresh_before=EXCLUDED.refresh_before,payload=EXCLUDED.payload`, [id, subscription.owner,
+    Boolean(subscription.active), subscription.next_outbox_index ?? 0, subscription.refresh_before ? date(subscription.refresh_before) : null, subscription]);
+  for (const [id, delivery] of changedEntries(beforeDeliveries, deliveries)) await client.query(`INSERT INTO roundhouse.mcp_deliveries
+    (id,subscription_id,outbox_id,status,attempts,next_attempt_at,lease_until,event_id,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    ON CONFLICT (id) DO UPDATE SET subscription_id=EXCLUDED.subscription_id,outbox_id=EXCLUDED.outbox_id,status=EXCLUDED.status,
+      attempts=EXCLUDED.attempts,next_attempt_at=EXCLUDED.next_attempt_at,lease_until=EXCLUDED.lease_until,event_id=EXCLUDED.event_id,payload=EXCLUDED.payload`,
+  [id, delivery.subscription_id, delivery.outbox_id, delivery.status, delivery.attempts ?? 0,
+    delivery.next_attempt_at ? date(delivery.next_attempt_at) : null, delivery.lease_until ? date(delivery.lease_until) : null, delivery.event_id, delivery]);
+  for (const [key, value] of changedEntries(beforeEventState, eventState)) await client.query(`INSERT INTO roundhouse.mcp_event_state(key,value)
+    VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=clock_timestamp()`, [key, json(value)]);
 }
 
 export class PostgresStorageRepository extends StorageRepository {
@@ -292,8 +349,9 @@ export class PostgresStorageRepository extends StorageRepository {
     return tx(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
       const data = await readSnapshot(client);
+      const before = structuredClone(data);
       const result = await fn(data);
-      await writeSnapshot(client, data);
+      await writeChanges(client, before, data);
       return structuredClone(result ?? null);
     });
   }
@@ -474,6 +532,7 @@ export class PostgresStorageRepository extends StorageRepository {
     return tx(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
       const data = await readSnapshot(client);
+      const before = structuredClone(data);
       const expired = await rows(client, `SELECT j.id,l.payload AS lease_payload FROM roundhouse.jobs j
         LEFT JOIN roundhouse.resource_leases l ON l.resource_kind='job' AND l.resource_key=j.id
         WHERE (j.state IN ('Executing','Verification','Rework') AND (l.resource_key IS NULL OR l.expires_at<=clock_timestamp()))
@@ -517,7 +576,7 @@ export class PostgresStorageRepository extends StorageRepository {
         }
       }
       const recovered = expired.length + expiredItems.length;
-      if (recovered) await writeSnapshot(client, data);
+      if (recovered) await writeChanges(client, before, data);
       return recovered;
     });
   }

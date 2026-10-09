@@ -71,3 +71,82 @@ test("storage: a disconnected PostgreSQL authority reports read-only health inst
   assert.equal(status.authoritative, true);
   assert.equal(status.node.name, "offline-node");
 });
+
+function postgresPoolFixture({ projects = [], fail = () => false } = {}) {
+  const queries = [];
+  const client = {
+    async query(sql, parameters = []) {
+      queries.push({ sql, parameters });
+      if (fail(sql, parameters)) throw new Error("injected write failure");
+      if (/SELECT key, value FROM roundhouse\.system_metadata/.test(sql)) return { rows: [] };
+      if (/SELECT id, payload FROM roundhouse\.projects/.test(sql)) return { rows: projects.map((payload) => ({ id: payload.id, payload })) };
+      if (/SELECT id, payload FROM roundhouse\.project_candidates/.test(sql)) return { rows: [] };
+      if (/SELECT id, payload FROM roundhouse\.depot_items/.test(sql)) return { rows: [] };
+      if (/FROM roundhouse\.jobs j LEFT JOIN/.test(sql)) return { rows: [] };
+      if (/SELECT payload FROM roundhouse\.outbox_events/.test(sql)) return { rows: [] };
+      if (/SELECT id, payload FROM roundhouse\.mcp_subscriptions/.test(sql)) return { rows: [] };
+      if (/SELECT id, payload FROM roundhouse\.mcp_deliveries/.test(sql)) return { rows: [] };
+      if (/SELECT key, value FROM roundhouse\.mcp_event_state/.test(sql)) return { rows: [] };
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  };
+  return { queries, pool: { connect: async () => client } };
+}
+
+function postgresFixtureStore(pool) {
+  return new PostgresStorageRepository({
+    pool,
+    directory: os.tmpdir(),
+    node: { id: "00000000-0000-4000-8000-000000000001", name: "fixture", capabilities: [] },
+  });
+}
+
+test("storage: PostgreSQL change persists only changed domain records", async () => {
+  const first = { id: "first", name: "First", revision: 1 };
+  const second = { id: "second", name: "Second", revision: 1 };
+  const fixture = postgresPoolFixture({ projects: [first, second] });
+  const store = postgresFixtureStore(fixture.pool);
+
+  await store.change((data) => { data.projects.first.name = "Changed"; });
+
+  const writes = fixture.queries.filter(({ sql }) => /^\s*(INSERT|UPDATE|DELETE|TRUNCATE)\b/i.test(sql));
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].sql, /INSERT INTO roundhouse\.projects/);
+  assert.equal(writes[0].parameters[0], "first");
+  assert.doesNotMatch(writes.map(({ sql }) => sql).join("\n"), /TRUNCATE|depot_items|roundhouse\.jobs\b/i);
+  assert.equal(fixture.queries.at(-1).sql, "COMMIT");
+});
+
+test("storage: PostgreSQL change rolls back all incremental writes after a database failure", async () => {
+  const fixture = postgresPoolFixture({
+    projects: [{ id: "first", name: "First", revision: 1 }, { id: "second", name: "Second", revision: 1 }],
+    fail: (sql, parameters) => /INSERT INTO roundhouse\.projects/.test(sql) && parameters[0] === "second",
+  });
+  const store = postgresFixtureStore(fixture.pool);
+
+  await assert.rejects(store.change((data) => {
+    data.projects.first.name = "Changed first";
+    data.projects.second.name = "Changed second";
+  }), /injected write failure/);
+
+  assert.equal(fixture.queries.filter(({ sql }) => /INSERT INTO roundhouse\.projects/.test(sql)).length, 2);
+  assert.equal(fixture.queries.at(-1).sql, "ROLLBACK");
+  assert.equal(fixture.queries.some(({ sql }) => sql === "COMMIT"), false);
+});
+
+test("storage: PostgreSQL change can populate an empty authority for initial import", async () => {
+  const fixture = postgresPoolFixture();
+  const store = postgresFixtureStore(fixture.pool);
+
+  await store.change((data) => {
+    data.system_metadata.postgres_import = { source_digest: "digest" };
+    data.projects.studio = { id: "studio", name: "Studio", revision: 1 };
+  });
+
+  const sql = fixture.queries.map((query) => query.sql).join("\n");
+  assert.match(sql, /INSERT INTO roundhouse\.system_metadata/);
+  assert.match(sql, /INSERT INTO roundhouse\.projects/);
+  assert.doesNotMatch(sql, /TRUNCATE/);
+  assert.equal(fixture.queries.at(-1).sql, "COMMIT");
+});
