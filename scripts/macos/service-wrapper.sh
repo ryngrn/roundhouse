@@ -11,6 +11,7 @@ repository="$2"
 support="$HOME/Library/Application Support/Roundhouse"
 relay_env="$support/relay.env"
 export ROUNDHOUSE_STORAGE_MODE="local"
+export ROUNDHOUSE_RELAY_CA_CERT_FILE="$support/aiven-project-ca.pem"
 
 if [[ -e "$relay_env" ]]; then
   if [[ ! -f "$relay_env" || -L "$relay_env" || "$(stat -f '%u' "$relay_env")" != "$EUID" ]]; then

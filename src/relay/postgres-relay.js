@@ -1,4 +1,5 @@
 import pg from "pg";
+import fs from "node:fs";
 
 const { Pool } = pg;
 
@@ -165,6 +166,6 @@ export class RelayProjectionPublisher {
 
 export function openPostgresRelay({ env = process.env, connectionString, allowInsecure = false } = {}) {
   const url = connectionString ?? env.ROUNDHOUSE_RELAY_DATABASE_URL;
-  const ca = env.ROUNDHOUSE_RELAY_CA_CERT?.replaceAll("\\n", "\n") ?? null;
+  const ca = env.ROUNDHOUSE_RELAY_CA_CERT_FILE ? fs.readFileSync(env.ROUNDHOUSE_RELAY_CA_CERT_FILE, "utf8") : (env.ROUNDHOUSE_RELAY_CA_CERT?.replaceAll("\\n", "\n") ?? null);
   return url ? PostgresRelay.create({ connectionString: url, allowInsecure, ca }) : null;
 }
