@@ -95,8 +95,8 @@ struct QueueItem: Decodable, Identifiable {
     }
     var needsAttention: Bool { needsYou == true || reviewRequired == true }
     var humanReview: Bool { needsYou == true || reviewRequired == true }
-    var running: Bool { ["Active", "Running", "In Progress", "Dispatched", "Executing"].contains(state ?? "") }
-    var waiting: Bool { ["Queued", "Ready", "Pending", "Ready to Depart"].contains(state ?? "") && !humanReview }
+    var running: Bool { ["Decision", "Executing", "Verification", "Rework"].contains(state ?? "") }
+    var waiting: Bool { ["Depot", "Ready", "Imported Pending"].contains(state ?? "") && !humanReview }
     var status: String { displayState ?? state ?? "Unknown" }
 }
 
@@ -165,7 +165,7 @@ struct QueueSnapshot: Decodable {
 
     func refreshProjects() {
         guard !projectRefreshing else { return }
-        guard let token = configuration.apiToken, token.count >= 48 else {
+        guard let token = configuration.apiToken, token.count >= 32 else {
             cloudError = configuration.isController ? "Using Studio project directory" : "Using saved project directory"
             return
         }
@@ -185,7 +185,7 @@ struct QueueSnapshot: Decodable {
                     return
                 }
                 self.projects = decoded.projects
-                self.cloudConnected = true
+                self.cloudConnected = decoded.stale != true && decoded.projects.allSatisfy { $0.metrics_stale != true }
                 self.cloudError = decoded.stale == true ? "Studio data delayed · directory may be stale" : nil
                 self.updated = Date()
                 try? FileManager.default.createDirectory(at: menuSupport, withIntermediateDirectories: true)
