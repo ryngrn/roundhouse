@@ -33,6 +33,7 @@ test("intent-first program: raw idea -> discovery -> two gates -> slices -> ship
   };
   const submitted = service.addToDepot(source, { source: "test", actor: "product-owner" });
   const originalInput = structuredClone(h.store.read().items[submitted.item.id].input);
+  assert.equal(submitted.item.project_hint, "example");
   assert.equal(submitted.item.intent.status, "discovering");
   assert.equal(submitted.item.intent.discovery_non_executable, true);
   assert.equal(submitted.item.raw_idea.text, source.content);

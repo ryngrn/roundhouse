@@ -89,6 +89,7 @@ export function itemView(data, item) {
     revision: item.revision,
     project: assignedProject,
     project_id: assignedProject,
+    project_hint: item.input.project_hint ?? null,
     project_name: data.projects?.[assignedProject]?.name ?? null,
     priority: item.priority ?? null,
     title,
