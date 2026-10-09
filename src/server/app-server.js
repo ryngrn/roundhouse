@@ -234,6 +234,67 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 201, result);
       }
+      const projectIcon = url.pathname.match(/^\/api\/projects\/([^/]+)\/icon$/);
+      if (request.method === "POST" && projectIcon) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.setProjectIcon({ project_id: decodeURIComponent(projectIcon[1]),
+          expected_project_revision: input.expected_project_revision, icon: input.icon, actor: "local-user" });
+        await refreshLocalSnapshot();
+        projectionPublisher.trigger();
+        return send(response, 200, result);
+      }
+      const projectGoal = url.pathname.match(/^\/api\/projects\/([^/]+)\/goals$/);
+      if (request.method === "POST" && projectGoal) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.createGoal({ project_id: decodeURIComponent(projectGoal[1]),
+          expected_project_revision: input.expected_project_revision, goal: input.goal, actor: "local-user" });
+        projectionPublisher.trigger();
+        return send(response, 201, result);
+      }
+      const projectFeature = url.pathname.match(/^\/api\/projects\/([^/]+)\/features$/);
+      if (request.method === "POST" && projectFeature) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.createFeature({ project_id: decodeURIComponent(projectFeature[1]),
+          expected_project_revision: input.expected_project_revision, feature: input.feature, actor: "local-user" });
+        projectionPublisher.trigger();
+        return send(response, 201, result);
+      }
+      const projectResearch = url.pathname.match(/^\/api\/projects\/([^/]+)\/research$/);
+      if (request.method === "POST" && projectResearch) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.proposeResearch({ ...input, project_id: decodeURIComponent(projectResearch[1]), actor: "local-user" });
+        projectionPublisher.trigger();
+        return send(response, 201, result);
+      }
+      const goalEvaluation = url.pathname.match(/^\/api\/projects\/([^/]+)\/goals\/([^/]+)\/evaluations$/);
+      if (request.method === "POST" && goalEvaluation) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.evaluateGoal({ ...input, project_id: decodeURIComponent(goalEvaluation[1]),
+          goal_id: decodeURIComponent(goalEvaluation[2]), actor: "local-user" });
+        projectionPublisher.trigger();
+        return send(response, 201, result);
+      }
+      const intentAnswer = url.pathname.match(/^\/api\/items\/([^/]+)\/intent-answer$/);
+      if (request.method === "POST" && intentAnswer) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.answerIntentQuestion({ ...input, item_id: decodeURIComponent(intentAnswer[1]), actor: "local-user" });
+        projectionPublisher.trigger();
+        return send(response, 200, result);
+      }
+      const intentConfirm = url.pathname.match(/^\/api\/items\/([^/]+)\/confirm-intent$/);
+      if (request.method === "POST" && intentConfirm) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.confirmIntent({ ...input, item_id: decodeURIComponent(intentConfirm[1]), actor: "local-user" });
+        projectionPublisher.trigger();
+        return send(response, 200, result);
+      }
       const answer = url.pathname.match(/^\/api\/questions\/([^/]+)\/answer$/);
       if (request.method === "POST" && answer) {
         verifyOrigin(request, origins);

@@ -7,6 +7,7 @@ import { dashboardProjection, itemView, needsHumanView, notificationView, status
 import { mapResult } from "../storage/repository.js";
 import { migrateLegacyDecisionQuestions } from "./legacy-decisions.js";
 import { promoteProjectCandidates, projectSlug } from "./project-model.js";
+import { broadIntentReady, initialIntent, makeFeature, makeGoal, projectCollection, rawIdeaEvidence, validateOptions } from "./intent-program.js";
 
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const jsonSize = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -94,8 +95,236 @@ export class RoundhouseService {
   addToDepot(input, adapter = { source: "external", actor: "external-user" }) {
     const normalized = normalizeIntake(input, adapter);
     const key = nonempty(input.idempotency_key) ? `external:${input.idempotency_key}` : `external:${randomUUID()}`;
-    return mapResult(submitToDepot(this.store, normalized, key, adapter), (item) =>
-      mapResult(this.store.read(), (data) => ({ item: itemView(data, item), durable: true })));
+    return mapResult(submitToDepot(this.store, normalized, key, adapter), (submitted) => mapResult(this.store.change((data) => {
+      const item = data.items[submitted.id];
+      if (!item.raw_idea) {
+        const capturedAt = item.created_at ?? new Date().toISOString();
+        item.raw_idea = rawIdeaEvidence(item.input, capturedAt);
+        item.intent = initialIntent(item.input, capturedAt);
+      }
+      return item;
+    }), (item) => mapResult(this.store.read(), (data) => ({ item: itemView(data, item), durable: true }))));
+  }
+
+  createGoal({ project_id, expected_project_revision, goal, actor = "local-user" }) {
+    if (!nonempty(project_id) || !Number.isInteger(expected_project_revision) || expected_project_revision < 1) throw new Error("Goal creation requires a project id and current revision.");
+    return this.store.change((data) => {
+      const project = projectCollection(data.projects?.[project_id] ?? (data.projects[project_id] = { id: project_id,
+        name: this.config?.projects?.find((candidate) => candidate.id === project_id)?.name ?? project_id }));
+      if (project.revision !== expected_project_revision) throw new Error("Project changed; refresh before adding the goal.");
+      const created = makeGoal(goal, actor);
+      if (project.goals.some((candidate) => candidate.id === created.id)) throw new Error("Goal id already exists.");
+      project.goals.push(created);
+      project.revision += 1;
+      project.updated_at = created.created_at;
+      return { goal: structuredClone(created), project_revision: project.revision };
+    });
+  }
+
+  setProjectIcon({ project_id, expected_project_revision, icon, actor = "local-user" }) {
+    if (!nonempty(project_id) || !Number.isInteger(expected_project_revision) || expected_project_revision < 1) {
+      throw new Error("Project icon update requires a project id and current revision.");
+    }
+    // Persist one Unicode emoji grapheme, never arbitrary markup or URLs.
+    const chars = typeof icon === "string" ? [...new Intl.Segmenter("en", { granularity: "grapheme" }).segment(icon)] : [];
+    if (typeof icon !== "string" || icon.length > 18 || chars.length !== 1 || !/\p{Extended_Pictographic}/u.test(icon)) {
+      throw new Error("Project icon must be one emoji.");
+    }
+    return this.store.change((data) => {
+      const configured = this.config?.projects?.some((project) => project.id === project_id);
+      const current = data.projects?.[project_id];
+      if (!configured && !current) throw new Error("Unknown project.");
+      data.projects ??= {};
+      const project = projectCollection(current ?? (data.projects[project_id] = {
+        id: project_id, name: this.config.projects.find((entry) => entry.id === project_id)?.name ?? project_id,
+      }));
+      if (project.revision !== expected_project_revision) throw new Error("Project changed; refresh before changing the icon.");
+      project.icon = icon;
+      project.icon_updated_at = new Date().toISOString();
+      project.icon_updated_by = actor;
+      project.revision += 1;
+      project.updated_at = project.icon_updated_at;
+      return { id: project_id, icon: project.icon, project_revision: project.revision };
+    });
+  }
+
+  createFeature({ project_id, expected_project_revision, feature, actor = "local-user" }) {
+    if (!nonempty(project_id) || !Number.isInteger(expected_project_revision) || expected_project_revision < 1) throw new Error("Feature creation requires a project id and current revision.");
+    return this.store.change((data) => {
+      const project = projectCollection(data.projects?.[project_id] ?? (data.projects[project_id] = { id: project_id,
+        name: this.config?.projects?.find((candidate) => candidate.id === project_id)?.name ?? project_id }));
+      if (project.revision !== expected_project_revision) throw new Error("Project changed; refresh before adding the feature.");
+      const created = makeFeature(feature, project.goals, actor);
+      if (project.features.some((candidate) => candidate.id === created.id)) throw new Error("Feature id already exists.");
+      project.features.push(created);
+      project.revision += 1;
+      project.updated_at = created.created_at;
+      return { feature: structuredClone(created), project_revision: project.revision };
+    });
+  }
+
+  answerIntentQuestion({ item_id, expected_item_revision, question_id, expected_question_revision, answer, fields = {}, next_question, actor = "local-user" }) {
+    if (!nonempty(item_id) || !Number.isInteger(expected_item_revision) || expected_item_revision < 1 || !nonempty(question_id)
+      || !Number.isInteger(expected_question_revision) || expected_question_revision < 1 || !nonempty(answer)) {
+      throw new Error("Intent clarification requires current item/question revisions and a nonempty answer.");
+    }
+    if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Intent fields must be an object.");
+    if (next_question !== undefined && (!next_question || typeof next_question !== "object" || !nonempty(next_question.prompt) || !nonempty(next_question.field))) {
+      throw new Error("A next question requires one prompt and field.");
+    }
+    return this.store.change((data) => {
+      const item = data.items[item_id];
+      if (!item?.intent?.discovery_non_executable || item.revision !== expected_item_revision || item.job_ids?.length) throw new Error("Intent clarification is stale or not applicable.");
+      const question = (item.questions ?? []).find((candidate) => candidate.id === question_id);
+      if (!question || question.status !== "open" || question.revision !== expected_question_revision) throw new Error("Intent question is stale or already answered.");
+      const at = new Date().toISOString();
+      question.answer = { text: answer.trim(), actor, at };
+      question.status = "answered";
+      question.revision += 1;
+      question.updated_at = at;
+      item.clarifications.push({ text: answer.trim(), actor, question_id, decision_id: question.decision_id,
+        decision_key: question.decision_key ?? null, at });
+      item.intent.fields = { ...item.intent.fields, ...structuredClone(fields) };
+      item.intent.confirmed_fields = [...new Set([...item.intent.confirmed_fields, ...Object.keys(fields)])];
+      item.intent.unresolved_questions = [];
+      if (next_question) {
+        const followup = { id: randomUUID(), decision_id: item.decision_id ?? null, decision_key: `intent:${next_question.field}`,
+          item_id: item.id, item_revision: item.revision + 1, revision: 1, kind: "clarification", prompt: next_question.prompt.trim(),
+          intent_field: next_question.field.trim(), status: "open", created_at: at, updated_at: at };
+        item.questions.push(followup);
+        item.intent.unresolved_questions = [{ id: followup.id, field: followup.intent_field, prompt: followup.prompt }];
+        item.intent.status = "discovering";
+      } else item.intent.status = "ready_for_confirmation";
+      item.intent.updated_at = at;
+      item.revision += 1;
+      item.updated_at = at;
+      item.history.push({ from: item.state, to: item.state, reason: `${actor} clarified intent without authorizing execution.`, at });
+      return { item: itemView(data, item), answer_recorded: true, reevaluated: false };
+    });
+  }
+
+  confirmIntent({ item_id, expected_item_revision, fields = {}, feature_id, goal_ids, actor = "local-user" }) {
+    if (!nonempty(item_id) || !Number.isInteger(expected_item_revision) || expected_item_revision < 1) throw new Error("Intent confirmation requires an item id and current revision.");
+    if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Intent fields must be an object.");
+    return this.store.change((data) => {
+      const item = data.items[item_id];
+      if (!item?.intent?.discovery_non_executable || item.revision !== expected_item_revision || item.job_ids?.length) throw new Error("Intent confirmation is stale or not applicable.");
+      if ((item.questions ?? []).some((question) => question.status === "open")) throw new Error("Answer the current consequential question before confirming intent.");
+      if (!item.decision?.work_items?.length) throw new Error("Intent needs a reviewable plan before confirmation.");
+      const project = projectCollection(data.projects?.[item.project_id] ?? (data.projects[item.project_id] = { id: item.project_id, name: item.project_id }));
+      const selectedFeature = feature_id ?? item.intent.feature_id;
+      if (selectedFeature && !project.features.some((feature) => feature.id === selectedFeature)) throw new Error("Intent references an unknown feature.");
+      const selectedGoals = goal_ids ?? item.intent.goal_ids;
+      if (!Array.isArray(selectedGoals) || selectedGoals.some((id) => !project.goals.some((goal) => goal.id === id))) throw new Error("Intent references an unknown goal.");
+      const proposedFields = { ...item.intent.fields, ...structuredClone(fields) };
+      const proposedConfirmation = { ...item.intent, fields: proposedFields,
+        confirmed_fields: [...new Set([...item.intent.confirmed_fields, ...Object.keys(fields)])] };
+      if (!broadIntentReady(proposedConfirmation, item.project_id ?? item.input.project_id ?? item.input.project_hint)) {
+        throw new Error("Broad intent requires confirmed problem, desired outcome, success criteria, scope boundaries, and resolved consequential questions.");
+      }
+      const at = new Date().toISOString();
+      item.intent.versions.push({ version: item.intent.version, summary: item.intent.summary, fields: structuredClone(item.intent.fields),
+        confirmed_fields: [...item.intent.confirmed_fields], recorded_at: at });
+      item.intent.version += 1;
+      item.intent.fields = { ...item.intent.fields, ...structuredClone(fields) };
+      item.intent.confirmed_fields = [...new Set([...item.intent.confirmed_fields, ...Object.keys(fields)])];
+      item.intent.feature_id = selectedFeature ?? null;
+      item.intent.goal_ids = [...new Set(selectedGoals)];
+      item.intent.status = "confirmed";
+      item.intent.planning_confirmation = { actor, item_revision: expected_item_revision, at };
+      item.intent.updated_at = at;
+      if (selectedFeature) {
+        const feature = project.features.find((candidate) => candidate.id === selectedFeature);
+        if (!feature.work_item_ids.includes(item.id)) feature.work_item_ids.push(item.id);
+        feature.updated_at = at;
+        project.revision += 1;
+        project.updated_at = at;
+      }
+      if (item.state === "Needs Clarification") this.store.move(data, item, "Decision", "Confirmed intent is entering execution review; no work was created.");
+      if (item.state === "Decision") this.store.move(data, item, "Review", "Product direction confirmed; explicit execution approval is still required.");
+      else if (item.state === "Review") {
+        item.revision += 1; item.updated_at = at;
+        item.history.push({ from: "Review", to: "Review", reason: "Product direction confirmed; explicit execution approval is still required.", at });
+      } else throw new Error("Intent can only be confirmed from clarification or review.");
+      return { item: itemView(data, item), planning_confirmed: true, execution_approved: false };
+    });
+  }
+
+  proposeResearch({ project_id, expected_project_revision, feature_id, unknown, options, recommendation, citations, external_action = false, actor = "local-user" }) {
+    if (!nonempty(project_id) || !Number.isInteger(expected_project_revision) || expected_project_revision < 1 || !nonempty(unknown) || !nonempty(recommendation)) {
+      throw new Error("Research proposal requires project/revision, a decision-changing unknown, and recommendation.");
+    }
+    if (!Array.isArray(citations) || !citations.length || citations.some((citation) => !citation || !nonempty(citation.source) || !nonempty(citation.reference))) {
+      throw new Error("Research proposals require grounded citations with source and reference.");
+    }
+    if (typeof external_action !== "boolean") throw new Error("external_action must be boolean.");
+    const candidates = validateOptions(options);
+    return this.store.change((data) => {
+      const existing = data.projects?.[project_id];
+      if (!existing) throw new Error("Unknown project.");
+      const project = projectCollection(existing);
+      if (project.revision !== expected_project_revision) throw new Error("Project changed; refresh before recording research.");
+      const feature = feature_id ? project.features.find((candidate) => candidate.id === feature_id) : null;
+      if (feature_id && !feature) throw new Error("Research references an unknown feature.");
+      const at = new Date().toISOString();
+      const proposal = { id: randomUUID(), kind: "evidence_request", unknown: unknown.trim(), options: candidates,
+        recommendation: recommendation.trim(), citations: structuredClone(citations), provenance: { actor, recorded_at: at },
+        external_action, status: external_action ? "approval_required" : "proposed", created_at: at, updated_at: at };
+      project.research_tasks.push(proposal);
+      if (feature) feature.proposed_options.push(proposal.id);
+      project.revision += 1;
+      project.updated_at = at;
+      return { research: structuredClone(proposal), project_revision: project.revision, dispatched: false };
+    });
+  }
+
+  evaluateGoal({ project_id, expected_project_revision, goal_id, evidence, metrics = {}, data_status = "available", hypotheses = [], experiments = [], next_evaluation_at = null, actor = "local-user" }) {
+    if (!nonempty(project_id) || !Number.isInteger(expected_project_revision) || expected_project_revision < 1 || !nonempty(goal_id)) throw new Error("Goal evaluation requires project, goal, and current revision.");
+    if (!Array.isArray(evidence) || evidence.some((entry) => !entry || !nonempty(entry.source) || !nonempty(entry.reference))) throw new Error("Goal evidence requires source and reference provenance.");
+    if (!["available", "unavailable"].includes(data_status)) throw new Error("data_status must be available or unavailable.");
+    if (!metrics || typeof metrics !== "object" || Array.isArray(metrics)) throw new Error("Goal metrics must be an object.");
+    if (!Array.isArray(hypotheses) || hypotheses.some((entry) => !nonempty(entry)) || !Array.isArray(experiments)
+      || experiments.some((entry) => !entry || typeof entry !== "object" || !nonempty(entry.title))) {
+      throw new Error("Hypotheses must be text and experiments require titles.");
+    }
+    if (next_evaluation_at !== null && (!nonempty(next_evaluation_at) || Number.isNaN(Date.parse(next_evaluation_at)))) throw new Error("next_evaluation_at must be an ISO-8601 timestamp or null.");
+    return this.store.change((data) => {
+      const existing = data.projects?.[project_id];
+      if (!existing) throw new Error("Unknown project.");
+      const project = projectCollection(existing);
+      if (project.revision !== expected_project_revision) throw new Error("Project changed; refresh before evaluating the goal.");
+      const goal = project.goals.find((candidate) => candidate.id === goal_id);
+      if (!goal) throw new Error("Unknown goal.");
+      const target = goal.measurable_target;
+      const measured = target?.metric ? Number(metrics[target.metric]) : NaN;
+      const visits = Number(metrics.visits);
+      const signups = Number(metrics.signups);
+      let result = "progressing";
+      if (data_status === "unavailable" || evidence.length === 0) result = "data_unavailable";
+      else if (Number.isFinite(visits) && visits === 0) result = "no_traffic";
+      else if (target && Number.isFinite(measured) && Number.isFinite(Number(target.value)) && measured >= Number(target.value)) result = "achieved_target";
+      else if (Number.isFinite(visits) && visits > 0 && Number.isFinite(signups)
+        && target?.metric === "conversion_rate" && signups / visits < Number(target.value)) result = "poor_conversion";
+      const at = new Date().toISOString();
+      const evaluation = { id: randomUUID(), run_kind: "explicit", result, metrics: structuredClone(metrics), evidence: structuredClone(evidence),
+        hypotheses: structuredClone(hypotheses), experiments: structuredClone(experiments).map((experiment) => ({ ...experiment, status: "proposed", decision_required: true })),
+        actor, evaluated_at: at };
+      goal.evaluations.push(evaluation);
+      goal.evidence.push(...structuredClone(evidence));
+      goal.progress = { result, metrics: structuredClone(metrics), evaluated_at: at };
+      goal.next_evaluation_at = next_evaluation_at;
+      goal.proposed_options.push(...evaluation.experiments.map((experiment) => experiment.id ?? experiment.title).filter(Boolean));
+      goal.updated_at = at;
+      if (result === "achieved_target") {
+        goal.status = "Achieved";
+        for (const feature of project.features.filter((candidate) => candidate.completion_type === "Done when outcome reached" && candidate.goal_ids.includes(goal.id))) {
+          if (feature.goal_ids.every((id) => project.goals.find((candidate) => candidate.id === id)?.status === "Achieved")) feature.status = "Achieved";
+        }
+      }
+      project.revision += 1;
+      project.updated_at = at;
+      return { evaluation: structuredClone(evaluation), goal: structuredClone(goal), project_revision: project.revision };
+    });
   }
 
   async initiateProject(input, adapter = { source: "web", actor: "local-user" }) {
