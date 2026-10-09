@@ -301,6 +301,7 @@ struct MetricTile: View {
 
 struct ProjectRow: View {
     let project: CloudProject
+    let reviewCount: Int
     var body: some View {
         Button {
             if let url = project.page { NSWorkspace.shared.open(url) }
@@ -310,8 +311,8 @@ struct ProjectRow: View {
                 Text(project.name).font(.system(size: 12,weight:.medium))
                     .foregroundStyle(Palette.text).lineLimit(1)
                 Spacer(minLength: 4)
-                if let needed = project.needs_input, needed > 0 {
-                    Text("\(needed) to review").font(.system(size: 9, weight: .medium)).foregroundStyle(Palette.signal)
+                if reviewCount > 0 {
+                    Text("\(reviewCount) to review").font(.system(size: 9, weight: .medium)).foregroundStyle(Palette.signal)
                 }
                 Image(systemName: "arrow.up.right").font(.system(size: 9,weight:.medium))
                     .foregroundStyle(Palette.muted)
@@ -401,6 +402,13 @@ struct DashboardView: View {
         }
     }
 
+    private func reviewCount(for project: CloudProject) -> Int {
+        if model.configuration.isController, let snapshot = model.snapshot {
+            return snapshot.items.filter { $0.project == project.id && $0.needsAttention }.count
+        }
+        return project.needs_input ?? 0
+    }
+
     private var projectsSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
@@ -417,8 +425,8 @@ struct DashboardView: View {
                             .font(.system(size: 10)).foregroundStyle(Palette.muted).multilineTextAlignment(.center)
                     }.frame(maxWidth:.infinity).padding(.vertical, 28)
                 } else {
-                    let focused = model.projects.filter { $0.needsAttention }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                    let other = model.projects.filter { !$0.needsAttention }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    let focused = model.projects.filter { reviewCount(for: $0) > 0 }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    let other = model.projects.filter { reviewCount(for: $0) == 0 }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                     if !focused.isEmpty {
                         HStack {
                             Text("Needs attention").font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.signal)
@@ -426,7 +434,7 @@ struct DashboardView: View {
                             Text("\(focused.count)").font(.system(size: 10)).foregroundStyle(Palette.muted)
                         }.padding(.horizontal, 12).padding(.top, 11).padding(.bottom, 4)
                         ForEach(focused) { project in
-                            ProjectRow(project: project)
+                            ProjectRow(project: project, reviewCount: reviewCount(for: project))
                             if project.id != focused.last?.id { Divider().overlay(Palette.border) }
                         }
                     }
@@ -438,7 +446,7 @@ struct DashboardView: View {
                             Text("\(other.count)").font(.system(size: 10)).foregroundStyle(Palette.muted)
                         }.padding(.horizontal, 12).padding(.top, focused.isEmpty ? 11 : 4).padding(.bottom, 4)
                         ForEach(other) { project in
-                            ProjectRow(project: project)
+                            ProjectRow(project: project, reviewCount: reviewCount(for: project))
                             if project.id != other.last?.id { Divider().overlay(Palette.border) }
                         }
                     }
