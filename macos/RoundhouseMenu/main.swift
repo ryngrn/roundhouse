@@ -372,8 +372,6 @@ struct ProjectRow: View {
 
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
-    @State private var showAllProjects = false
-
     private var focusedProjects: [CloudProject] {
         model.projects.filter { project in
             if model.configuration.isController,
@@ -382,12 +380,15 @@ struct DashboardView: View {
                 return snapshot.items.contains { $0.project == project.id && $0.humanReview }
             }
             return (project.needs_input ?? 0) > 0
-        }
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private var displayedProjects: [CloudProject] {
-        showAllProjects ? model.projects : focusedProjects
+    private var otherProjects: [CloudProject] {
+        let focusedIDs = Set(focusedProjects.map(\.id))
+        return model.projects.filter { !focusedIDs.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
+
     let isPinned: Bool
     let pin: () -> Void
     let close: () -> Void
@@ -465,7 +466,7 @@ struct DashboardView: View {
     private var projectsSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
-                Text(showAllProjects ? "All Projects" : "Focused Projects").font(.system(size: 12,weight:.semibold)).foregroundStyle(Palette.text)
+                Text("Projects").font(.system(size: 12,weight:.semibold)).foregroundStyle(Palette.text)
                 Spacer()
                 if let items = model.configuration.isController ? model.snapshot?.items : nil {
                     let count = items.filter(\.humanReview).count
@@ -478,25 +479,22 @@ struct DashboardView: View {
                         .buttonStyle(.bordered).font(.system(size: 10))
                     }
                 }
-                Button(showAllProjects ? "View only focused projects" : "View all \(model.projects.count) Projects") {
-                    showAllProjects.toggle()
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Palette.muted)
-                .help(showAllProjects ? "Show projects needing your input" : "Show every project")
+                Text("\(model.projects.count) projects")
+                    .font(.system(size: 10)).foregroundStyle(Palette.muted)
             }
             VStack(spacing: 0) {
-                if displayedProjects.isEmpty {
+                if model.projects.isEmpty {
                     VStack(spacing: 9) {
                         Image(systemName: "folder").font(.title3).foregroundStyle(Palette.muted)
-                        Text(model.projects.isEmpty ? "Projects aren't available yet" : "No projects need your input").foregroundStyle(Palette.text)
-                        Text(model.projects.isEmpty ? "Use Open Projects while the cloud directory reconnects." : "You're all caught up. View all projects to see everything.")
+                        Text("Projects aren't available yet").foregroundStyle(Palette.text)
+                        Text("Use Open Projects while the cloud directory reconnects.")
                             .font(.system(size: 10)).foregroundStyle(Palette.muted).multilineTextAlignment(.center)
                     }.frame(maxWidth:.infinity).padding(.vertical, 28)
                 } else {
-                    ForEach(Array(displayedProjects.enumerated()), id: \.element.id) { index, project in
-                        if index > 0 { Divider().overlay(Palette.border) }
+                    if !focusedProjects.isEmpty {
+                        groupHeading("Needs Action", count: focusedProjects.count)
+                        ForEach(focusedProjects) { project in
+                            Divider().overlay(Palette.border)
                         ProjectRow(
                             project: project,
                             localItems: model.configuration.isController && model.snapshot?.snapshotError == nil
@@ -508,6 +506,25 @@ struct DashboardView: View {
                                 || (model.configuration.isController && (model.snapshot == nil || model.snapshot?.snapshotError != nil))
                                 || project.metrics_stale == true
                         )
+                        }
+                    }
+                    if !otherProjects.isEmpty {
+                        if !focusedProjects.isEmpty { Divider().overlay(Palette.border) }
+                        groupHeading("Other Projects", count: otherProjects.count)
+                        ForEach(otherProjects) { project in
+                            Divider().overlay(Palette.border)
+                        ProjectRow(
+                            project: project,
+                            localItems: model.configuration.isController && model.snapshot?.snapshotError == nil
+                                ? model.snapshot?.items.filter { $0.project == project.id }
+                                : nil,
+                            activeUnattributed: (model.snapshot?.counts.active ?? 0) > 0
+                                && !(model.snapshot?.items.contains(where: { $0.running }) ?? false),
+                            stale: (!model.cloudConnected && !model.configuration.isController)
+                                || (model.configuration.isController && (model.snapshot == nil || model.snapshot?.snapshotError != nil))
+                                || project.metrics_stale == true
+                        )
+                        }
                     }
                 }
             }
@@ -517,6 +534,15 @@ struct DashboardView: View {
                 Label(error,systemImage:"info.circle").font(.system(size:10)).foregroundStyle(Palette.muted)
             }
         }
+    }
+
+    private func groupHeading(_ label: String, count: Int) -> some View {
+        HStack {
+            Text(label).font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.muted)
+            Spacer()
+            Text("\(count)").font(.system(size: 9)).foregroundStyle(Palette.muted)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
     private var footer: some View {
