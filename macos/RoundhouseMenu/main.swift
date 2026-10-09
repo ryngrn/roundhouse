@@ -107,11 +107,13 @@ struct QueueSnapshot: Decodable {
     let capturedAt: String?
     let projectionRevision: String?
     let snapshotError: String?
+    let projects: [String:CloudProject]
     enum CodingKeys: String, CodingKey {
         case items, counts, notifications, cursor
         case capturedAt = "captured_at"
         case projectionRevision = "projection_revision"
         case snapshotError = "snapshot_error"
+        case projects
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -122,6 +124,7 @@ struct QueueSnapshot: Decodable {
         capturedAt = try values.decodeIfPresent(String.self, forKey: .capturedAt)
         projectionRevision = try values.decodeIfPresent(String.self, forKey: .projectionRevision)
         snapshotError = try values.decodeIfPresent(String.self, forKey: .snapshotError)
+        projects = try values.decodeIfPresent([String:CloudProject].self, forKey: .projects) ?? [:]
     }
 }
 
@@ -144,10 +147,18 @@ struct QueueSnapshot: Decodable {
         }
     }
 
+    private func cacheProjects() {
+        try? FileManager.default.createDirectory(at: menuSupport, withIntermediateDirectories: true)
+        let cache = CloudProjectDirectory(projects: projects, updated_at: nil, stale: true)
+        if let encoded = try? JSONEncoder().encode(cache) {
+            try? encoded.write(to: menuSupport.appendingPathComponent("menu-projects-cache.json"), options: .atomic)
+        }
+    }
+
     func refreshProjects() {
         guard !projectRefreshing else { return }
         guard let token = configuration.apiToken, token.count >= 48 else {
-            cloudError = "Project directory not connected yet"
+            cloudError = configuration.isController ? "Using Studio project directory" : "Using saved project directory"
             return
         }
         projectRefreshing = true
@@ -197,6 +208,12 @@ struct QueueSnapshot: Decodable {
                     return
                 }
                 self.snapshot = decoded
+                if !decoded.projects.isEmpty && !self.cloudConnected {
+                    self.projects = decoded.projects.values
+                        .filter { $0.page != nil }
+                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    self.cacheProjects()
+                }
                 self.error = decoded.snapshotError
                 self.updated = Date()
                 self.deliverNotifications(decoded)
