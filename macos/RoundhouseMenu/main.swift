@@ -144,8 +144,8 @@ struct QueueSnapshot: Decodable {
     @Published var projects: [CloudProject] = []
     @Published var cloudConnected = false
     @Published var cloudError: String?
-    let configuration = MenuConfiguration.load()
-    private var projectRefreshing = false
+    @Published var configuration = MenuConfiguration.load()
+    @Published var projectRefreshing = false
 
     init() {
         let cacheURL = menuSupport.appendingPathComponent("menu-projects-cache.json")
@@ -165,8 +165,10 @@ struct QueueSnapshot: Decodable {
 
     func refreshProjects() {
         guard !projectRefreshing else { return }
+        configuration = MenuConfiguration.load()
         guard let token = configuration.apiToken, token.count >= 32 else {
-            cloudError = configuration.isController ? "Using Studio project directory" : "Using saved project directory"
+            cloudConnected = false
+            cloudError = "Missing menu credential — showing saved projects"
             return
         }
         projectRefreshing = true
@@ -181,7 +183,7 @@ struct QueueSnapshot: Decodable {
                 self.projectRefreshing = false
                 guard status == 200, let decoded else {
                     self.cloudConnected = false
-                    self.cloudError = requestError == nil ? "Cloud directory unavailable; showing saved projects" : "Network offline; showing saved projects"
+                    self.cloudError = status == 401 ? "Authorization failed — check menu token" : (requestError == nil ? "Cloud request failed (HTTP \(status ?? 0))" : "Network unavailable — showing saved projects")
                     return
                 }
                 self.projects = decoded.projects
@@ -501,7 +503,13 @@ struct DashboardView: View {
                 .buttonStyle(.bordered).tint(Palette.text)
             Spacer()
             Text("Updated \(model.updated.formatted(date: .omitted, time: .shortened))").font(.system(size: 9)).foregroundStyle(Palette.muted)
-            Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.borderless).foregroundStyle(Palette.text).help("Refresh now")
+            Button { model.refresh() } label: {
+                Image(systemName: "arrow.clockwise")
+                    .rotationEffect(.degrees(model.projectRefreshing ? 360 : 0))
+                    .animation(model.projectRefreshing ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default, value: model.projectRefreshing)
+            }.buttonStyle(.borderless).foregroundStyle(Palette.text)
+                .disabled(model.projectRefreshing)
+                .help(model.projectRefreshing ? "Updating projects…" : "Refresh now")
             Menu {
                 if model.configuration.isController {
                     Button("Start local service") { serviceAction("start") }
