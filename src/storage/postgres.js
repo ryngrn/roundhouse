@@ -36,7 +36,7 @@ function json(value) {
 function databaseTls(connectionString, allowInsecure) {
   const url = new URL(connectionString);
   if (allowInsecure || ["localhost", "127.0.0.1", "::1"].includes(url.hostname)) return undefined;
-  return { rejectUnauthorized: true };
+  return { rejectUnauthorized: true, ...(process.env.ROUNDHOUSE_AUTHORITY_CA_CERT_FILE ? { ca: fs.readFileSync(process.env.ROUNDHOUSE_AUTHORITY_CA_CERT_FILE, "utf8") } : {}) };
 }
 
 async function rows(client, sql, parameters = []) {
@@ -45,6 +45,13 @@ async function rows(client, sql, parameters = []) {
 
 async function tx(pool, fn) {
   const client = await pool.connect();
+  if (process.env.ROUNDHOUSE_DB_DIAGNOSTICS) {
+    const originalQuery = client.query.bind(client);
+    client.query = async (...args) => {
+      try { return await originalQuery(...args); }
+      catch (error) { console.error("DB diagnostic:", String(args[0]).slice(0, 145), "code:", error.code, "detail:", error.detail); throw error; }
+    };
+  }
   try {
     await client.query("BEGIN");
     const result = await fn(client);
@@ -116,7 +123,7 @@ async function clearDomain(client) {
 async function writeSnapshot(client, data) {
   await clearDomain(client);
   for (const [key, value] of Object.entries(data.system_metadata ?? {})) {
-    await client.query("INSERT INTO roundhouse.system_metadata(key, value) VALUES ($1, $2)", [key, value]);
+    await client.query("INSERT INTO roundhouse.system_metadata(key, value) VALUES ($1, $2)", [key, json(value)]);
   }
   for (const project of Object.values(data.projects ?? {})) {
     const id = project.id ?? Object.entries(data.projects).find(([, value]) => value === project)?.[0];
@@ -230,7 +237,7 @@ async function writeSnapshot(client, data) {
     delivery.next_attempt_at ? date(delivery.next_attempt_at) : null, delivery.lease_until ? date(delivery.lease_until) : null, delivery.event_id, delivery]);
   for (const [key, value] of Object.entries(data.mcp_events ?? {})) {
     if (["subscriptions", "deliveries"].includes(key)) continue;
-    await client.query("INSERT INTO roundhouse.mcp_event_state(key,value) VALUES ($1,$2)", [key, value]);
+    await client.query("INSERT INTO roundhouse.mcp_event_state(key,value) VALUES ($1,$2)", [key, json(value)]);
   }
 }
 
@@ -245,7 +252,10 @@ export class PostgresStorageRepository extends StorageRepository {
 
   static async open({ connectionString, directory, node, allowInsecure = false, leaseMs } = {}) {
     if (!connectionString) throw new Error("DATABASE_URL is required for PostgreSQL storage.");
-    const pool = new Pool({ connectionString, ssl: databaseTls(connectionString, allowInsecure), max: 12,
+    const parsed = new URL(connectionString);
+    parsed.searchParams.delete("sslmode");
+    parsed.searchParams.delete("uselibpqcompat");
+    const pool = new Pool({ connectionString: parsed.toString(), ssl: databaseTls(connectionString, allowInsecure), max: 12,
       connectionTimeoutMillis: 5_000, query_timeout: 120_000, application_name: `roundhouse:${node.name}` });
     const store = new PostgresStorageRepository({ pool, directory, node, leaseMs });
     try {

@@ -27,8 +27,17 @@ if [[ -e "$relay_env" ]]; then
   set +a
 fi
 
-# The Mac Studio is the authoritative local hub. Hosted access uses only the
-# Aiven relay projection; legacy Neon/PostgreSQL storage variables are ignored.
-unset DATABASE_URL DATABASE_URL_UNPOOLED NEON_BRANCH
+if [[ -f "$support/authority.enabled" ]]; then
+  if [[ -z "${ROUNDHOUSE_RELAY_DATABASE_URL:-}" || ! -f "$support/aiven-project-ca.pem" ]]; then
+    print -u2 "Cloud authority lacks database URL or trusted CA."
+    exit 78
+  fi
+  export ROUNDHOUSE_STORAGE_MODE="postgresql"
+  export DATABASE_URL="$ROUNDHOUSE_RELAY_DATABASE_URL"
+  export ROUNDHOUSE_AUTHORITY_CA_CERT_FILE="$support/aiven-project-ca.pem"
+else
+  # Pre-cutover mode never accidentally connects to legacy Neon.
+  unset DATABASE_URL DATABASE_URL_UNPOOLED NEON_BRANCH
+fi
 
 exec "$node_bin" "$repository/src/server/app-server.js"
