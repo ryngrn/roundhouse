@@ -4,6 +4,51 @@ import UserNotifications
 
 private let dashboardURL = URL(string: "https://roundhouse.ryan.green/")!
 private let snapshotURL = URL(string: "http://127.0.0.1:8787/api/local-snapshot")!
+private let projectsURL = URL(string: "https://roundhouse.ryan.green/projects")!
+private let cloudProjectsURL = URL(string: "https://roundhouse.ryan.green/api/menu-projects")!
+private let menuSupport = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/Roundhouse", isDirectory: true)
+
+struct MenuConfiguration: Decodable {
+    let role: String
+    let apiToken: String?
+    enum CodingKeys: String, CodingKey {
+        case role
+        case apiToken = "api_token"
+    }
+    var isController: Bool { role == "controller" }
+    static func load() -> MenuConfiguration {
+        let url = menuSupport.appendingPathComponent("menu-config.json")
+        return (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Self.self, from: $0) }
+            ?? MenuConfiguration(role: "launcher", apiToken: nil)
+    }
+}
+
+struct CloudProject: Identifiable, Codable, Hashable {
+    let id: String
+    let name: String
+    let icon: String?
+    var symbol: String {
+        if let icon, !icon.isEmpty { return icon }
+        let defaults: [String:String] = [
+            "roundhouse":"🚂", "roundhouse-dashboard":"📊", "inclusion":"✨",
+            "growthpath":"🌱", "imarchy":"🖥️", "kmac":"💻",
+            "portfolio":"🎨", "ipad-monitor":"📱"
+        ]
+        return defaults[id] ?? "📁"
+    }
+    var page: URL? {
+        guard id.range(of:"^[a-z0-9]+(?:-[a-z0-9]+)*$",options:.regularExpression) != nil else { return nil }
+        return URL(string:"https://roundhouse.ryan.green/projects/" + id)
+    }
+}
+
+struct CloudProjectDirectory: Codable {
+    let projects: [CloudProject]
+    let updated_at: String?
+    let stale: Bool?
+}
+
 
 struct QueueCounts: Decodable {
     let needsYou: Int
@@ -62,11 +107,13 @@ struct QueueSnapshot: Decodable {
     let capturedAt: String?
     let projectionRevision: String?
     let snapshotError: String?
+    let projects: [String:CloudProject]
     enum CodingKeys: String, CodingKey {
         case items, counts, notifications, cursor
         case capturedAt = "captured_at"
         case projectionRevision = "projection_revision"
         case snapshotError = "snapshot_error"
+        case projects
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -77,6 +124,7 @@ struct QueueSnapshot: Decodable {
         capturedAt = try values.decodeIfPresent(String.self, forKey: .capturedAt)
         projectionRevision = try values.decodeIfPresent(String.self, forKey: .projectionRevision)
         snapshotError = try values.decodeIfPresent(String.self, forKey: .snapshotError)
+        projects = try values.decodeIfPresent([String:CloudProject].self, forKey: .projects) ?? [:]
     }
 }
 
@@ -85,8 +133,64 @@ struct QueueSnapshot: Decodable {
     @Published var error: String?
     @Published var isRefreshing = false
     @Published var updated = Date()
+    @Published var projects: [CloudProject] = []
+    @Published var cloudConnected = false
+    @Published var cloudError: String?
+    let configuration = MenuConfiguration.load()
+    private var projectRefreshing = false
+
+    init() {
+        let cacheURL = menuSupport.appendingPathComponent("menu-projects-cache.json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let value = try? JSONDecoder().decode(CloudProjectDirectory.self, from: data) {
+            projects = value.projects
+        }
+    }
+
+    private func cacheProjects() {
+        try? FileManager.default.createDirectory(at: menuSupport, withIntermediateDirectories: true)
+        let cache = CloudProjectDirectory(projects: projects, updated_at: nil, stale: true)
+        if let encoded = try? JSONEncoder().encode(cache) {
+            try? encoded.write(to: menuSupport.appendingPathComponent("menu-projects-cache.json"), options: .atomic)
+        }
+    }
+
+    func refreshProjects() {
+        guard !projectRefreshing else { return }
+        guard let token = configuration.apiToken, token.count >= 48 else {
+            cloudError = configuration.isController ? "Using Studio project directory" : "Using saved project directory"
+            return
+        }
+        projectRefreshing = true
+        var request = URLRequest(url: cloudProjectsURL)
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 12
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, requestError in
+            let status = (response as? HTTPURLResponse)?.statusCode
+            let decoded = data.flatMap { try? JSONDecoder().decode(CloudProjectDirectory.self, from: $0) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.projectRefreshing = false
+                guard status == 200, let decoded else {
+                    self.cloudConnected = false
+                    self.cloudError = requestError == nil ? "Cloud directory unavailable; showing saved projects" : "Network offline; showing saved projects"
+                    return
+                }
+                self.projects = decoded.projects
+                self.cloudConnected = true
+                self.cloudError = decoded.stale == true ? "Studio data delayed · directory may be stale" : nil
+                self.updated = Date()
+                try? FileManager.default.createDirectory(at: menuSupport, withIntermediateDirectories: true)
+                if let encoded = try? JSONEncoder().encode(decoded) {
+                    try? encoded.write(to: menuSupport.appendingPathComponent("menu-projects-cache.json"), options: .atomic)
+                }
+            }
+        }.resume()
+    }
 
     func refresh() {
+        refreshProjects()
+        guard configuration.isController else { return }
         guard !isRefreshing else { return }
         isRefreshing = true
         var components = URLComponents(url: snapshotURL, resolvingAgainstBaseURL: false)!
@@ -104,6 +208,12 @@ struct QueueSnapshot: Decodable {
                     return
                 }
                 self.snapshot = decoded
+                if !decoded.projects.isEmpty && !self.cloudConnected {
+                    self.projects = decoded.projects.values
+                        .filter { $0.page != nil }
+                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    self.cacheProjects()
+                }
                 self.error = decoded.snapshotError
                 self.updated = Date()
                 self.deliverNotifications(decoded)
@@ -184,29 +294,26 @@ struct MetricTile: View {
     }
 }
 
-struct WorkRow: View {
-    let item: QueueItem
-    private var color: Color {
-        if item.needsAttention { return item.state == "Blocked" ? Palette.held : Palette.signal }
-        if ["Decision", "Executing", "Verification", "Rework"].contains(item.state ?? "") { return Palette.moving }
-        if ["Shipped", "Archived", "Reconciled", "Imported History"].contains(item.state ?? "") { return Palette.reached }
-        return Palette.accent
-    }
+struct ProjectRow: View {
+    let project: CloudProject
     var body: some View {
-        Button { NSWorkspace.shared.open(dashboardURL) } label: {
+        Button {
+            if let url = project.page { NSWorkspace.shared.open(url) }
+        } label: {
             HStack(spacing: 10) {
-                Circle().fill(color.opacity(0.9)).frame(width: 6, height: 6)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title ?? "Untitled work").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.text).lineLimit(1)
-                    HStack(spacing: 5) {
-                        Text(item.project ?? "Unassigned"); Text("·"); Text(item.status)
-                        if let role = item.agentRole, !role.isEmpty { Text("·"); Text(role) }
-                    }.font(.system(size: 9, weight: .regular)).foregroundStyle(Palette.muted).lineLimit(1)
-                }
+                Text(project.symbol).font(.system(size: 22)).frame(width: 28)
+                Text(project.name).font(.system(size: 12,weight:.medium))
+                    .foregroundStyle(Palette.text).lineLimit(1)
                 Spacer(minLength: 4)
-                Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(Palette.muted.opacity(0.5))
-            }.padding(.horizontal, 12).padding(.vertical, 7).contentShape(Rectangle())
-        }.buttonStyle(.plain)
+                Image(systemName: "arrow.up.right").font(.system(size: 9,weight:.medium))
+                    .foregroundStyle(Palette.muted)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(project.page == nil)
+        .help("Open " + project.name + " in Roundhouse")
     }
 }
 
@@ -221,15 +328,11 @@ struct DashboardView: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(Palette.border)
-            if let snapshot = model.snapshot {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 13) { metrics(snapshot.counts); work(snapshot) }.padding(12)
-                }
-            } else {
-                VStack(spacing: 13) {
-                    ProgressView().controlSize(.small).tint(Palette.accent)
-                    Text("Connecting to the local engine…").foregroundStyle(Palette.muted)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 13) {
+                    if model.configuration.isController, let snapshot = model.snapshot { metrics(snapshot.counts) }
+                    projectsSection
+                }.padding(12)
             }
             footer
         }.frame(width: 390, height: 530).background(Palette.canvas).preferredColorScheme(.dark)
@@ -240,12 +343,12 @@ struct DashboardView: View {
             Image(systemName: "train.side.front.car").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.text)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Roundhouse").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.text)
-                Text("Mac Studio · Local").font(.system(size: 9, weight: .regular)).foregroundStyle(Palette.muted)
+                Text(model.configuration.isController ? "Local hub + Cloud" : "Cloud project launcher").font(.system(size: 9, weight: .regular)).foregroundStyle(Palette.muted)
             }
             Spacer()
             HStack(spacing: 6) {
-                Circle().fill(model.error == nil && model.snapshot != nil ? Palette.reached : Palette.held).frame(width: 7, height: 7)
-                Text(model.error == nil && model.snapshot != nil ? "Connected" : "Offline").font(.system(size: 9, weight: .medium)).foregroundStyle(Palette.muted)
+                Circle().fill(model.cloudConnected ? Palette.reached : Palette.held).frame(width: 7, height: 7)
+                Text(model.cloudConnected ? "Cloud" : (model.projects.isEmpty ? "Offline" : "Saved")).font(.system(size: 9, weight: .medium)).foregroundStyle(Palette.muted)
             }
             Button(action: isPinned ? close : pin) {
                 Image(systemName: isPinned ? "xmark" : "arrow.up.left.and.arrow.down.right")
@@ -290,44 +393,51 @@ struct DashboardView: View {
         }
     }
 
-    private func work(_ snapshot: QueueSnapshot) -> some View {
+    private var projectsSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Priority work").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.text)
-                Spacer(); Text("\(snapshot.items.count) total").font(.system(size: 10)).foregroundStyle(Palette.muted)
+                Text("Projects").font(.system(size: 12,weight:.semibold)).foregroundStyle(Palette.text)
+                Spacer()
+                Text("\(model.projects.count) projects").font(.system(size: 10)).foregroundStyle(Palette.muted)
             }
             VStack(spacing: 0) {
-                if model.visibleItems.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "checkmark.seal.fill").font(.title2).foregroundStyle(Palette.reached)
-                        Text("The tracks are clear").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.text)
-                        Text("Nothing needs attention right now.").font(.system(size: 10)).foregroundStyle(Palette.muted)
-                    }.frame(maxWidth: .infinity).padding(.vertical, 28)
+                if model.projects.isEmpty {
+                    VStack(spacing: 9) {
+                        Image(systemName: "folder").font(.title3).foregroundStyle(Palette.muted)
+                        Text("Projects aren't available yet").foregroundStyle(Palette.text)
+                        Text("Use Open Projects while the cloud directory reconnects.")
+                            .font(.system(size: 10)).foregroundStyle(Palette.muted).multilineTextAlignment(.center)
+                    }.frame(maxWidth:.infinity).padding(.vertical, 28)
                 } else {
-                    ForEach(Array(model.visibleItems.prefix(9).enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(model.projects.enumerated()), id: \.element.id) { index, project in
                         if index > 0 { Divider().overlay(Palette.border) }
-                        WorkRow(item: item)
+                        ProjectRow(project: project)
                     }
                 }
-            }.background(Palette.surface, in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.border))
-            if let error = model.error {
-                Label(error, systemImage: "exclamationmark.triangle.fill").font(.system(size: 10, weight: .medium)).foregroundStyle(Palette.held)
+            }
+            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.border))
+            if let error = model.cloudError {
+                Label(error,systemImage:"info.circle").font(.system(size:10)).foregroundStyle(Palette.muted)
             }
         }
     }
 
     private var footer: some View {
         HStack(spacing: 9) {
-            Button { NSWorkspace.shared.open(dashboardURL) } label: { Label("Open dashboard", systemImage: "rectangle.on.rectangle") }
+            Button { NSWorkspace.shared.open(projectsURL) } label: { Label("All projects", systemImage: "folder") }
                 .buttonStyle(.bordered).tint(Palette.text)
             Spacer()
             Text("Updated \(model.updated.formatted(date: .omitted, time: .shortened))").font(.system(size: 9)).foregroundStyle(Palette.muted)
             Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.borderless).foregroundStyle(Palette.text).help("Refresh now")
             Menu {
-                Button("Start local service") { serviceAction("start") }
-                Button("Stop local service") { serviceAction("stop") }
-                Button("Restart local service") { serviceAction("restart") }
-                Divider(); Button("Quit Roundhouse Menu") { quit() }
+                if model.configuration.isController {
+                    Button("Start local service") { serviceAction("start") }
+                    Button("Stop local service") { serviceAction("stop") }
+                    Button("Restart local service") { serviceAction("restart") }
+                    Divider()
+                }
+                Button("Quit Roundhouse Menu") { quit() }
             } label: { Image(systemName: "ellipsis.circle") }
             .menuStyle(.borderlessButton).frame(width: 20).foregroundStyle(Palette.text)
         }.padding(.horizontal, 14).padding(.vertical, 9).background(Palette.surface).overlay(alignment: .top) { Divider().overlay(Palette.border) }
@@ -360,7 +470,7 @@ struct DashboardView: View {
         UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         model.refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in Task { @MainActor in self?.model.refresh() } }
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.model.refresh() } }
     }
 
     private func statusImage() -> NSImage? {
