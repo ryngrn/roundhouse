@@ -1,0 +1,68 @@
+# Non-blocking website quality telemetry; set repository variable WEBSITE_AUDIT_URL to override.
+name: Website Quality (Lighthouse + Ora)
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Public website URL to audit (optional override)
+        required: false
+        type: string
+  deployment_status:
+  schedule:
+    - cron: '23 11 * * *'
+permissions:
+  contents: read
+jobs:
+  website-audit:
+    if: github.event_name != 'deployment_status' || github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AUDIT_URL: ${{ inputs.url || vars.WEBSITE_AUDIT_URL || 'https://roundhouse.ryan.green/' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check audit target
+        id: target
+        shell: bash
+        run: |
+          if [[ "$AUDIT_URL" != https://* && "$AUDIT_URL" != http://* ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Set WEBSITE_AUDIT_URL to the deployed public URL." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.target.outputs.enabled == 'true'
+        with:
+          node-version: '22'
+      - name: Audit agent readiness (Ora)
+        if: steps.target.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          npx --yes ax audit "$AUDIT_URL" --json > ora-report.json 2>ora-stderr.txt || true
+          echo "### Ora agent readiness" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s ora-report.json ]; then
+            node -e 'const fs=require("fs");const a=JSON.parse(fs.readFileSync("ora-report.json"));console.log(JSON.stringify(a).slice(0,500))' >> "$GITHUB_STEP_SUMMARY" || true
+          else
+            echo "No report returned; inspect ora-stderr.txt (rate limit/network/etc)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Audit web vitals (Lighthouse)
+        if: steps.target.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          npx --yes lighthouse "$AUDIT_URL" --chrome-flags="--headless --no-sandbox" --output=json --output-path=./lighthouse-report.json --quiet 2>lighthouse-stderr.txt || true
+          echo "### Lighthouse" >> "$GITHUB_STEP_SUMMARY"
+          node -e 'const fs=require("fs");const a=JSON.parse(fs.readFileSync("lighthouse-report.json"));for(const k of ["performance","accessibility","best-practices","seo"]) console.log(k+": "+Math.round(100*a.categories[k].score)+"/100")' >> "$GITHUB_STEP_SUMMARY" || echo "Lighthouse unavailable; inspect stderr." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.target.outputs.enabled == 'true'
+        with:
+          name: website-quality-reports
+          path: |
+            ora-report.json
+            ora-stderr.txt
+            lighthouse-report.json
+            lighthouse-stderr.txt
+          if-no-files-found: ignore
+          retention-days: 30
