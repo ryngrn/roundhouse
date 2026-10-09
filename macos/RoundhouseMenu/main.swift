@@ -28,6 +28,11 @@ struct CloudProject: Identifiable, Codable, Hashable {
     let id: String
     let name: String
     let icon: String?
+    // Optional cloud-supplied counts; nil means unavailable, never zero.
+    let needs_input: Int?
+    let running: Int?
+    let queued: Int?
+    let metrics_stale: Bool?
     var symbol: String {
         if let icon, !icon.isEmpty { return icon }
         let defaults: [String:String] = [
@@ -88,7 +93,10 @@ struct QueueItem: Decodable, Identifiable {
         case owningNode = "owning_node"
         case updatedAt = "updated_at"
     }
-    var needsAttention: Bool { needsYou == true || reviewRequired == true || state == "Blocked" }
+    var needsAttention: Bool { needsYou == true || reviewRequired == true }
+    var humanReview: Bool { needsYou == true || reviewRequired == true }
+    var running: Bool { ["Active", "Running", "In Progress", "Dispatched", "Executing"].contains(state ?? "") }
+    var waiting: Bool { ["Queued", "Ready", "Pending", "Ready to Depart"].contains(state ?? "") && !humanReview }
     var status: String { displayState ?? state ?? "Unknown" }
 }
 
@@ -296,24 +304,67 @@ struct MetricTile: View {
 
 struct ProjectRow: View {
     let project: CloudProject
-    var body: some View {
-        Button {
-            if let url = project.page { NSWorkspace.shared.open(url) }
-        } label: {
-            HStack(spacing: 10) {
-                Text(project.symbol).font(.system(size: 22)).frame(width: 28)
-                Text(project.name).font(.system(size: 12,weight:.medium))
-                    .foregroundStyle(Palette.text).lineLimit(1)
-                Spacer(minLength: 4)
-                Image(systemName: "arrow.up.right").font(.system(size: 9,weight:.medium))
-                    .foregroundStyle(Palette.muted)
-            }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .contentShape(Rectangle())
+    let localItems: [QueueItem]?
+    let activeUnattributed: Bool
+    let stale: Bool
+
+    private var review: Int? { localItems.map { $0.filter(\.humanReview).count } ?? project.needs_input }
+    private var running: Int? {
+        if let localItems {
+            let count = localItems.filter(\.running).count
+            return count == 0 && activeUnattributed ? nil : count
         }
-        .buttonStyle(.plain)
-        .disabled(project.page == nil)
-        .help("Open " + project.name + " in Roundhouse")
+        return project.running
+    }
+    private var queued: Int? { localItems.map { $0.filter(\.waiting).count } ?? project.queued }
+
+    private func reviewInChat() {
+        var prompt = "Help me review and unblock Roundhouse project \(project.name) (project ID: \(project.id)). Retrieve current unresolved human-review items from Roundhouse before proposing actions. Walk through them one at a time, identify the minimum decision needed, and only submit decisions through the existing guarded Roundhouse workflow with my approval. Never replay failed jobs automatically."
+        if let items = localItems {
+            let ids = items.filter(\.humanReview).prefix(20).map(\.id)
+            if !ids.isEmpty { prompt += " Current locally observed review item IDs: " + ids.joined(separator: ", ") + ". Revalidate these identifiers against live state." }
+        }
+        var parts = URLComponents(string: "https://chatgpt.com/")!
+        parts.queryItems = [URLQueryItem(name: "q", value: prompt)]
+        if let url = parts.url { NSWorkspace.shared.open(url) }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                if let url = project.page { NSWorkspace.shared.open(url) }
+            } label: {
+                HStack(spacing: 10) {
+                    Text(project.symbol).font(.system(size: 22)).frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(project.name).font(.system(size: 12,weight:.medium))
+                            .foregroundStyle(Palette.text).lineLimit(1)
+                        HStack(spacing: 9) {
+                            if let review {
+                                Text("\(review) input").foregroundStyle(review > 0 ? Palette.signal : Palette.muted)
+                            } else { Text("Input —").foregroundStyle(Palette.muted) }
+                            Text("Run \(running.map(String.init) ?? "—")").foregroundStyle(Palette.muted)
+                            Text("Queue \(queued.map(String.init) ?? "—")").foregroundStyle(Palette.muted)
+                            if stale { Text("Stale").foregroundStyle(Palette.held) }
+                        }.font(.system(size: 9))
+                    }
+                    Spacer(minLength: 1)
+                }.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(project.page == nil)
+            .help("Open " + project.name + " in Roundhouse")
+            if let review, review > 0 {
+                Button(action: reviewInChat) {
+                    Text("Review").font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .help("Review live blockers in ChatGPT")
+            } else {
+                Image(systemName: "arrow.up.right").font(.system(size: 9)).foregroundStyle(Palette.muted)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
     }
 }
 
@@ -398,6 +449,17 @@ struct DashboardView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Projects").font(.system(size: 12,weight:.semibold)).foregroundStyle(Palette.text)
                 Spacer()
+                if let items = model.configuration.isController ? model.snapshot?.items : nil {
+                    let count = items.filter(\.humanReview).count
+                    if count > 0 {
+                        Button("Review \(count)") {
+                            var parts = URLComponents(string: "https://chatgpt.com/")!
+                            parts.queryItems = [URLQueryItem(name: "q", value: "Review my outstanding Roundhouse human decisions across all projects. Fetch live blockers, discuss each one with me, and submit approved resolutions only through the guarded decision workflow.")]
+                            if let url = parts.url { NSWorkspace.shared.open(url) }
+                        }
+                        .buttonStyle(.bordered).font(.system(size: 10))
+                    }
+                }
                 Text("\(model.projects.count) projects").font(.system(size: 10)).foregroundStyle(Palette.muted)
             }
             VStack(spacing: 0) {
@@ -411,7 +473,17 @@ struct DashboardView: View {
                 } else {
                     ForEach(Array(model.projects.enumerated()), id: \.element.id) { index, project in
                         if index > 0 { Divider().overlay(Palette.border) }
-                        ProjectRow(project: project)
+                        ProjectRow(
+                            project: project,
+                            localItems: model.configuration.isController && model.snapshot?.snapshotError == nil
+                                ? model.snapshot?.items.filter { $0.project == project.id }
+                                : nil,
+                            activeUnattributed: (model.snapshot?.counts.active ?? 0) > 0
+                                && !(model.snapshot?.items.contains(where: { $0.running }) ?? false),
+                            stale: (!model.cloudConnected && !model.configuration.isController)
+                                || (model.configuration.isController && (model.snapshot == nil || model.snapshot?.snapshotError != nil))
+                                || project.metrics_stale == true
+                        )
                     }
                 }
             }
