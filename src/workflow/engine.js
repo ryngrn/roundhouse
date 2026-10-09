@@ -15,6 +15,7 @@ import { Unblocker } from "./unblocker.js";
 import { compareDispatchCandidates, dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 import { resolveProjectIdentity } from "./project-model.js";
 import { jobWithCurrentRequestContext, requestContextFromItem } from "./execution-context.js";
+import { broadIntentReady, isBroadIntent, mayCreateJobs, projectCollection, syncIntentPlan } from "./intent-program.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -190,6 +191,10 @@ export class Engine {
       const project = configuredProject ? executionProjectContext(configuredProject, role) : null;
       const decision = project ? inferRoutineAcceptanceCriteria(proposed, project, item, role) : proposed;
       let route = routeDecision(decision, project ? [project] : projects, selectedProject);
+      const broadPending = isBroadIntent(item) && item.intent.status !== "execution_approved";
+      if (broadPending && ["Ready", "Review", "Needs Clarification"].includes(route.state)) route = item.intent.status === "confirmed"
+        ? { state: "Review", reason: "Product direction is confirmed; explicit execution approval is required." }
+        : { state: "Needs Clarification", reason: "Confirm the broad intent before execution planning can become executable." };
       const executionEligibilityReasons = route.state === "Ready" && project
         ? decision.work_items.flatMap((work) => executionEligibility(project, this.config.execution,
           this.config.execution.capabilities, { work }).reasons)
@@ -199,10 +204,13 @@ export class Engine {
       await this.store.change((data) => {
         const current = data.items[id];
         current.questions ??= [];
-        const proposedQuestions = decision.questions.length ? decision.questions : (decision.question ? [{
+        const decisionQuestions = decision.questions.length ? decision.questions : (decision.question ? [{
           prompt: decision.question,
           decision_key: decision.decision_key ?? fallbackDecisionKey(decision),
         }] : []);
+        const proposedQuestions = broadPending && current.intent.status !== "confirmed"
+          ? [decisionQuestions[0] ?? { prompt: "What outcome would make this worth doing, and what important boundary must the plan preserve?", decision_key: "intent:desired-outcome" }]
+          : decisionQuestions;
         const decisionKey = proposedQuestions[0]?.decision_key ?? decision.decision_key ?? null;
         const resolvedKeys = new Set(current.questions
           .filter((question) => question.status === "answered" && question.decision_key)
@@ -230,9 +238,11 @@ export class Engine {
         current.decision_history ??= [];
         if (current.decision) current.decision_history.push(current.decision);
         current.decision = decision;
+        syncIntentPlan(current, decision, new Date(this.clock()).toISOString());
         current.decision_key = decisionKey;
         current.decision_id = randomUUID();
         current.project_id = project?.id ?? null;
+        if (project) projectCollection(data.projects[project.id] ??= { id: project.id, name: project.name, revision: 1 });
         current.policy_hash = project ? digest(project) : null;
         current.project_context = project ?? null;
         current.agent_role = project ? role : null;
@@ -295,6 +305,13 @@ export class Engine {
             updated_at: now,
           }));
           current.questions.push(...questions);
+          if (isBroadIntent(current) && current.intent.status !== "confirmed") {
+            const question = questions[0];
+            current.intent.unresolved_questions = question ? [{ id: question.id,
+              field: question.decision_key?.replace(/^intent:/, "") ?? "desired_outcome", prompt: question.prompt }] : [];
+            current.intent.status = "discovering";
+            current.intent.updated_at = now;
+          }
           const outbox = data.outbox.findLast((event) => event.entity_id === current.id && event.state === current.state);
           if (outbox) {
             outbox.question_id = questions[0].id;
@@ -342,17 +359,49 @@ export class Engine {
     }
   }
   createJobs(data, item) {
+    if (!mayCreateJobs(item)) throw new Error("Broad intent requires separate product confirmation and explicit execution approval before jobs can be created.");
     item.job_ids = item.decision.work_items.map((work, index) => {
       const id = `${item.id}-${index + 1}`;
-      if (data.jobs[id]) throw new Error("Work already exists for this decision.");
+      const slice = item.intent?.work_slices?.[index];
+      if (data.jobs[id]) {
+        if (data.jobs[id].parent_id !== item.id) throw new Error("Work identity conflicts with another item.");
+        if (slice) slice.job_id = id;
+        return id;
+      }
       data.jobs[id] = record(id, { state: "Ready", parent_id: item.id, project_id: item.project_id,
+        feature_id: item.intent?.feature_id ?? null, goal_ids: item.intent?.goal_ids ?? [], work_slice_id: slice?.id ?? null,
         work, agent_role: item.agent_role ?? "general", project_context: item.project_context, policy_hash: item.policy_hash,
         request_context: requestContextFromItem(item),
         input_digest: digest({ input: item.input, clarifications: item.clarifications, work }),
         dependencies: [...item.decision.dependencies, ...(index ? [`${item.id}-${index}`] : [])],
         attempts: [], processes: [], priority_rank: priorityRank(item), position: Object.keys(data.jobs).length });
+      if (slice) { slice.job_id = id; slice.status = "ready"; }
       return id;
     });
+    if (item.intent?.feature_id && data.projects?.[item.project_id]) {
+      const project = projectCollection(data.projects[item.project_id]);
+      const feature = project.features.find((candidate) => candidate.id === item.intent.feature_id);
+      if (feature && !feature.work_item_ids.includes(item.id)) feature.work_item_ids.push(item.id);
+    }
+  }
+
+  recordShippedIntent(data, job, timestamp) {
+    const parent = data.items[job.parent_id];
+    const slice = parent?.intent?.work_slices?.find((candidate) => candidate.job_id === job.id || candidate.id === job.work_slice_id);
+    if (slice) { slice.status = "shipped"; slice.shipped_at = timestamp; }
+    if (!parent?.intent?.feature_id || !data.projects?.[job.project_id]) return;
+    const project = projectCollection(data.projects[job.project_id]);
+    const feature = project.features.find((candidate) => candidate.id === parent.intent.feature_id);
+    if (!feature) return;
+    feature.evidence.push({ kind: "shipment", item_id: parent.id, job_id: job.id, reference: job.shipping?.reference ?? job.shipping?.commit ?? null, recorded_at: timestamp });
+    const allShipped = feature.work_item_ids.length > 0 && feature.work_item_ids.every((itemId) => {
+      const linked = data.items[itemId];
+      return linked && linked.job_ids?.length > 0 && linked.job_ids.every((jobId) => data.jobs[jobId]?.state === "Shipped");
+    });
+    if (allShipped) feature.status = feature.completion_type === "Done when shipped" ? "Done" : "Shipped; outcome pending";
+    feature.updated_at = timestamp;
+    project.revision += 1;
+    project.updated_at = timestamp;
   }
   supersedeBlockerWithRecovery(data, recovery) {
     const originalId = recovery.blocker_followup?.original_id ?? recovery.input?.context?.blocker_entity_id;
@@ -417,6 +466,9 @@ export class Engine {
     return this.store.change((data) => {
       const item = data.items[id];
       if (!item || item.state !== "Review" || item.revision !== revision) throw new Error("Approval must reference the current Review revision.");
+      if (isBroadIntent(item) && (item.intent.status !== "confirmed" || !broadIntentReady(item.intent, item.project_id))) {
+        throw new Error("Broad intent requires complete product-direction confirmation before execution approval.");
+      }
       const project = this.config.projects.find((p) => p.id === item.project_id);
       const contextualProject = project ? executionProjectContext(project, item.agent_role ?? "general") : null;
       if (!contextualProject || digest(contextualProject) !== item.policy_hash) throw new Error("Project context/policy changed. Clarify and re-decide first.");
@@ -428,6 +480,11 @@ export class Engine {
       const eligibilityReasons = decision.work_items.flatMap((work) => executionEligibility(authorized, this.config.execution,
         this.config.execution.capabilities, { work }).reasons);
       item.approval = { actor, revision, at: new Date().toISOString() };
+      if (isBroadIntent(item)) {
+        item.intent.status = "execution_approved";
+        item.intent.execution_approval = { actor, item_revision: revision, at: item.approval.at };
+        item.intent.updated_at = item.approval.at;
+      }
       const question = (item.questions ?? []).findLast((candidate) => candidate.status === "open");
       if (question) {
         question.answer = { text: "Approved", actor, at: item.approval.at };
@@ -837,6 +894,7 @@ export class Engine {
               data.projects[project.id] = { ...data.projects[project.id], last_commit: shipping.commit,
                 active: false, review_required: project.policy.review_after_shipping };
               const parent = data.items[j.parent_id];
+              this.recordShippedIntent(data, j, shipping.timestamp);
               if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = shipping.timestamp;
             });
             return true;
@@ -890,6 +948,7 @@ export class Engine {
               ...(delivered.reference ? { last_output: delivered.reference } : {}),
               active: false, review_required: project.policy.review_after_shipping };
             const parent = data.items[j.parent_id];
+            this.recordShippedIntent(data, j, delivered.timestamp);
             if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) {
               parent.completed_at = delivered.timestamp;
             }
@@ -990,6 +1049,7 @@ export class Engine {
         data.projects[current.project_id] = { ...data.projects[current.project_id], last_commit: commit, blocked: false, active: false,
           resume_approval: { actor: actor.trim(), note: note.trim(), at } };
         const parent = data.items[current.parent_id];
+        this.recordShippedIntent(data, current, at);
         if (parent?.job_ids?.every((key) => data.jobs[key]?.state === "Shipped")) parent.completed_at = at;
         return current;
       });
@@ -1027,6 +1087,7 @@ export class Engine {
       data.projects[current.project_id] = { ...data.projects[current.project_id], last_commit: resolvedCommit, blocked: false, active: false,
         resume_approval: { actor: actor.trim(), note: note.trim(), at } };
       const parent = data.items[current.parent_id];
+      this.recordShippedIntent(data, current, at);
       if (parent?.job_ids?.every((key) => data.jobs[key]?.state === "Shipped")) parent.completed_at = at;
       return current;
     });

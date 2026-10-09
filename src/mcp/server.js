@@ -14,6 +14,7 @@ const jobSchema = z.object({
   latest_run: z.unknown().nullable(), latest_failure: z.string().nullable(), reconciliation: z.unknown().nullable(),
   allocation: z.unknown().nullable(), allocation_history: z.array(z.unknown()),
   scope_revision: z.unknown().nullable(), cleanup_intent: z.unknown().nullable(), issue_resolution: z.unknown().nullable(),
+  feature_id: z.string().nullable().optional(), goal_ids: z.array(z.string()).optional(), work_slice_id: z.string().nullable().optional(),
 });
 const completionReportSchema = z.object({
   summary: z.string(), design_decisions: z.array(z.string()),

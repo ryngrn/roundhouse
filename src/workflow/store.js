@@ -6,6 +6,7 @@ import { record, transition } from "./state.js";
 import { StorageRepository, digest } from "../storage/repository.js";
 import { acquireLock, alive } from "../storage/file-lock.js";
 import { loadNodeIdentity } from "../storage/node-identity.js";
+import { initialIntent, rawIdeaEvidence } from "./intent-program.js";
 
 export { acquireLock, alive, digest };
 
@@ -66,7 +67,9 @@ export class Store extends StorageRepository {
           repurposed_shipped: 0, decision_latency_ms: 0, decision_log: [] };
         data.system_metadata.cleanup_metrics.deleted_recreated = (data.system_metadata.cleanup_metrics.deleted_recreated ?? 0) + 1;
       }
-      data.items[id] = record(id, { input, clarifications: [], questions: [], decision: null, job_ids: [] });
+      const capturedAt = new Date().toISOString();
+      data.items[id] = record(id, { input, raw_idea: rawIdeaEvidence(input, capturedAt), intent: initialIntent(input, capturedAt),
+        clarifications: [], questions: [], decision: null, job_ids: [] });
       return data.items[id];
     });
   }

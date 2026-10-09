@@ -67,15 +67,35 @@ export function itemView(data, item) {
   const legacyProject = item.project_candidate_id ? data.project_candidates?.[item.project_candidate_id] : null;
   const assignedProject = item.project_id ?? (legacyProject?.name && legacyProject.name.toLowerCase() !== "unassigned"
     ? projectSlug(legacyProject.name) : null);
+  const intent = item.intent ? {
+    status: item.intent.status ?? null,
+    summary: item.intent.summary ?? null,
+    fields: item.intent.fields ?? {},
+    confirmed_fields: item.intent.confirmed_fields ?? [],
+    unresolved_questions: item.intent.unresolved_questions ?? [],
+    completion_type: item.intent.completion_type ?? "Done when shipped",
+    original_context_reference: item.intent.original_context_reference ?? null,
+    discovery_non_executable: item.intent.discovery_non_executable === true,
+    feature_id: item.intent.feature_id ?? null,
+    goal_ids: item.intent.goal_ids ?? [],
+    version: item.intent.version ?? 1,
+    planning_confirmation: item.intent.planning_confirmation ?? null,
+    execution_approval: item.intent.execution_approval ?? null,
+    work_slices: item.intent.work_slices ?? [],
+  } : null;
   return {
     id: item.id,
     state,
     revision: item.revision,
     project: assignedProject,
+    project_id: assignedProject,
+    project_name: data.projects?.[assignedProject]?.name ?? null,
     priority: item.priority ?? null,
     title,
     summary: item.input.text.slice(0, 240),
     raw_intake: item.input.text,
+    raw_idea: item.raw_idea ?? null,
+    intent,
     brief: legacy?.["Normalized Brief"] || item.decision?.reason || null,
     context: item.input.context ?? null,
     conversation: item.input.conversation ? { link: item.input.conversation.link,
@@ -141,6 +161,9 @@ export function itemView(data, item) {
       scope_revision: job.scope_revision ?? null,
       cleanup_intent: job.cleanup_intent ?? null,
       issue_resolution: job.issue_resolution ?? null,
+      feature_id: job.feature_id ?? null,
+      goal_ids: job.goal_ids ?? [],
+      work_slice_id: job.work_slice_id ?? null,
     })),
   };
 }
@@ -272,6 +295,11 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
     status: project.status,
   }]));
   for (const [id, project] of Object.entries(data.projects ?? {})) projects[id] ??= project;
+  for (const project of Object.values(projects)) {
+    project.goals ??= [];
+    project.features ??= [];
+    project.research_tasks ??= [];
+  }
   const items = [
     ...Object.values(data.jobs ?? {}).map((job) => projectedJob(data, job, config)),
     ...Object.values(data.items ?? {}).filter((item) => !(item.job_ids ?? []).length)
@@ -285,10 +313,13 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
     completed: items.filter((item) => completedStates.has(item.state)).length,
     blocked: items.filter((item) => item.state === "Blocked").length,
   };
-  const projection_revision = digest(items.map((item) => ({
-    id: item.id, revision: item.revision, state: item.state,
-    needs_you: item.needs_you, review_kind: item.review_kind,
-  }))).slice(0, 24);
+  const projection_revision = digest({
+    items: items.map((item) => ({ id: item.id, revision: item.revision, state: item.state,
+      intent: item.intent, evidence: item.evidence, needs_you: item.needs_you, review_kind: item.review_kind })),
+    projects: Object.fromEntries(Object.entries(projects).map(([id, project]) => [id, {
+      revision: project.revision ?? 1, goals: project.goals, features: project.features, research_tasks: project.research_tasks,
+    }])),
+  }).slice(0, 24);
   return {
     schema_version: 2,
     projection_revision,

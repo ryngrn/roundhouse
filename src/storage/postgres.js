@@ -6,6 +6,7 @@ import pg from "pg";
 import { StorageRepository, digest } from "./repository.js";
 import { record, transition } from "../workflow/state.js";
 import { reservationAssessment } from "../workflow/scheduler.js";
+import { initialIntent, rawIdeaEvidence } from "../workflow/intent-program.js";
 
 const { Pool } = pg;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -304,7 +305,9 @@ export class PostgresStorageRepository extends StorageRepository {
         if (digest(data.items[id].input) !== digest(input)) throw new Error("Submission key already exists with different content. Use clarify or a new key.");
         return data.items[id];
       }
-      data.items[id] = record(id, { input, clarifications: [], questions: [], decision: null, job_ids: [] });
+      const capturedAt = new Date().toISOString();
+      data.items[id] = record(id, { input, raw_idea: rawIdeaEvidence(input, capturedAt), intent: initialIntent(input, capturedAt),
+        clarifications: [], questions: [], decision: null, job_ids: [] });
       return data.items[id];
     });
   }
