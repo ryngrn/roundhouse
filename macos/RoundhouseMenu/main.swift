@@ -504,9 +504,14 @@ struct DashboardView: View {
             Spacer()
             Text("Updated \(model.updated.formatted(date: .omitted, time: .shortened))").font(.system(size: 9)).foregroundStyle(Palette.muted)
             Button { model.refresh() } label: {
-                Image(systemName: "arrow.clockwise")
-                    .rotationEffect(.degrees(model.projectRefreshing ? 360 : 0))
-                    .animation(model.projectRefreshing ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default, value: model.projectRefreshing)
+                Group {
+                    if model.projectRefreshing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .frame(width: 18, height: 18)
             }.buttonStyle(.borderless).foregroundStyle(Palette.text)
                 .disabled(model.projectRefreshing)
                 .help(model.projectRefreshing ? "Updating projects…" : "Refresh now")
