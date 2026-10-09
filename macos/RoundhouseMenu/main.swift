@@ -372,6 +372,22 @@ struct ProjectRow: View {
 
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
+    @State private var showAllProjects = false
+
+    private var focusedProjects: [CloudProject] {
+        model.projects.filter { project in
+            if model.configuration.isController,
+               let snapshot = model.snapshot,
+               snapshot.snapshotError == nil {
+                return snapshot.items.contains { $0.project == project.id && $0.humanReview }
+            }
+            return (project.needs_input ?? 0) > 0
+        }
+    }
+
+    private var displayedProjects: [CloudProject] {
+        showAllProjects ? model.projects : focusedProjects
+    }
     let isPinned: Bool
     let pin: () -> Void
     let close: () -> Void
@@ -449,7 +465,7 @@ struct DashboardView: View {
     private var projectsSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Projects").font(.system(size: 12,weight:.semibold)).foregroundStyle(Palette.text)
+                Text(showAllProjects ? "All Projects" : "Focused Projects").font(.system(size: 12,weight:.semibold)).foregroundStyle(Palette.text)
                 Spacer()
                 if let items = model.configuration.isController ? model.snapshot?.items : nil {
                     let count = items.filter(\.humanReview).count
@@ -462,18 +478,24 @@ struct DashboardView: View {
                         .buttonStyle(.bordered).font(.system(size: 10))
                     }
                 }
-                Text("\(model.projects.count) projects").font(.system(size: 10)).foregroundStyle(Palette.muted)
+                Button(showAllProjects ? "View only focused projects" : "View all \(model.projects.count) Projects") {
+                    showAllProjects.toggle()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Palette.muted)
+                .help(showAllProjects ? "Show projects needing your input" : "Show every project")
             }
             VStack(spacing: 0) {
-                if model.projects.isEmpty {
+                if displayedProjects.isEmpty {
                     VStack(spacing: 9) {
                         Image(systemName: "folder").font(.title3).foregroundStyle(Palette.muted)
-                        Text("Projects aren't available yet").foregroundStyle(Palette.text)
-                        Text("Use Open Projects while the cloud directory reconnects.")
+                        Text(model.projects.isEmpty ? "Projects aren't available yet" : "No projects need your input").foregroundStyle(Palette.text)
+                        Text(model.projects.isEmpty ? "Use Open Projects while the cloud directory reconnects." : "You're all caught up. View all projects to see everything.")
                             .font(.system(size: 10)).foregroundStyle(Palette.muted).multilineTextAlignment(.center)
                     }.frame(maxWidth:.infinity).padding(.vertical, 28)
                 } else {
-                    ForEach(Array(model.projects.enumerated()), id: \.element.id) { index, project in
+                    ForEach(Array(displayedProjects.enumerated()), id: \.element.id) { index, project in
                         if index > 0 { Divider().overlay(Palette.border) }
                         ProjectRow(
                             project: project,
