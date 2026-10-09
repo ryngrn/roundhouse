@@ -147,3 +147,18 @@ test("completion types are exact and tactical work keeps the existing fast lane"
   assert.equal(result.items[tactical.item.id].job_ids.length, 1);
   assert.equal(result.jobs[result.items[tactical.item.id].job_ids[0]].state, "Shipped");
 });
+
+
+test("project icon updates are durable, revision-guarded and reject unsafe values", () => {
+  const h = harness();
+  h.store.change((data) => { data.projects.example = { id: "example", name: "Example", revision: 1 }; });
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const saved = service.setProjectIcon({ project_id: "example", expected_project_revision: 1, icon: "🚂", actor: "owner" });
+  assert.equal(saved.project_revision, 2);
+  assert.equal(saved.icon, "🚂");
+  assert.equal(h.store.read().projects.example.icon, "🚂");
+  assert.equal(service.getDashboardProjection().overview.projects.example.icon, "🚂");
+  assert.throws(() => service.setProjectIcon({ project_id: "example", expected_project_revision: 1, icon: "🎨" }), /changed/);
+  assert.throws(() => service.setProjectIcon({ project_id: "example", expected_project_revision: 2, icon: "<script>" }), /emoji/);
+  assert.throws(() => service.setProjectIcon({ project_id: "example", expected_project_revision: 2, icon: "🎨🎨" }), /emoji/);
+});

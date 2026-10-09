@@ -121,6 +121,33 @@ export class RoundhouseService {
     });
   }
 
+  setProjectIcon({ project_id, expected_project_revision, icon, actor = "local-user" }) {
+    if (!nonempty(project_id) || !Number.isInteger(expected_project_revision) || expected_project_revision < 1) {
+      throw new Error("Project icon update requires a project id and current revision.");
+    }
+    // Persist one Unicode emoji grapheme, never arbitrary markup or URLs.
+    const chars = typeof icon === "string" ? [...new Intl.Segmenter("en", { granularity: "grapheme" }).segment(icon)] : [];
+    if (typeof icon !== "string" || icon.length > 18 || chars.length !== 1 || !/\p{Extended_Pictographic}/u.test(icon)) {
+      throw new Error("Project icon must be one emoji.");
+    }
+    return this.store.change((data) => {
+      const configured = this.config?.projects?.some((project) => project.id === project_id);
+      const current = data.projects?.[project_id];
+      if (!configured && !current) throw new Error("Unknown project.");
+      data.projects ??= {};
+      const project = projectCollection(current ?? (data.projects[project_id] = {
+        id: project_id, name: this.config.projects.find((entry) => entry.id === project_id)?.name ?? project_id,
+      }));
+      if (project.revision !== expected_project_revision) throw new Error("Project changed; refresh before changing the icon.");
+      project.icon = icon;
+      project.icon_updated_at = new Date().toISOString();
+      project.icon_updated_by = actor;
+      project.revision += 1;
+      project.updated_at = project.icon_updated_at;
+      return { id: project_id, icon: project.icon, project_revision: project.revision };
+    });
+  }
+
   createFeature({ project_id, expected_project_revision, feature, actor = "local-user" }) {
     if (!nonempty(project_id) || !Number.isInteger(expected_project_revision) || expected_project_revision < 1) throw new Error("Feature creation requires a project id and current revision.");
     return this.store.change((data) => {

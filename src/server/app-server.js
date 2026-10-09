@@ -234,6 +234,16 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 201, result);
       }
+      const projectIcon = url.pathname.match(/^\/api\/projects\/([^/]+)\/icon$/);
+      if (request.method === "POST" && projectIcon) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.setProjectIcon({ project_id: decodeURIComponent(projectIcon[1]),
+          expected_project_revision: input.expected_project_revision, icon: input.icon, actor: "local-user" });
+        await refreshLocalSnapshot();
+        projectionPublisher.trigger();
+        return send(response, 200, result);
+      }
       const projectGoal = url.pathname.match(/^\/api\/projects\/([^/]+)\/goals$/);
       if (request.method === "POST" && projectGoal) {
         verifyOrigin(request, origins);
