@@ -118,3 +118,7 @@ loopback browser control room have been removed. Depot intake is the only suppor
 intake path, the combined engine owns `/mcp`, and browser use goes through the hosted
 dashboard. There is no supported Notion pickup, status write-back, or bidirectional
 sync path.
+
+## Personal-project shipping policy
+
+Personal build-in-public projects follow the [ship-first policy](docs/personal-project-shipping.md): execute and ship verified, low-risk work through the project-configured release path without redundant approval gates. Destructive changes, sensitive operations, and client work retain their own safeguards.
