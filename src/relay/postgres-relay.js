@@ -57,7 +57,7 @@ export class PostgresRelay {
       idleTimeoutMillis: 1_000,
       allowExitOnIdle: true,
       connectionTimeoutMillis: 5_000,
-      query_timeout: 15_000,
+      query_timeout: 120_000,
       application_name: "roundhouse:relay",
     }) });
   }
