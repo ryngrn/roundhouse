@@ -69,6 +69,45 @@ test("postgres: migrations, normalized restart projection, provenance, and outbo
   await restarted.close();
 });
 
+test("postgres: ordinary changes leave unrelated domain rows untouched", { skip: !enabled }, async () => {
+  await reset();
+  const store = await open("incremental");
+  await store.change((data) => {
+    seed(data);
+    data.projects["project-2"] = { id: "project-2", name: "Unchanged", active: false };
+  });
+  const before = (await store.pool.query(`SELECT 'project' AS kind,id,xmin::text AS xmin FROM roundhouse.projects
+    UNION ALL SELECT 'item',id,xmin::text FROM roundhouse.depot_items
+    UNION ALL SELECT 'job',id,xmin::text FROM roundhouse.jobs ORDER BY kind,id`)).rows;
+
+  await store.change((data) => { data.projects["project-1"].name = "Changed"; });
+
+  const after = (await store.pool.query(`SELECT 'project' AS kind,id,xmin::text AS xmin FROM roundhouse.projects
+    UNION ALL SELECT 'item',id,xmin::text FROM roundhouse.depot_items
+    UNION ALL SELECT 'job',id,xmin::text FROM roundhouse.jobs ORDER BY kind,id`)).rows;
+  const xmins = (rows) => Object.fromEntries(rows.map((row) => [`${row.kind}:${row.id}`, row.xmin]));
+  assert.notEqual(xmins(after)["project:project-1"], xmins(before)["project:project-1"]);
+  for (const key of ["project:project-2", "item:item-1", "job:job-1"]) assert.equal(xmins(after)[key], xmins(before)[key]);
+  await store.close();
+});
+
+test("postgres: an incremental write failure rolls the entire change back", { skip: !enabled }, async () => {
+  await reset();
+  const store = await open("rollback");
+  await store.change(seed);
+  await store.pool.query("ALTER TABLE roundhouse.projects ADD CONSTRAINT reject_test_name CHECK (name IS DISTINCT FROM 'reject')");
+
+  await assert.rejects(store.change((data) => {
+    data.system_metadata.rollback_marker = true;
+    data.projects["project-1"].name = "reject";
+  }), /check constraint|violates/i);
+
+  const snapshot = await store.read();
+  assert.equal(snapshot.projects["project-1"].name, undefined);
+  assert.equal(snapshot.system_metadata.rollback_marker, undefined);
+  await store.close();
+});
+
 test("postgres: two nodes racing claim exactly one job and expose its owner", { skip: !enabled }, async () => {
   await reset();
   const first = await open("one");
