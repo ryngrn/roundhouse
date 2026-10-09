@@ -28,6 +28,11 @@ struct CloudProject: Identifiable, Codable, Hashable {
     let id: String
     let name: String
     let icon: String?
+    let needs_input: Int?
+    let running: Int?
+    let queued: Int?
+    let metrics_stale: Bool?
+    var needsAttention: Bool { (needs_input ?? 0) > 0 }
     var symbol: String {
         if let icon, !icon.isEmpty { return icon }
         let defaults: [String:String] = [
@@ -305,6 +310,9 @@ struct ProjectRow: View {
                 Text(project.name).font(.system(size: 12,weight:.medium))
                     .foregroundStyle(Palette.text).lineLimit(1)
                 Spacer(minLength: 4)
+                if let needed = project.needs_input, needed > 0 {
+                    Text("\(needed) to review").font(.system(size: 9, weight: .medium)).foregroundStyle(Palette.signal)
+                }
                 Image(systemName: "arrow.up.right").font(.system(size: 9,weight:.medium))
                     .foregroundStyle(Palette.muted)
             }
@@ -409,9 +417,30 @@ struct DashboardView: View {
                             .font(.system(size: 10)).foregroundStyle(Palette.muted).multilineTextAlignment(.center)
                     }.frame(maxWidth:.infinity).padding(.vertical, 28)
                 } else {
-                    ForEach(Array(model.projects.enumerated()), id: \.element.id) { index, project in
-                        if index > 0 { Divider().overlay(Palette.border) }
-                        ProjectRow(project: project)
+                    let focused = model.projects.filter { $0.needsAttention }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    let other = model.projects.filter { !$0.needsAttention }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    if !focused.isEmpty {
+                        HStack {
+                            Text("Needs attention").font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.signal)
+                            Spacer()
+                            Text("\(focused.count)").font(.system(size: 10)).foregroundStyle(Palette.muted)
+                        }.padding(.horizontal, 12).padding(.top, 11).padding(.bottom, 4)
+                        ForEach(focused) { project in
+                            ProjectRow(project: project)
+                            if project.id != focused.last?.id { Divider().overlay(Palette.border) }
+                        }
+                    }
+                    if !focused.isEmpty && !other.isEmpty { Divider().overlay(Palette.border).padding(.vertical, 6) }
+                    if !other.isEmpty {
+                        HStack {
+                            Text("Other projects").font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.muted)
+                            Spacer()
+                            Text("\(other.count)").font(.system(size: 10)).foregroundStyle(Palette.muted)
+                        }.padding(.horizontal, 12).padding(.top, focused.isEmpty ? 11 : 4).padding(.bottom, 4)
+                        ForEach(other) { project in
+                            ProjectRow(project: project)
+                            if project.id != other.last?.id { Divider().overlay(Palette.border) }
+                        }
                     }
                 }
             }
