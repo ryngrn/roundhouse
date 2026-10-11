@@ -221,6 +221,7 @@ const toolSpecs = [
     description: "Get compact durable status for Roundhouse Depot items and their work. Use this for progress or outcome questions; it does not change or advance work.",
     input: filterSchema,
     output: z.object({ items: z.array(itemSchema), execution_metrics: executionMetricsSchema,
+      watchdog: z.unknown().nullable(),
       active_jobs: z.array(activeJobSchema), untracked_activity: z.array(untrackedActivitySchema),
       activity_inspection: activityInspectionSchema, next_departure: nextDepartureSchema.nullable(), allocations: allocationsSchema,
       projects: z.record(z.string(), z.unknown()),
