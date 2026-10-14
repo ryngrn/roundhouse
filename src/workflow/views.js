@@ -208,18 +208,24 @@ function dispatchHoldReason(job, data, config) {
   return null;
 }
 
+// Human review is a decision, not a technical status. Dependency waits,
+// previously answered resolutions and integrity errors stay visible in system
+// diagnostics but no longer inflate the "Needs Your Review" queue.
 function reviewFor(entity, dispatchHold = null) {
-  if (entity?.state === "Blocked") return { required: true, kind: "blocked",
-    reason: entity.history?.at(-1)?.reason ?? "Work is blocked and needs investigation." };
-  if (entity?.state === "Needs Clarification") return { required: true, kind: "clarification",
-    reason: entity.history?.at(-1)?.reason ?? "An answer is needed before proceeding." };
+  const waiting = entity?.issue_resolution?.status === "waiting";
+  const answered = entity?.issue_resolution?.status === "answered";
+  const questions = (entity?.questions ?? []).filter(question => question.status === "open");
+  // A previously answered cleanup issue cannot satisfy a separate execution
+  // approval. GrowthPath's canonical intent is an example of this distinction.
   if (entity?.state === "Review") return { required: true, kind: "approval",
-    reason: entity.history?.at(-1)?.reason ?? "Approval or a decision is required." };
-  // A Ready dependency directly behind another Ready job is normal queueing. Any
-  // other deterministic hold needs attention and must not be counted as ready.
-  if (entity?.state === "Ready" && dispatchHold && !/^Waiting for prerequisite .+ \(Ready\)\.$/.test(dispatchHold)) {
-    return { required: true, kind: "blocked", reason: dispatchHold };
+    reason: entity.history?.at(-1)?.reason ?? "Review the proposed outcome." };
+  if (answered) return { required: false, kind: null, reason: null };
+  if (entity?.state === "Needs Clarification" && (waiting || questions.length)) {
+    return { required: true, kind: "clarification",
+      reason: waiting ? entity.issue_resolution.question : questions[0]?.prompt };
   }
+  if (entity?.state === "Blocked" && waiting) return { required: true, kind: "blocked",
+    reason: entity.issue_resolution.question ?? "Choose the safe next action." };
   return { required: false, kind: null, reason: null };
 }
 

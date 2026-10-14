@@ -516,6 +516,118 @@ export class RoundhouseService {
     return await this.engine.explodeItem(id, { expectedRevision: expected_revision, actor, note });
   }
 
+  // One human-facing review contract. Revision, dependency and execution
+  // policy remain server-owned; a UI label never bypasses the existing guards.
+  async reviewAction({ item_id, expected_revision, choice, note = "", actor = "local-user" }) {
+    if (!nonempty(item_id) || !Number.isInteger(expected_revision) || expected_revision < 1) {
+      throw new Error("Review action requires the current item identity and revision.");
+    }
+    if (!["approve", "change", "retire"].includes(choice)) throw new Error("Unsupported review action.");
+    if (typeof note !== "string" || note.length > 10_000) throw new Error("Review change exceeds 10,000 characters.");
+    const direction = note.trim();
+    if (choice === "change" && !direction) throw new Error("Change requires a short description of the new direction.");
+    const data = await this.store.read();
+    const entity = data.jobs?.[item_id] ?? data.items?.[item_id];
+    if (!entity || entity.revision !== expected_revision) throw new Error("This review has changed. Roundhouse will refresh it before accepting another decision.");
+    const isJob = Boolean(data.jobs?.[item_id]);
+    const resolution = entity.issue_resolution;
+    if (resolution?.status === "answered" && entity.state !== "Review") {
+      throw new Error("This decision is already recorded. Roundhouse is processing the outcome.");
+    }
+
+    if (choice === "approve") {
+      // Approval of remediation means approval of only the existing, exact
+      // non-destructive resolution option; never execution/shipment approval.
+      const planned = ["replan", "approve_spec_only"].map(id => resolution?.options?.find(option => option.id === id))
+        .find(option => option && option.resolution !== "delete");
+      if (["Blocked", "Needs Clarification"].includes(entity.state) && resolution?.status === "waiting" && planned) {
+        const message = [planned.label, planned.description, ...(planned.effects ?? [])].filter(Boolean).join(" — ");
+        const response = await this.resolveIssue({ issue_id: item_id, expected_revision, action: "option", message, actor });
+        return { accepted: true, choice, action: "approved_existing_resolution", result: response,
+          execution_approved: false, retired: false };
+      }
+      if (isJob) throw new Error("This work has no reviewable approval; Roundhouse must prepare a safe decision first.");
+      if (entity.state === "Review") {
+        const result = await this.approveItem({ id: item_id, expected_revision, actor });
+        return { accepted: true, choice, action: "execution_approved", result };
+      }
+      if (entity.state === "Needs Clarification" && entity.intent?.status === "ready_for_confirmation") {
+        const result = await this.confirmIntent({ item_id, expected_item_revision: expected_revision,
+          fields: entity.intent.fields ?? {}, actor });
+        return { accepted: true, choice, action: "plan_confirmed", result,
+          execution_approved: false };
+      }
+      throw new Error("Roundhouse has not prepared an approvable plan. Use Change to give new direction.");
+    }
+
+    if (choice === "change") {
+      if (isJob || (["Blocked", "Needs Clarification"].includes(entity.state) && resolution?.status === "waiting")) {
+        if (!["Blocked", "Needs Clarification"].includes(entity.state)) throw new Error("Only held work can request a change here.");
+        const result = await this.resolveIssue({ issue_id: item_id, expected_revision,
+          action: "custom", message: direction, actor });
+        return { accepted: true, choice, action: "change_requested", result, execution_approved: false };
+      }
+      if (entity.state !== "Review" && entity.state !== "Needs Clarification" && entity.state !== "Blocked") {
+        throw new Error("This work is not waiting for a review decision.");
+      }
+      const open = (entity.questions ?? []).filter(question => question.status === "open");
+      if (open.length) {
+        // Answer exactly one question in this review. The batch decision-session
+        // contract requires *all* open questions at once, so use its guarded
+        // single-question sibling rather than force more forms onto the user.
+        const result = await this.answerQuestion({ id: open[0].id, answer: direction,
+          expected_revision: open[0].revision, actor });
+        return { accepted: true, choice, action: "direction_answered", result };
+      }
+      const result = await this.store.change(state => {
+        const current = state.items?.[item_id];
+        if (!current || current.revision !== expected_revision || (current.job_ids ?? []).length
+          || !["Review", "Needs Clarification", "Blocked"].includes(current.state)) {
+          throw new Error("This review changed; no revised plan was started.");
+        }
+        current.clarifications ??= [];
+        current.clarifications.push({ text: direction, actor, at: new Date().toISOString(), kind: "review_change" });
+        this.store.move(state, current, "Decision", "Human revised the desired outcome; Roundhouse will replan without replaying work.");
+        current.awaiting_decision = true;
+        return { id: current.id, revision: current.revision, state: current.state };
+      });
+      return { accepted: true, choice, action: "replanning", result };
+    }
+
+    // Retire is archive-first. Retain the complete work and evidence rather
+    // than confusing "retire" with immediate irreversible deletion.
+    if (isJob) {
+      const deleteOption = resolution?.status === "waiting"
+        && resolution.options?.find(option => option.id === "delete-unverified-attempt" || option.id === "delete");
+      if (!deleteOption) throw new Error("This attempted job needs a verified cleanup decision before retiring.");
+      const dependents = Object.values(data.jobs ?? {}).filter(job => (job.dependencies ?? []).includes(item_id));
+      if (dependents.length) throw new Error("Dependent work must be reconciled before retiring this job.");
+      const message = [deleteOption.label, deleteOption.description, ...(deleteOption.effects ?? [])].filter(Boolean).join(" — ");
+      const result = await this.resolveIssue({ issue_id: item_id, expected_revision, action: "option", message, actor });
+      return { accepted: true, choice, action: "retirement_requested", result,
+        retired: false, execution_approved: false };
+    }
+    const result = await this.store.change(state => {
+      const current = state.items?.[item_id];
+      if (!current || current.revision !== expected_revision || !["Review", "Needs Clarification", "Blocked"].includes(current.state)) {
+        throw new Error("This review changed; nothing was retired.");
+      }
+      if ((current.job_ids ?? []).some(id => state.jobs?.[id])
+        || Object.values(state.jobs ?? {}).some(job => (job.dependencies ?? []).includes(item_id))) {
+        throw new Error("This item has dependent work. Roundhouse must resolve those dependencies before retirement.");
+      }
+      if ((current.processes ?? []).length || current.owning_node_id) {
+        throw new Error("Roundhouse cannot retire work while execution may still be active.");
+      }
+      // All these lifecycle states can reach Decision, then Archived.
+      this.store.move(state, current, "Decision", "Retirement approved for unstarted work.");
+      this.store.move(state, current, "Archived", "Retired by " + actor + "; original context and audit history preserved.");
+      current.issue_resolution = null;
+      return { id: current.id, revision: current.revision, state: current.state };
+    });
+    return { accepted: true, choice, action: "archived", result, retired: true };
+  }
+
   resolveIssue({ issue_id, expected_revision, action, message, actor = "local-user" }) {
     if (!nonempty(issue_id) || !Number.isInteger(expected_revision) || expected_revision < 1) throw new Error("Issue resolution requires an ID and current revision.");
     if (!nonempty(action) || !nonempty(message) || message.length > 20_000) throw new Error("Issue resolution requires an action and concise response.");

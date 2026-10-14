@@ -123,3 +123,5 @@ sync path.
 ## Personal-project shipping policy
 
 Personal build-in-public projects follow the [ship-first policy](docs/personal-project-shipping.md): execute and ship verified, low-risk work through the project-configured release path without redundant approval gates. Destructive changes, sensitive operations, and client work retain their own safeguards.
+
+Review action workflow: [Single review actions](docs/single-review-actions.md).

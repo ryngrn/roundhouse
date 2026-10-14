@@ -63,6 +63,8 @@ export class WorkerLoop {
               result = await this.service.assignProject({ ...command.payload, actor: "ryan" });
             } else if (command.kind === "jump_front") {
               result = await this.service.jumpToFront({ ...command.payload, actor: "ryan" });
+            } else if (command.kind === "review_action") {
+              result = await this.service.reviewAction({ ...command.payload, actor: "ryan" });
             } else if (command.kind === "decision_session") {
               result = await this.service.answerDecisionSession({ ...command.payload, actor: "ryan" });
             } else if (command.kind === "explode_job") {
