@@ -29,6 +29,17 @@ test("storage: local is the default authority even when DATABASE_URL exists", as
   assert.match(store.status().warning, /single-node/);
 });
 
+test("storage: enabled cloud authority rejects the Studio legacy local state without credentials", async () => {
+  const rootDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-cutover-"));
+  const support = path.join(rootDirectory, "Roundhouse");
+  const directory = path.join(support, "state");
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(support, "authority.enabled"), "");
+  await assert.rejects(openStorage({ directory, env: {} }), /refusing legacy local state/);
+  await assert.rejects(openStorage({ directory, env: { ROUNDHOUSE_STORAGE_MODE: "local" } }), /refusing legacy local state/);
+  assert.equal(fs.existsSync(path.join(directory, "state.json")), false);
+});
+
 test("storage: PostgreSQL authority requires an explicit storage mode", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-postgres-mode-"));
   await assert.rejects(openStorage({ directory, env: { ROUNDHOUSE_STORAGE_MODE: "postgresql" } }), /requires DATABASE_URL/);
