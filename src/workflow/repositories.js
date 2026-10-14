@@ -49,3 +49,19 @@ export function repositorySelectionReason(project, work) {
   return resolution.ok ? null : { code: resolution.code, message: resolution.message,
     repository_id: resolution.repository_id };
 }
+
+
+// Older durable jobs were created before repository_id existed. Accept their
+// original single-repository binding only when the exact checkout still matches;
+// a newly multi-repository project never gets this implicit upgrade.
+export function matchesRepositoryBinding(project, job, resolution) {
+  if (!resolution?.ok || !job) return false;
+  const recorded = job.repository_id ?? job.work?.repository_id ?? null;
+  if (recorded === resolution.repository_id) return true;
+  return recorded === null
+    && resolution.repository_id === 'default'
+    && (project?.repositories?.length ?? 0) === 1
+    && project.repositories[0].id === 'default'
+    && Boolean(job.project_context?.repository)
+    && job.project_context.repository === resolution.project.repository;
+}

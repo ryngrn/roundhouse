@@ -4,12 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { validateWorkflowConfig } from "../src/workflow/config.js";
-import { resolveRepositoryContext } from "../src/workflow/repositories.js";
+import { resolveRepositoryContext, matchesRepositoryBinding } from "../src/workflow/repositories.js";
 import { routeDecision } from "../src/workflow/decision.js";
 import { executionReservation } from "../src/workflow/scheduler.js";
 import { dashboardProjection } from "../src/workflow/views.js";
 import { Store } from "../src/workflow/store.js";
 import { Engine } from "../src/workflow/engine.js";
+import { digest } from "../src/storage/repository.js";
 import { git } from "../src/workflow/delivery.js";
 
 function fixture(t, repositories, extra = {}) {
@@ -160,4 +161,55 @@ test("e2e: a selected repository is the only checkout prepared, changed, verifie
   assert.deepEqual(job.shipping.verification.checks.map((entry) => entry.id), ["tests"]);
   assert.equal(git(path.join(root, "api"), ["status", "--porcelain"]), "");
   assert.equal(git(path.join(root, "api"), ["log", "-1", "--pretty=%s"]), "Initial");
+});
+
+
+test("pre-migration single-repository queued job retains exact binding and executes once", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roundhouse-legacy-repo-e2e-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repository = path.join(root, "legacy");
+  fs.mkdirSync(repository);
+  git(repository, ["init", "-b", "main"]);
+  git(repository, ["config", "user.name", "Roundhouse Test"]);
+  git(repository, ["config", "user.email", "test@roundhouse.invalid"]);
+  fs.writeFileSync(path.join(repository, "README.md"), "original\n");
+  git(repository, ["add", "README.md"]);
+  git(repository, ["commit", "-m", "Initial"]);
+  const raw = { max_jobs_per_run: 1, projects: [{
+    id: "example", name: "Example", purpose: "Test", success_state: "Done", status: "active",
+    repository: "legacy", executor: { kind: "command", command: [process.execPath, "-e", "process.exit(0)"] },
+    policy: { allow_autonomous: true, shipping: "commit_only", max_rework_attempts: 0 },
+    verification: [{ id: "tests", command: [process.execPath, "-e",
+      "if(!require('fs').existsSync('selected.txt'))process.exit(1)"] }],
+  }] };
+  const config = validateWorkflowConfig(raw, path.join(root, "projects.yaml"));
+  const store = new Store(path.join(root, "state"));
+  const item = store.submit({ text: "Apply legacy change", project_id: "example", source: "test", actor: "test" }, "legacy-queued");
+  const engine = new Engine({ store, config, decision: { decide: async () => decision(null) },
+    runtime: { execute: async ({ workspace }) => {
+      fs.writeFileSync(path.join(workspace, "selected.txt"), "one allowed change\n");
+      return { passed: true, exit_code: 0, stdout: "ok", stderr: "" };
+    } } });
+  await engine.decide(item.id);
+  await store.change((data) => {
+    const job = data.jobs[item.id + "-1"];
+    delete job.repository_id;
+    delete job.work.repository_id;
+    delete job.project_context.repository_id;
+    delete job.project_context.checkout_path;
+    delete job.project_context.repositories;
+    job.policy_hash = digest(job.project_context);
+  });
+  const before = store.read().jobs[item.id + "-1"];
+  const resolution = resolveRepositoryContext(config.projects[0], before.work);
+  assert.equal(matchesRepositoryBinding(config.projects[0], before, resolution), true);
+  assert.equal(matchesRepositoryBinding(config.projects[0],
+    { ...before, project_context: { ...before.project_context, repository: "/wrong/repo" } }, resolution), false);
+  const result = await engine.run();
+  const shipped = result.jobs[item.id + "-1"];
+  assert.equal(shipped.state, "Shipped");
+  assert.equal(shipped.repository_id, "default");
+  assert.equal(shipped.work.repository_id, "default");
+  assert.equal(shipped.shipping.repository, fs.realpathSync(repository));
+  assert.equal(shipped.attempts.length, 1, "never replay an earlier attempt");
 });

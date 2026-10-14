@@ -16,7 +16,7 @@ import { compareDispatchCandidates, dispatchConsiderations, executionEligibility
 import { resolveProjectIdentity } from "./project-model.js";
 import { jobWithCurrentRequestContext, requestContextFromItem } from "./execution-context.js";
 import { broadIntentReady, isBroadIntent, mayCreateJobs, projectCollection, syncIntentPlan } from "./intent-program.js";
-import { resolveRepositoryContext } from "./repositories.js";
+import { resolveRepositoryContext, matchesRepositoryBinding } from "./repositories.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -84,9 +84,9 @@ function executionAuthorityContext(context = {}) {
   return {
     id: context.id ?? null,
     status: context.status ?? null,
-    repository_id: context.repository_id ?? null,
+    repository_id: context.repository_id ?? (context.repository ? 'default' : null),
     repository: context.repository ?? null,
-    checkout_path: context.checkout_path ?? null,
+    checkout_path: context.checkout_path ?? context.repository ?? null,
     base_ref: context.base_ref ?? null,
     remote: context.remote ?? null,
     runtime: context.runtime ?? null,
@@ -833,8 +833,10 @@ export class Engine {
       const initialJob = initialState.jobs[id];
       const repositoryResolution = resolveRepositoryContext(project, initialJob?.work ?? {});
       if (!repositoryResolution.ok) throw new Error(repositoryResolution.message);
+      if (!matchesRepositoryBinding(project, initialJob, repositoryResolution)) {
+        throw new Error("Job repository binding does not match its resolved repository context.");
+      }
       project = repositoryResolution.project;
-      if (initialJob.repository_id !== repositoryResolution.repository_id) throw new Error("Job repository binding does not match its resolved repository context.");
       const machineLocal = isMachineLocal(project);
       if (!machineLocal) {
         releaseRepo = this.shipping.lock(project, (await this.store.read()).jobs[id]);
@@ -855,6 +857,8 @@ export class Engine {
           }
           current.project_context = currentProjectContext;
           current.policy_hash = currentPolicyHash;
+          current.repository_id = repositoryResolution.repository_id;
+          current.work = { ...current.work, repository_id: repositoryResolution.repository_id };
           current.context_refresh = {
             at: new Date().toISOString(),
             reason: "Non-authority project context changed before execution; refreshed against current project state.",
@@ -862,6 +866,8 @@ export class Engine {
         });
         job.project_context = currentProjectContext;
         job.policy_hash = currentPolicyHash;
+        job.repository_id = repositoryResolution.repository_id;
+        job.work.repository_id = repositoryResolution.repository_id;
       }
       if (!machineLocal && !this.shipping.supports(project, job)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = machineLocal
@@ -1026,7 +1032,7 @@ export class Engine {
     const configuredProject = this.config.projects.find((candidate) => candidate.id === job.project_id);
     if (!configuredProject) throw new Error("Job context refresh requires a configured project.");
     const repositoryResolution = resolveRepositoryContext(configuredProject, job.work);
-    if (!repositoryResolution.ok || repositoryResolution.repository_id !== job.repository_id) throw new Error("Job repository binding changed; a new decision is required.");
+    if (!matchesRepositoryBinding(configuredProject, job, repositoryResolution)) throw new Error("Job repository binding changed; a new decision is required.");
     const currentProjectContext = executionProjectContext(repositoryResolution.project, job.agent_role ?? "general", job.work);
     if (!sameExecutionAuthority(job.project_context, currentProjectContext)) {
       throw new Error("Execution authority changed; a new decision is required.");
@@ -1040,6 +1046,8 @@ export class Engine {
       }
       current.project_context = currentProjectContext;
       current.policy_hash = currentPolicyHash;
+      current.repository_id = repositoryResolution.repository_id;
+      current.work = { ...current.work, repository_id: repositoryResolution.repository_id };
       current.context_refresh = {
         at,
         actor: actor.trim(),
@@ -1061,7 +1069,7 @@ export class Engine {
     const configuredProject = this.config.projects.find((candidate) => candidate.id === job.project_id);
     if (!configuredProject) throw new Error("Job reconciliation requires a configured project.");
     const repositoryResolution = resolveRepositoryContext(configuredProject, job.work);
-    if (!repositoryResolution.ok || repositoryResolution.repository_id !== job.repository_id) throw new Error("Job repository binding changed; create a newly reviewed slice.");
+    if (!matchesRepositoryBinding(configuredProject, job, repositoryResolution)) throw new Error("Job repository binding changed; create a newly reviewed slice.");
     const project = repositoryResolution.project;
     const expectedBranch = job.prepared?.branch ?? `codex/roundhouse-${job.id}`;
     if (branch !== expectedBranch) throw new Error(`Reconciliation branch must be ${expectedBranch}.`);
@@ -1118,7 +1126,8 @@ export class Engine {
       current.reconciliation = { status: "completed", actor: actor.trim(), note: note.trim(), commit: resolvedCommit, branch, verified_at: at };
       const attempt = current.attempts?.at(-1);
       if (attempt) attempt.reconciliation = current.reconciliation;
-      current.shipping = { repository: project.repository, branch, commit: resolvedCommit, policy: project.policy.shipping, remote, pr_url: null, deployment: null, verification, timestamp: at, pushed };
+      current.shipping = { repository_id: repositoryResolution.repository_id, repository: project.repository, branch, commit: resolvedCommit, policy: project.policy.shipping, remote, pr_url: null, deployment: null, verification, timestamp: at, pushed };
+      current.repository_id = repositoryResolution.repository_id;
       current.processes = [];
       this.store.move(data, current, "Shipped", `Operator reconciled retained delivery: ${note.trim()}`);
       data.projects[current.project_id] = { ...data.projects[current.project_id], repositories: {
