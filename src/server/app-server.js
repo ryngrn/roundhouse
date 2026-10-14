@@ -303,6 +303,21 @@ export async function startRoundhouseServer({
         loop.wake();
         return send(response, 200, result);
       }
+      const reviewAction = url.pathname.match(/^\/api\/items\/([^/]+)\/review-action$/);
+      if (request.method === "POST" && reviewAction) {
+        verifyOrigin(request, origins);
+        const input = await jsonBody(request);
+        const result = await roundhouse.reviewAction({
+          item_id: decodeURIComponent(reviewAction[1]),
+          expected_revision: input.expected_revision,
+          choice: input.choice,
+          note: input.note ?? "",
+          actor: "local-user",
+        });
+        loop.wake();
+        projectionPublisher.trigger();
+        return send(response, 200, result);
+      }
       const decisionSession = url.pathname.match(/^\/api\/items\/([^/]+)\/decision-session$/);
       if (request.method === "POST" && decisionSession) {
         verifyOrigin(request, origins);

@@ -65,14 +65,28 @@ test("dashboard projection is job-level and counts blocked, held, queued, and sh
   assert.deepEqual(projection.overview.items.map((item) => item.id).sort(), ["blocked", "clarification", "held", "history", "queued", "shipped"]);
   assert.ok(!projection.overview.items.some((item) => item.id === "parent"));
   assert.deepEqual(projection.overview.counts, {
-    needs_review: 4, needs_you: 4, active: 0, queued: 0, completed: 2, blocked: 1,
+    needs_review: 0, needs_you: 0, active: 0, queued: 2, completed: 2, blocked: 1,
   });
-  assert.equal(projection.overview.items.find((item) => item.id === "held").review_kind, "blocked");
+  assert.equal(projection.overview.items.find((item) => item.id === "held").review_kind, null);
   assert.equal(projection.overview.items.find((item) => item.id === "blocked").bottleneck, true);
   assert.equal(projection.overview.items.find((item) => item.id === "blocked").blocked_dependents, 1);
   assert.equal(projection.overview.items.find((item) => item.id === "held").bottleneck, false);
-  assert.equal(projection.overview.items.find((item) => item.id === "queued").review_required, true);
-  assert.match(projection.overview.items.find((item) => item.id === "queued").review_reason, /blocked \(Blocked\)/);
+  assert.equal(projection.overview.items.find((item) => item.id === "queued").review_required, false);
+  assert.match(projection.overview.items.find((item) => item.id === "queued").dispatch_hold, /blocked \(Blocked\)/);
   assert.equal(projection.overview.projection_revision, projection.projection_revision);
   assert.equal(dashboardProjection(structuredClone(data), config).projection_revision, projection.projection_revision);
+});
+
+
+test("previously answered cleanup cannot hide an outstanding Review approval",()=>{
+ const parent={id:"growthpath",state:"Review",revision:8,project_id:"example",
+   input:{text:"Product decision confirmed, execution approval pending"},history:[],
+   issue_resolution:{status:"answered",response:{action:"option"}},questions:[],job_ids:[]};
+ const data={items:{growthpath:parent},jobs:{},projects:{example:{id:"example",name:"Example"}},
+   outbox:[],system_metadata:{}};
+ const projected=dashboardProjection(data,{projects:[{id:"example",name:"Example",status:"active"}]}).overview;
+ assert.equal(projected.items.length,1);
+ assert.equal(projected.items[0].state,"Review");
+ assert.equal(projected.items[0].review_required,true);
+ assert.equal(projected.counts.needs_review,1);
 });

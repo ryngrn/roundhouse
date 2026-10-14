@@ -64,7 +64,10 @@ function normalizeProjects(raw, root, execution) {
       review_after_shipping: false,
       project_confidence: 0.85,
       execution_confidence: 0.85,
-      shipping: project.repository_required === false || (project.repository_required !== true && !project.repository && !(project.repositories?.length)) ? "durable_output" : "push_branch",
+      shipping: project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local"
+        ? "push_branch"
+        : project.repository_required === false || (project.repository_required !== true && !project.repository && !(project.repositories?.length))
+          ? "durable_output" : "push_branch",
       continuation: "stop_after_job",
       max_rework_attempts: 1,
       ...(project.policy ?? {}),
