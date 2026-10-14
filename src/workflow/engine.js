@@ -16,6 +16,7 @@ import { compareDispatchCandidates, dispatchConsiderations, executionEligibility
 import { resolveProjectIdentity } from "./project-model.js";
 import { jobWithCurrentRequestContext, requestContextFromItem } from "./execution-context.js";
 import { broadIntentReady, isBroadIntent, mayCreateJobs, projectCollection, syncIntentPlan } from "./intent-program.js";
+import { resolveRepositoryContext } from "./repositories.js";
 
 const isMachineLocal = (project) => project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
 
@@ -71,8 +72,11 @@ function fallbackDecisionKey(decision) {
   return `implicit:${digest(text).slice(0, 32)}`;
 }
 
-function executionProjectContext(project, role) {
-  const context = projectContext(project, { role });
+function executionProjectContext(project, role, work = null) {
+  const resolution = work ? resolveRepositoryContext(project, work) : null;
+  if (resolution && !resolution.ok) throw new Error(resolution.message);
+  const selected = resolution?.project ?? project;
+  const context = projectContext(selected, { role });
   return { ...context, agent_profile: composeAgentRole(role, project) };
 }
 
@@ -80,7 +84,9 @@ function executionAuthorityContext(context = {}) {
   return {
     id: context.id ?? null,
     status: context.status ?? null,
+    repository_id: context.repository_id ?? null,
     repository: context.repository ?? null,
+    checkout_path: context.checkout_path ?? null,
     base_ref: context.base_ref ?? null,
     remote: context.remote ?? null,
     runtime: context.runtime ?? null,
@@ -368,9 +374,17 @@ export class Engine {
         if (slice) slice.job_id = id;
         return id;
       }
+      const configuredProject = this.config.projects.find((project) => project.id === item.project_id);
+      if (!configuredProject) throw new Error("Job creation requires a configured project.");
+      const resolution = resolveRepositoryContext(configuredProject, work);
+      if (!resolution.ok) throw new Error(resolution.message);
+      const resolvedWork = { ...work, repository_required: resolution.required,
+        repository_id: resolution.repository_id };
+      const resolvedContext = executionProjectContext(resolution.project, item.agent_role ?? "general", resolvedWork);
       data.jobs[id] = record(id, { state: "Ready", parent_id: item.id, project_id: item.project_id,
         feature_id: item.intent?.feature_id ?? null, goal_ids: item.intent?.goal_ids ?? [], work_slice_id: slice?.id ?? null,
-        work, agent_role: item.agent_role ?? "general", project_context: item.project_context, policy_hash: item.policy_hash,
+        work: resolvedWork, repository_id: resolution.repository_id, agent_role: item.agent_role ?? "general",
+        project_context: resolvedContext, policy_hash: digest(resolvedContext),
         request_context: requestContextFromItem(item),
         input_digest: digest({ input: item.input, clarifications: item.clarifications, work }),
         dependencies: [...item.decision.dependencies, ...(index ? [`${item.id}-${index}`] : [])],
@@ -474,7 +488,10 @@ export class Engine {
       if (!contextualProject || digest(contextualProject) !== item.policy_hash) throw new Error("Project context/policy changed. Clarify and re-decide first.");
       // Human approval resolves authority, not missing verification or confidence.
       const decision = { ...item.decision, safe_to_execute: true, approval_required: false, decision: "execute" };
-      const authorized = { ...contextualProject, policy: { ...contextualProject.policy, allow_autonomous: true, approval_required: false } };
+      const authorized = { ...contextualProject,
+        policy: { ...contextualProject.policy, allow_autonomous: true, approval_required: false },
+        repositories: (contextualProject.repositories ?? []).map((repository) => ({ ...repository,
+          policy: repository.policy ? { ...repository.policy, allow_autonomous: true, approval_required: false } : null })) };
       const route = routeDecision(decision, [authorized], item.selected_project ?? item.input.project_id);
       if (route.state !== "Ready") throw new Error(`Approval cannot bypass readiness: ${route.reason}`);
       const eligibilityReasons = decision.work_items.flatMap((work) => executionEligibility(authorized, this.config.execution,
@@ -812,6 +829,12 @@ export class Engine {
         }, Math.max(1_000, Math.floor(this.store.leaseMs / 3)));
         heartbeatTimer.unref?.();
       }
+      const initialState = await this.store.read();
+      const initialJob = initialState.jobs[id];
+      const repositoryResolution = resolveRepositoryContext(project, initialJob?.work ?? {});
+      if (!repositoryResolution.ok) throw new Error(repositoryResolution.message);
+      project = repositoryResolution.project;
+      if (initialJob.repository_id !== repositoryResolution.repository_id) throw new Error("Job repository binding does not match its resolved repository context.");
       const machineLocal = isMachineLocal(project);
       if (!machineLocal) {
         releaseRepo = this.shipping.lock(project, (await this.store.read()).jobs[id]);
@@ -819,7 +842,7 @@ export class Engine {
       }
       const state = await this.store.read();
       const job = jobWithCurrentRequestContext(state, state.jobs[id]);
-      const currentProjectContext = executionProjectContext(project, job.agent_role ?? "general");
+      const currentProjectContext = executionProjectContext(project, job.agent_role ?? "general", job.work);
       const currentPolicyHash = digest(currentProjectContext);
       if (currentPolicyHash !== job.policy_hash) {
         if ((job.attempts?.length ?? 0) > 0 || !sameExecutionAuthority(job.project_context, currentProjectContext)) {
@@ -843,7 +866,9 @@ export class Engine {
       if (!machineLocal && !this.shipping.supports(project, job)) throw new Error(`Shipping policy ${project.policy.shipping} has no installed provider.`);
       const prepared = machineLocal
         ? { workspace_mode: "machine_local", working_directory: project.herdr.working_directory, machine_selector: project.herdr.machine, agent_target: project.herdr.agent }
-        : this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"), base: state.projects[project.id]?.last_commit });
+        : this.shipping.prepare({ project, job, directory: path.join(this.store.directory, "workspaces"),
+          base: state.projects[project.id]?.repositories?.[job.repository_id]?.last_commit
+            ?? (project.repositories?.length === 1 ? state.projects[project.id]?.last_commit : null) });
       await this.store.change((data) => { data.jobs[id].prepared = prepared; });
       for (let attempt = 0; attempt <= project.policy.max_rework_attempts; attempt++) {
         const currentState = await this.store.read();
@@ -891,8 +916,11 @@ export class Engine {
               j.shipping = shipping;
               j.processes = [];
               this.store.move(data, j, "Shipped", "Remote agent reported verified machine-local delivery; Roundhouse did not inspect the remote filesystem.");
-              data.projects[project.id] = { ...data.projects[project.id], last_commit: shipping.commit,
-                active: false, review_required: project.policy.review_after_shipping };
+              data.projects[project.id] = { ...data.projects[project.id], ...(job.repository_id && shipping.commit ? {
+                repositories: { ...(data.projects[project.id]?.repositories ?? {}), [job.repository_id]: {
+                  ...(data.projects[project.id]?.repositories?.[job.repository_id] ?? {}), last_commit: shipping.commit } } } : {}),
+                ...(project.repositories?.length === 1 ? { last_commit: shipping.commit } : {}), active: false,
+                review_required: project.policy.review_after_shipping };
               const parent = data.items[j.parent_id];
               this.recordShippedIntent(data, j, shipping.timestamp);
               if (parent.job_ids.every((key) => data.jobs[key].state === "Shipped")) parent.completed_at = shipping.timestamp;
@@ -944,7 +972,10 @@ export class Engine {
             j.attempts.at(-1).finished_at = delivered.timestamp;
             j.processes = [];
             this.store.move(data, j, "Shipped", "Verified work delivered under project policy.");
-            data.projects[project.id] = { ...data.projects[project.id], ...(delivered.commit ? { last_commit: delivered.commit } : {}),
+            data.projects[project.id] = { ...data.projects[project.id], ...(j.repository_id && delivered.commit ? {
+              repositories: { ...(data.projects[project.id]?.repositories ?? {}), [j.repository_id]: {
+                ...(data.projects[project.id]?.repositories?.[j.repository_id] ?? {}), last_commit: delivered.commit } } } : {}),
+              ...(delivered.commit && project.repositories?.length === 1 ? { last_commit: delivered.commit } : {}),
               ...(delivered.reference ? { last_output: delivered.reference } : {}),
               active: false, review_required: project.policy.review_after_shipping };
             const parent = data.items[j.parent_id];
@@ -992,9 +1023,11 @@ export class Engine {
     if (!/Project policy or context changed after decision/.test(job.history?.at(-1)?.reason ?? "")) {
       throw new Error("Job is not blocked by stale project context.");
     }
-    const project = this.config.projects.find((candidate) => candidate.id === job.project_id);
-    if (!project) throw new Error("Job context refresh requires a configured project.");
-    const currentProjectContext = executionProjectContext(project, job.agent_role ?? "general");
+    const configuredProject = this.config.projects.find((candidate) => candidate.id === job.project_id);
+    if (!configuredProject) throw new Error("Job context refresh requires a configured project.");
+    const repositoryResolution = resolveRepositoryContext(configuredProject, job.work);
+    if (!repositoryResolution.ok || repositoryResolution.repository_id !== job.repository_id) throw new Error("Job repository binding changed; a new decision is required.");
+    const currentProjectContext = executionProjectContext(repositoryResolution.project, job.agent_role ?? "general", job.work);
     if (!sameExecutionAuthority(job.project_context, currentProjectContext)) {
       throw new Error("Execution authority changed; a new decision is required.");
     }
@@ -1025,8 +1058,11 @@ export class Engine {
     const snapshot = await this.store.read();
     const job = snapshot.jobs[id];
     if (!job || job.state !== "Blocked") throw new Error("Only a Blocked job can be reconciled.");
-    const project = this.config.projects.find((candidate) => candidate.id === job.project_id);
-    if (!project) throw new Error("Job reconciliation requires a configured project.");
+    const configuredProject = this.config.projects.find((candidate) => candidate.id === job.project_id);
+    if (!configuredProject) throw new Error("Job reconciliation requires a configured project.");
+    const repositoryResolution = resolveRepositoryContext(configuredProject, job.work);
+    if (!repositoryResolution.ok || repositoryResolution.repository_id !== job.repository_id) throw new Error("Job repository binding changed; create a newly reviewed slice.");
+    const project = repositoryResolution.project;
     const expectedBranch = job.prepared?.branch ?? `codex/roundhouse-${job.id}`;
     if (branch !== expectedBranch) throw new Error(`Reconciliation branch must be ${expectedBranch}.`);
     if (isMachineLocal(project)) {
@@ -1062,7 +1098,8 @@ export class Engine {
     const preparedBase = job.prepared?.base ?? null;
     if (preparedBase) git(project.repository, ["merge-base", "--is-ancestor", preparedBase, resolvedCommit]);
     for (const dependencyId of job.dependencies ?? []) {
-      const dependencyCommit = snapshot.jobs[dependencyId]?.shipping?.commit ?? null;
+      const dependency = snapshot.jobs[dependencyId];
+      const dependencyCommit = dependency?.repository_id === job.repository_id ? dependency.shipping?.commit ?? null : null;
       if (dependencyCommit) git(project.repository, ["merge-base", "--is-ancestor", dependencyCommit, resolvedCommit]);
     }
     let remote = null;
@@ -1084,7 +1121,10 @@ export class Engine {
       current.shipping = { repository: project.repository, branch, commit: resolvedCommit, policy: project.policy.shipping, remote, pr_url: null, deployment: null, verification, timestamp: at, pushed };
       current.processes = [];
       this.store.move(data, current, "Shipped", `Operator reconciled retained delivery: ${note.trim()}`);
-      data.projects[current.project_id] = { ...data.projects[current.project_id], last_commit: resolvedCommit, blocked: false, active: false,
+      data.projects[current.project_id] = { ...data.projects[current.project_id], repositories: {
+        ...(data.projects[current.project_id]?.repositories ?? {}), [current.repository_id]: {
+          ...(data.projects[current.project_id]?.repositories?.[current.repository_id] ?? {}), last_commit: resolvedCommit } },
+        ...(configuredProject.repositories?.length === 1 ? { last_commit: resolvedCommit } : {}), blocked: false, active: false,
         resume_approval: { actor: actor.trim(), note: note.trim(), at } };
       const parent = data.items[current.parent_id];
       this.recordShippedIntent(data, current, at);

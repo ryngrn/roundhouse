@@ -361,6 +361,7 @@ export class RoundhouseService {
       status: "active",
       purpose: outcome,
       success_state: successState ?? `Deliver a concrete, reviewable result for: ${outcome}`,
+      repositories: [],
       repository_required: false,
       required_capabilities: [],
       verification: [],
@@ -384,7 +385,7 @@ export class RoundhouseService {
     await this.store.change((data) => {
       const item = data.items[created.item.id];
       if (item) item.project_id = id;
-      data.projects[id] = { ...data.projects[id], id, name, configured: true, repository: null,
+      data.projects[id] = { ...data.projects[id], id, name, configured: true, repository: null, repositories: [],
         repository_required: false, source_system: adapter.source, project_brief: brief };
     });
     const data = await this.store.read();

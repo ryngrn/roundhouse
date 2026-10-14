@@ -29,6 +29,8 @@ export function resolveProjectIdentity(data, configuredProjects, name, metadata 
     name: configured?.name ?? data.projects[id]?.name ?? normalized,
     configured: Boolean(configured),
     repository: configured?.repository ?? data.projects[id]?.repository ?? null,
+    repositories: configured?.repositories?.map((repository) => ({ id: repository.id,
+      checkout_path: repository.checkout_path })) ?? data.projects[id]?.repositories ?? [],
     repository_required: configured?.repository_required ?? data.projects[id]?.repository_required ?? false,
     ...metadata,
   };

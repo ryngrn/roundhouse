@@ -16,6 +16,15 @@ function aggregateState(item, jobs) {
   );
 }
 
+function publicRepositories(project) {
+  return (project.repositories ?? []).map((repository) => ({
+    id: repository.id,
+    label: repository.label ?? repository.id,
+    verification_ids: (repository.verification ?? []).map((rule) => rule.id),
+    shipping_policy: repository.policy?.shipping ?? project.policy?.shipping ?? null,
+  }));
+}
+
 export function itemView(data, item) {
   const jobs = item.job_ids.map((id) => data.jobs[id]).filter(Boolean);
   const openQuestions = (item.questions ?? []).filter((question) => question.status === "open");
@@ -91,6 +100,7 @@ export function itemView(data, item) {
     project_id: assignedProject,
     project_hint: item.input.project_hint ?? null,
     project_name: data.projects?.[assignedProject]?.name ?? null,
+    repository_ids: [...new Set(jobs.map((job) => job.repository_id).filter(Boolean))],
     priority: item.priority ?? null,
     title,
     summary: item.input.text.slice(0, 240),
@@ -165,6 +175,7 @@ export function itemView(data, item) {
       feature_id: job.feature_id ?? null,
       goal_ids: job.goal_ids ?? [],
       work_slice_id: job.work_slice_id ?? null,
+      repository_id: job.repository_id ?? null,
     })),
   };
 }
@@ -242,6 +253,7 @@ function projectedJob(data, job, config) {
     review_kind: review.kind,
     review_reason: review.reason,
     project: job.project_id ?? parentView.project ?? null,
+    repository_id: job.repository_id ?? null,
     agent_role: job.agent_role ?? parentView.agent_role ?? "general",
     owning_node: job.owning_node ?? job.project_context?.name ?? parentView.owning_node ?? null,
     verification_status: attempt.verification?.passed ? "Passed" : attempt.verification ? "Failed" : (job.state === "Verification" ? "Running" : "Not run"),
@@ -292,7 +304,8 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
   const parentStatus = statusView(data);
   const projects = Object.fromEntries((config?.projects ?? []).map((project) => [project.id, {
     ...data.projects?.[project.id], id: project.id, name: project.name, configured: true,
-    repository: project.repository ?? null, repository_required: project.repository_required,
+    repository: project.repositories?.length === 1 ? project.repository ?? null : null,
+    repositories: publicRepositories(project), repository_required: project.repository_required,
     status: project.status,
   }]));
   for (const [id, project] of Object.entries(data.projects ?? {})) projects[id] ??= project;

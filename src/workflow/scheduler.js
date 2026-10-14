@@ -1,4 +1,5 @@
 import { requiredExecutionCapabilities, selectExecutionProvider } from "./execution-adapters.js";
+import { resolveRepositoryContext } from "./repositories.js";
 
 const emptyScheduler = (capacity) => ({
   version: 2,
@@ -77,6 +78,7 @@ export function recordAllocation(data, project, capacity = 1, at = new Date().to
 }
 
 export function executionEligibility(project, execution, capabilities = execution.capabilities, job = null) {
+  const repositoryResolution = resolveRepositoryContext(project, job?.work ?? {});
   const required = requiredExecutionCapabilities(project, job);
   const missing = required.filter((capability) => !capabilities.includes(capability));
   const reasons = [];
@@ -84,10 +86,8 @@ export function executionEligibility(project, execution, capabilities = executio
   if (!missing.length && execution.providers && !selectExecutionProvider(execution.providers, required)) {
     reasons.push({ code: "provider_unavailable", message: `No execution provider supports the required capability combination: ${required.length ? required.join(", ") : "(none)"}.`, required });
   }
-  const machineLocal = project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
-  if ((job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository)) && !project.repository && !machineLocal) {
-    reasons.push({ code: "repository_unavailable", message: "This slice requires a repository, but the project has none configured." });
-  }
+  if (!repositoryResolution.ok) reasons.push({ code: repositoryResolution.code, message: repositoryResolution.message,
+    repository_id: repositoryResolution.repository_id });
   if (project.max_concurrent_runs > execution.capacity) reasons.push({ code: "configured_project_limit", message: "Project concurrency exceeds global execution capacity." });
   for (const [resource, amount] of Object.entries(project.resource_requirements ?? {})) {
     if (amount > (execution.resource_limits[resource] ?? 0)) reasons.push({ code: "resource_unavailable", message: `Required resource ${resource} is unavailable.` });
@@ -105,22 +105,25 @@ export function projectExecutionEligible(project, execution, capabilities = exec
  * about repository and delivery conflicts.
  */
 export function executionReservation(project, job = null) {
-  const repositoryRequired = job?.work?.repository_required ?? project.repository_required ?? Boolean(project.repository);
-  const repository = project.repository ?? null;
-  const machineLocal = project.runtime === "herdr" && project.herdr?.workspace_mode === "machine_local";
-  const remoteWorkspace = machineLocal ? `${project.herdr.machine}:${project.herdr.working_directory}` : null;
+  const resolution = resolveRepositoryContext(project, job?.work ?? {});
+  const resolved = resolution.ok ? resolution.project : project;
+  const repositoryRequired = resolution.required;
+  const repository = resolution.ok ? resolved.repository ?? null : null;
+  const machineLocal = resolved.runtime === "herdr" && resolved.herdr?.workspace_mode === "machine_local";
+  const remoteWorkspace = machineLocal ? `${resolved.herdr.machine}:${resolved.herdr.working_directory}` : null;
   const locks = repository && repositoryRequired ? [`repository:${repository}`]
     : remoteWorkspace && repositoryRequired ? [`remote-workspace:${remoteWorkspace}`] : [];
-  if (repository && repositoryRequired && project.policy?.shipping !== "commit_only") locks.push(`delivery:${repository}:${project.remote ?? "origin"}`);
-  if (project.policy?.shipping === "deploy") {
-    locks.push(`deployment:${project.deployment?.kind ?? "unknown"}:${project.deployment?.environment ?? "production"}`);
+  if (repository && repositoryRequired && resolved.policy?.shipping !== "commit_only") locks.push(`delivery:${repository}:${resolved.remote ?? "origin"}`);
+  if (resolved.policy?.shipping === "deploy") {
+    locks.push(`deployment:${resolved.deployment?.kind ?? "unknown"}:${resolved.deployment?.environment ?? "production"}`);
   }
   return {
     project_id: project.id,
     project_limit: project.max_concurrent_runs ?? 1,
     capacity_units: 1,
-    required_capabilities: requiredExecutionCapabilities(project, job),
-    repository: { required: repositoryRequired, configured: Boolean(repository) || machineLocal, value: repository ?? remoteWorkspace },
+    required_capabilities: requiredExecutionCapabilities(resolved, job),
+    repository: { required: repositoryRequired, configured: resolution.ok && (Boolean(repository) || machineLocal),
+      ...(resolution.repository_id ? { id: resolution.repository_id } : {}), value: repository ?? remoteWorkspace },
     resources: { ...(project.resource_requirements ?? {}) },
     locks,
   };
@@ -202,7 +205,9 @@ export function dispatchConsiderations(data, projects, execution, {
       const projectGateReason = runtime.blocked ? "Project is blocked." : runtime.stop ? "Project is stopped."
         : runtime.review_required ? "Project awaits post-shipping review." : "Project gates are open.";
       const waitingDependencies = dependencies.filter((dependency) => dependency.state !== "Shipped");
-      const shippingSupported = canDispatch(project);
+      const repositoryResolution = resolveRepositoryContext(project, job.work);
+      const shippingProject = repositoryResolution.ok ? repositoryResolution.project : project;
+      const shippingSupported = repositoryResolution.ok && canDispatch(shippingProject, job);
       const checks = {
         project_active: { passed: project.status === "active", reason: project.status === "active" ? "Project is active." : `Project status is ${project.status}.` },
         continuation: { passed: !stopped.has(project.id), reason: stopped.has(project.id)
@@ -211,7 +216,7 @@ export function dispatchConsiderations(data, projects, execution, {
           reason: projectGateReason },
         shipping: { passed: shippingSupported, reason: shippingSupported
           ? "The delivery provider supports this project."
-          : project.repository ? "The configured delivery provider cannot dispatch this project."
+          : shippingProject.repository ? "The configured delivery provider cannot dispatch this project."
             : "The installed Git delivery provider requires a configured repository; no repository-independent delivery provider is installed." },
         configured_project_limit: { passed: project.max_concurrent_runs <= execution.capacity,
           reason: project.max_concurrent_runs <= execution.capacity

@@ -45,7 +45,7 @@ export class GitDelivery {
     const workspace = path.join(directory, job.id);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     git(project.repository, ["worktree", "add", "-b", branch, workspace, commit]);
-    return { workspace, branch, base: commit, remote, repository: project.repository };
+    return { workspace, branch, base: commit, remote, repository: project.repository, repository_id: project.repository_id ?? job.repository_id ?? null };
   }
   snapshot({ job, project, prepared }) {
     const { workspace, branch } = prepared;
@@ -71,7 +71,7 @@ export class GitDelivery {
     if (!verification.passed || !verification.checks.length || !verification.checks.every((c) => c.passed)) throw new Error("Shipping requires passing verification evidence.");
     if (!this.unchanged(prepared, verification.commit)) throw new Error("Tested version changed before shipping.");
     if (prepared.remote && git(project.repository, ["remote", "get-url", "--push", project.remote]) !== prepared.remote) throw new Error("Remote changed before shipping.");
-    const result = { repository: project.repository, branch: prepared.branch, commit: verification.commit,
+    const result = { repository_id: project.repository_id ?? prepared.repository_id ?? null, repository: project.repository, branch: prepared.branch, commit: verification.commit,
       policy: project.policy.shipping, remote: prepared.remote, pr_url: null, deployment: null, verification, timestamp: new Date().toISOString() };
     if (project.policy.shipping === "push_branch" || (project.policy.shipping === "deploy" && project.deployment.push_branch)) {
       const pushed = await runProcess(["git", "-c", "core.hooksPath=/dev/null", "-C", prepared.workspace, "push", project.remote,
@@ -163,7 +163,7 @@ export class DurableOutputDelivery {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     const manifestFile = path.join(directory, "manifest.json");
     if (!fs.existsSync(manifestFile)) fs.writeFileSync(manifestFile, JSON.stringify({ ...snapshot.manifest, version: snapshot.version, reference }, null, 2), { mode: 0o600 });
-    return { provider: "durable-output", policy: project.policy.shipping, repository: null, branch: null, commit: null,
+    return { provider: "durable-output", policy: project.policy.shipping, repository_id: null, repository: null, branch: null, commit: null,
       pushed: false, version: snapshot.version, reference, outputs: snapshot.manifest.files,
       result: snapshot.manifest.result, provenance: { job_id: job.id, provider: execution.provider ?? null,
         run_id: run.id, attempt: run.attempt, input_digest: job.input_digest ?? run.input_digest,

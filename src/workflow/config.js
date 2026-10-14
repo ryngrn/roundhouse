@@ -64,7 +64,7 @@ function normalizeProjects(raw, root, execution) {
       review_after_shipping: false,
       project_confidence: 0.85,
       execution_confidence: 0.85,
-      shipping: project.repository_required === false ? "durable_output" : "push_branch",
+      shipping: project.repository_required === false || (project.repository_required !== true && !project.repository && !(project.repositories?.length)) ? "durable_output" : "push_branch",
       continuation: "stop_after_job",
       max_rework_attempts: 1,
       ...(project.policy ?? {}),
@@ -78,16 +78,20 @@ function normalizeProjects(raw, root, execution) {
     check(["local", "herdr"].includes(runtime), "Runtime must be local or herdr.");
     const herdr = runtime === "herdr" ? { workspace_mode: "shared_worktree", ...(project.herdr ?? {}) } : null;
     const machineLocal = herdr?.workspace_mode === "machine_local";
-    const repository_required = project.repository_required ?? true;
+    check(project.repositories === undefined || Array.isArray(project.repositories), `Project ${project.id} repositories must be an array.`);
+    const repositoryInputs = project.repositories ?? (nonempty(project.repository)
+      ? [{ id: "default", checkout_path: project.repository }]
+      : []);
+    const repositoryIds = new Set();
+    const repository_required = project.repository_required ?? (project.repositories === undefined ? true : repositoryInputs.length > 0);
     check(typeof repository_required === "boolean", `Project ${project.id} repository_required must be boolean.`);
-    check(!repository_required || machineLocal || nonempty(project.repository), `Project ${project.id} requires a repository.`);
-    if (runtime === "herdr" && !machineLocal) check(nonempty(project.repository), `Project ${project.id} shared-worktree Herdr runtime requires a repository.`);
+    check(!repository_required || machineLocal || repositoryInputs.length > 0, `Project ${project.id} requires a repository.`);
+    if (runtime === "herdr" && !machineLocal) check(repositoryInputs.length > 0, `Project ${project.id} shared-worktree Herdr runtime requires a repository.`);
     check(machineLocal || repository_required || ["durable_output", "artifact"].includes(policy.shipping),
       `Repository-free project ${project.id} requires durable_output shipping.`);
-    const repository = nonempty(project.repository) ? fs.realpathSync(path.resolve(root, project.repository)) : null;
     const verification = project.verification ?? [];
     check(Array.isArray(verification), "Verification must be an array.");
-    check(!repository_required || verification.length > 0, "Repository-backed projects require at least one verification command.");
+    check(!repository_required || machineLocal || repositoryInputs.length > 0, "Repository-backed projects require at least one repository.");
     const verificationKeys = new Set();
     for (const rule of verification) {
       check(nonempty(rule.id) && !verificationKeys.has(rule.id), "Verification IDs must be nonempty and unique.");
@@ -96,6 +100,53 @@ function normalizeProjects(raw, root, execution) {
       check(rule.roles === undefined || (Array.isArray(rule.roles) && rule.roles.length > 0 && rule.roles.every((role) => agentRoleIds.includes(role))), "Verification roles must contain installed agent roles.");
       check(rule.evidence_ids === undefined || (Array.isArray(rule.evidence_ids) && rule.evidence_ids.every(nonempty)), "Verification evidence_ids must be strings.");
     }
+    const repositories = repositoryInputs.map((entry) => {
+      check(plainObject(entry), `Project ${project.id} repository entries must be objects.`);
+      const repositoryKeys = new Set(["id", "checkout_path", "repository", "path", "base_ref", "remote", "verification", "policy", "deployment", "context_sources", "agent", "self_hosting", "label"]);
+      check(Object.keys(entry).every((key) => repositoryKeys.has(key)), `Project ${project.id} repository ${entry.id ?? "entry"} has an unknown or unsafe setting.`);
+      check(nonempty(entry.id) && contractKey.test(entry.id), `Project ${project.id} repository id must be a stable lowercase identifier.`);
+      check(!repositoryIds.has(entry.id), `Duplicate repository id ${entry.id} in project ${project.id}.`);
+      repositoryIds.add(entry.id);
+      check(entry.label === undefined || (nonempty(entry.label) && entry.label.length <= 80),
+        `Repository ${entry.id} label must be nonempty and at most 80 characters.`);
+      const suppliedPath = entry.checkout_path ?? entry.repository ?? entry.path;
+      check(nonempty(suppliedPath), `Project ${project.id} repository ${entry.id} requires checkout_path.`);
+      const checkout_path = fs.realpathSync(path.resolve(root, suppliedPath));
+      const repoVerification = entry.verification ?? verification;
+      check(Array.isArray(repoVerification) && repoVerification.length > 0,
+        `Project ${project.id} repository ${entry.id} requires at least one verification command.`);
+      const repoVerificationIds = new Set();
+      for (const rule of repoVerification) {
+        check(nonempty(rule.id) && !repoVerificationIds.has(rule.id), `Repository ${entry.id} verification IDs must be nonempty and unique.`);
+        repoVerificationIds.add(rule.id);
+        check(commandValid(rule.command), `Repository ${entry.id} verification command must be an argv array.`);
+        check(rule.roles === undefined || (Array.isArray(rule.roles) && rule.roles.length > 0 && rule.roles.every((role) => agentRoleIds.includes(role))), "Verification roles must contain installed agent roles.");
+        check(rule.evidence_ids === undefined || (Array.isArray(rule.evidence_ids) && rule.evidence_ids.every(nonempty)), "Verification evidence_ids must be strings.");
+      }
+      const repoPolicy = { ...policy, ...(entry.policy ?? {}) };
+      check(shippingModes.includes(repoPolicy.shipping), `Repository ${entry.id} has an unknown shipping policy.`);
+      check(["stop_after_job", "continue_project_queue"].includes(repoPolicy.continuation), `Repository ${entry.id} has an unknown continuation policy.`);
+      for (const key of ["allow_autonomous", "approval_required", "review_after_shipping"]) check(typeof repoPolicy[key] === "boolean", `${key} must be boolean.`);
+      const repoDeployment = entry.deployment ?? project.deployment;
+      if (repoPolicy.shipping === "deploy") check(plainObject(repoDeployment), `Repository ${entry.id} requires deployment configuration.`);
+      return {
+        id: entry.id,
+        label: entry.label ?? entry.id,
+        checkout_path,
+        repository: checkout_path,
+        base_ref: entry.base_ref ?? project.base_ref ?? "HEAD",
+        remote: entry.remote ?? project.remote ?? "origin",
+        verification: repoVerification,
+        policy: entry.policy ? repoPolicy : null,
+        ...(entry.context_sources ? { context_sources: entry.context_sources } : {}),
+        ...(entry.agent ? { agent: entry.agent } : {}),
+        ...(entry.self_hosting ? { self_hosting: entry.self_hosting } : {}),
+        ...(repoDeployment ? { deployment: repoDeployment } : {}),
+      };
+    });
+    // Compatibility aliases are intentionally available only when there is one
+    // concrete repository. Multi-repository execution must resolve by id.
+    const repository = repositories.length === 1 ? repositories[0].checkout_path : null;
     const executor = project.executor ?? { kind: "codex", bin: "codex" };
     check(["codex", "command"].includes(executor.kind), "Unknown executor.");
     if (executor.kind === "command") check(commandValid(executor.command), "Executor requires an argv array.");
@@ -174,7 +225,7 @@ function normalizeProjects(raw, root, execution) {
       check(deployment && typeof deployment === "object" && !Array.isArray(deployment), "Invalid deployment configuration.");
     }
     return {
-      ...project, repository, repository_required, verification, weight, max_concurrent_runs,
+      ...project, repository, repositories, repository_required, verification, weight, max_concurrent_runs,
       required_capabilities, resource_requirements, metric_definitions, policy, executor,
       runtime, ...(herdr ? { herdr } : {}), timeout_ms, remote: project.remote ?? "origin", base_ref: project.base_ref ?? "HEAD",
       agent, context_limits, ...(self_hosting ? { self_hosting } : {}),
