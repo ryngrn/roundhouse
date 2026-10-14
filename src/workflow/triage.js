@@ -17,6 +17,7 @@ export function triageFingerprint(item, data, config, store) {
       id: project.id,
       status: project.status,
       repository: project.repository,
+      repositories: project.repositories,
       repository_required: project.repository_required,
       runtime: project.runtime,
       executor: project.executor,

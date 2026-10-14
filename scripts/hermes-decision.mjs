@@ -102,6 +102,9 @@ export async function decide(packet, { mode = 'triage', bin = 'hermes', provider
   // One turn makes attempted clarification/tool use fail rather than act interactively.
   const output = await run(bin, ['chat', '--query-file', '-', '--oneshot', '--quiet', '--safe-mode', '--toolsets', 'clarify', '--max-turns', '1', '--provider', provider, '--model', model], prompt);
   const value = JSON.parse(output);
+  // Compatibility for providers that predate slice repository IDs. Projects
+  // loaded from current config still fail closed later when a target is needed.
+  if (mode === 'triage') for (const work of value.work_items ?? []) work.repository_id ??= null;
   strictSchema(value, schema);
   validate(value);
   if (mode === 'triage') gatePlan(value, packet);

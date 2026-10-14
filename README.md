@@ -95,6 +95,7 @@ and the concrete iMac example in [the autonomy configuration](config/autonomy.ex
 
 - [Behavior, configuration, approvals, recovery, and test contracts](docs/autonomous-workflow.md)
 - [Architecture and adapter extension guide](docs/architecture.md)
+- [Zero-, one-, and multi-repository project configuration](docs/multi-repository-projects.md)
 - [Event-driven control-plane wake and read boundaries](docs/event-driven-control-plane.md)
 - [PostgreSQL operations, migration, backup, and recovery](docs/postgresql-control-plane.md)
 - [Notion Depot archive and one-time cutover](docs/chatgpt-rdc-bridge.md)
