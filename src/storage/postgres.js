@@ -464,6 +464,19 @@ export class PostgresStorageRepository extends StorageRepository {
       { pid: process.pid, version: process.env.npm_package_version ?? null }]);
   }
 
+  // Advisory discovery only. ClaimJob still enforces authoritative job leases.
+  async listWorkerNodes({ requiredCapabilities = [], maxAgeMs = 90_000 } = {}) {
+    if (!Array.isArray(requiredCapabilities) || requiredCapabilities.some(value => typeof value !== "string" || !value))
+      throw new Error("requiredCapabilities must be non-empty capability identifiers.");
+    if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs <= 0) throw new Error("maxAgeMs must be a positive integer.");
+    const result = await this.pool.query(`SELECT id,name,capabilities,status,last_heartbeat_at
+      FROM roundhouse.nodes WHERE status='online'
+        AND last_heartbeat_at <= clock_timestamp()
+        AND last_heartbeat_at >= clock_timestamp() - ($1 * interval '1 millisecond')
+        AND capabilities @> $2::text[] ORDER BY id`, [maxAgeMs, requiredCapabilities]);
+    return result.rows.map(row => ({ ...row, last_heartbeat_at: row.last_heartbeat_at.toISOString() }));
+  }
+
   async acquireLease(kind, key, payload = {}, leaseMs = this.leaseMs) {
     const token = randomUUID();
     const result = await this.pool.query(`INSERT INTO roundhouse.resource_leases
