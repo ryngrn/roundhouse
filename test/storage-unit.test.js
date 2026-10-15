@@ -83,12 +83,15 @@ test("storage: a disconnected PostgreSQL authority reports read-only health inst
   assert.equal(status.node.name, "offline-node");
 });
 
-function postgresPoolFixture({ projects = [], fail = () => false } = {}) {
+function postgresPoolFixture({ projects = [], fail = () => false, leaseOwned = true } = {}) {
   const queries = [];
   const client = {
     async query(sql, parameters = []) {
       queries.push({ sql, parameters });
       if (fail(sql, parameters)) throw new Error("injected write failure");
+      if (/SELECT 1 FROM roundhouse\.resource_leases[\s\S]*FOR UPDATE/.test(sql)) {
+        return { rows: leaseOwned ? [{ "?column?": 1 }] : [], rowCount: leaseOwned ? 1 : 0 };
+      }
       if (/SELECT key, value FROM roundhouse\.system_metadata/.test(sql)) return { rows: [] };
       if (/SELECT id, payload FROM roundhouse\.projects/.test(sql)) return { rows: projects.map((payload) => ({ id: payload.id, payload })) };
       if (/SELECT id, payload FROM roundhouse\.project_candidates/.test(sql)) return { rows: [] };
@@ -160,4 +163,33 @@ test("storage: PostgreSQL change can populate an empty authority for initial imp
   assert.match(sql, /INSERT INTO roundhouse\.projects/);
   assert.doesNotMatch(sql, /TRUNCATE/);
   assert.equal(fixture.queries.at(-1).sql, "COMMIT");
+});
+
+test("storage: live item lease fences a PostgreSQL change inside its transaction", async () => {
+  const fixture = postgresPoolFixture({ projects: [{ id: "first", name: "Before", revision: 1 }] });
+  const store = postgresFixtureStore(fixture.pool);
+  const lease = { resource_kind: "item", resource_key: "item-1", token: "worker-one-lease" };
+  await store.change((data) => { data.projects.first.name = "After"; }, { lease });
+  const lockAt = fixture.queries.findIndex(({ sql }) => /resource_leases[\s\S]*FOR UPDATE/.test(sql));
+  const snapshotAt = fixture.queries.findIndex(({ sql }) => /SELECT key, value FROM roundhouse\.system_metadata/.test(sql));
+  const writeAt = fixture.queries.findIndex(({ sql }) => /INSERT INTO roundhouse\.projects/.test(sql));
+  assert.ok(lockAt > 0 && lockAt < snapshotAt && snapshotAt < writeAt);
+  assert.deepEqual(fixture.queries[lockAt].parameters, [
+    "item", "item-1", "00000000-0000-4000-8000-000000000001", "worker-one-lease",
+  ]);
+  assert.equal(fixture.queries.at(-1).sql, "COMMIT");
+});
+
+test("storage: expired or stolen lease aborts before any state read or write", async () => {
+  const fixture = postgresPoolFixture({ projects: [{ id: "first", name: "Before", revision: 1 }], leaseOwned: false });
+  const store = postgresFixtureStore(fixture.pool);
+  const lease = { resource_kind: "item", resource_key: "item-1", token: "stale-worker" };
+  let callbackRan = false;
+  await assert.rejects(store.change((data) => {
+    callbackRan = true;
+    data.projects.first.name = "Wrong";
+  }, { lease }), /Lease lost: item\/item-1/);
+  assert.equal(callbackRan, false);
+  assert.equal(fixture.queries.some(({ sql }) => /INSERT INTO roundhouse\.projects|SELECT key, value FROM roundhouse\.system_metadata/.test(sql)), false);
+  assert.equal(fixture.queries.at(-1).sql, "ROLLBACK");
 });

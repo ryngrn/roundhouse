@@ -146,13 +146,13 @@ export class Engine {
     runtime ??= new CapabilityRuntime(providers, createRuntime());
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
-  processRecorder(collection, id) {
+  processRecorder(collection, id, lease = null) {
     return (pid) => {
       const pending = this.store.change((data) => {
         const entity = data[collection][id];
         entity.processes ??= [];
         entity.processes.push({ pid, at: new Date().toISOString() });
-      });
+      }, lease ? { lease } : undefined);
       return pending;
     };
   }
@@ -183,7 +183,7 @@ export class Engine {
       item.triage.status = "evaluating";
       item.triage.retry_requested_at = null;
       item.triage.next_attempt_at = null;
-    });
+    }, this.store.shared ? { lease: decisionLease } : undefined);
     try {
       const snapshot = await this.store.read();
       const item = snapshot.items[id];
@@ -191,7 +191,7 @@ export class Engine {
       const selectedProject = item.selected_project ?? item.input.project_id;
       const proposed = await this.decision.decide({ item: { ...item, related_work: relatedWork(snapshot, item),
         input: { ...item.input, ...(selectedProject ? { project_id: selectedProject } : {}) } }, projects,
-        directory: path.join(this.store.directory, "decisions", id, String(item.revision)), onStart: this.processRecorder("items", id) });
+        directory: path.join(this.store.directory, "decisions", id, String(item.revision)), onStart: this.processRecorder("items", id, decisionLease) });
       const configuredProject = this.config.projects.find((project) => project.id === proposed.project);
       const role = configuredProject ? inferAgentRole({ item, decision: proposed, project: configuredProject }) : "general";
       const project = configuredProject ? executionProjectContext(configuredProject, role) : null;
@@ -341,7 +341,7 @@ export class Engine {
         current.triage.blocked_on = decision.blocked_on ?? [];
         current.triage.interrupted = false;
         current.triage.blocked_fingerprint = current.state === "Blocked" ? triageFingerprint(current, data, this.config, this.store) : null;
-      });
+      }, this.store.shared ? { lease: decisionLease } : undefined);
     } catch (error) {
       if (this.store.shared) await this.store.assertLease(decisionLease);
       await this.store.change((data) => {
@@ -357,7 +357,7 @@ export class Engine {
         current.triage.failure_count = failures;
         current.triage.last_error = error.message;
         current.triage.next_attempt_at = new Date(this.clock() + delay).toISOString();
-      });
+      }, this.store.shared ? { lease: decisionLease } : undefined);
     }
     } finally {
       if (leaseHeartbeat) clearInterval(leaseHeartbeat);
@@ -779,7 +779,7 @@ export class Engine {
           this.store.move(data, item, "Depot", "Imported Pending released for explicit Roundhouse triage; legacy status is evidence, not execution authority.");
         }
         eligible = true;
-      });
+      }, this.store.shared ? { lease: itemLease } : undefined);
       if (!eligible) return false;
       await this.decide(id, itemLease);
       return true;
