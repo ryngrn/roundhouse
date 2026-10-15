@@ -65,3 +65,21 @@
 ## Ship discipline
 
 Each slice needs a reviewable commit, targeted tests, live evidence, and explicit statement of scope and cost. Do not mark later slices complete because an earlier guard or PostgreSQL connection is working.
+
+## Connection and heartbeat hardening (October 14 evening)
+
+- The Mac Studio service log records a fatal Node.js unhandled `pg` idle-client
+  `error` event after an unexpected disconnect. A pool-level error listener is
+  required to preserve process liveness. Errors from active database queries
+  must still fail closed; no local state fallback is permitted.
+- The existing triage and execution timers coupled authoritative lease renewal
+  with the best-effort node-presence heartbeat, and launched another renewal
+  every interval even when the prior one remained unresolved.
+- Patch `fix/postgres-heartbeat-liveness-20261014` separates telemetry from
+  lease ownership, serializes each renewal batch, and keeps a lost lease fatal.
+  It neither extends leases arbitrarily nor retries uncertain executions.
+- Read-only Aiven sample: three database sessions, no recorded deadlocks or
+  conflicts; this is not proof that remote networking is reliable over time.
+- This slice is not complete until production restart/idle-disconnect
+  observability and multiple real worker passes are confirmed. Independent
+  cloud scheduling and Studio-offline acceptance remain subsequent slices.

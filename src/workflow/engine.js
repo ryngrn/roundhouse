@@ -11,6 +11,7 @@ import { DeliveryRouter, git } from "./delivery.js";
 import { composeAgentRole, inferAgentRole } from "./roles.js";
 import { RoundhouseError } from "../errors.js";
 import { exactReconciliationTarget, hasImportedTriageBarrier, priorityRank, selectTriageCandidates, triageBackoff, triageFingerprint } from "./triage.js";
+import { startLeaseHeartbeat } from "./lease-heartbeat.js";
 import { Unblocker } from "./unblocker.js";
 import { compareDispatchCandidates, dispatchConsiderations, executionEligibility, executionReservation, recordAllocation, recordDispatchRound, schedulerState } from "./scheduler.js";
 import { resolveProjectIdentity } from "./project-model.js";
@@ -162,12 +163,7 @@ export class Engine {
       : existingLease;
     if (this.store.shared && !decisionLease) throw new Error("Item is already owned by another decision worker.");
     const releaseDecisionLease = this.store.shared && !existingLease;
-    let leaseHeartbeatError;
-    const leaseHeartbeat = this.store.shared ? setInterval(() => {
-      Promise.all([this.store.heartbeatLease(decisionLease), this.store.heartbeatNode("online")])
-        .catch((error) => { leaseHeartbeatError = error; });
-    }, Math.max(1_000, Math.floor(this.store.leaseMs / 3))) : null;
-    leaseHeartbeat?.unref?.();
+    const leaseHeartbeat = this.store.shared ? startLeaseHeartbeat(this.store, [decisionLease]) : null;
     try {
     await this.store.change((data) => {
       const item = data.items[id];
@@ -205,7 +201,7 @@ export class Engine {
         ? decision.work_items.flatMap((work) => executionEligibility(project, this.config.execution,
           this.config.execution.capabilities, { work }).reasons)
         : [];
-      if (leaseHeartbeatError) throw leaseHeartbeatError;
+      leaseHeartbeat?.assertHealthy();
       if (this.store.shared) await this.store.assertLease(decisionLease);
       await this.store.change((data) => {
         const current = data.items[id];
@@ -360,7 +356,7 @@ export class Engine {
       }, this.store.shared ? { lease: decisionLease } : undefined);
     }
     } finally {
-      if (leaseHeartbeat) clearInterval(leaseHeartbeat);
+      if (leaseHeartbeat) await leaseHeartbeat.stop().catch(() => {});
       if (releaseDecisionLease) await this.store.releaseLease(decisionLease).catch(() => {});
     }
   }
@@ -816,18 +812,12 @@ export class Engine {
   async execute(id, project, jobLease = null) {
     let releaseRepo;
     let projectLease;
-    let heartbeatTimer;
-    let heartbeatError;
+    let heartbeat;
     try {
       if (this.store.shared) {
         projectLease = await this.store.acquireLease("project", project.id, { job_id: id });
         if (!projectLease) return false;
-        heartbeatTimer = setInterval(() => {
-          Promise.all([this.store.heartbeatLease(projectLease), jobLease ? this.store.heartbeatLease(jobLease) : null,
-            this.store.heartbeatNode("online")])
-            .catch((error) => { heartbeatError = error; });
-        }, Math.max(1_000, Math.floor(this.store.leaseMs / 3)));
-        heartbeatTimer.unref?.();
+        heartbeat = startLeaseHeartbeat(this.store, [projectLease, jobLease]);
       }
       const initialState = await this.store.read();
       const initialJob = initialState.jobs[id];
@@ -958,7 +948,7 @@ export class Engine {
             branch: prepared.branch ?? null, policy: project.policy.shipping, provider: prepared.kind ?? "git",
             recorded_at: new Date().toISOString(), reconciliation: { required_on_interruption: true, status: "pending_delivery" },
           }; });
-          if (heartbeatError) throw heartbeatError;
+          heartbeat?.assertHealthy();
           if (this.store.shared) {
             await this.store.assertLease(projectLease);
             if (!jobLease) throw new Error("Shared execution has no authoritative job lease.");
@@ -1012,7 +1002,7 @@ export class Engine {
       return true;
     } catch (error) { await this.block(id, error.message); return true; }
     finally {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (heartbeat) await heartbeat.stop().catch(() => {});
       if (releaseRepo) {
         releaseRepo();
         await this.store.change((data) => { data.projects[project.id].repository_lock = null; });
