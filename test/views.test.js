@@ -90,3 +90,39 @@ test("previously answered cleanup cannot hide an outstanding Review approval",()
  assert.equal(projected.items[0].review_required,true);
  assert.equal(projected.counts.needs_review,1);
 });
+
+test("answered and terminal stale questions do not return to the actionable review queue", () => {
+  const make = (id, state, issue_resolution = null) => ({
+    id, state, project_id: "example", revision: 1, input: { text: id },
+    history: [], job_ids: [], issue_resolution,
+    questions: [{ id: id + "-q", decision_key: "old", revision: 1, status: "open", prompt: "Old question" }],
+  });
+  const data = { items: {
+    archived: make("archived", "Archived"),
+    blocked: make("blocked", "Blocked", { status: "waiting", question: "Cleanup?" }),
+    decision: make("decision", "Decision"),
+    answered: make("answered", "Needs Clarification", { status: "answered", response: { action: "custom" } }),
+    current: make("current", "Needs Clarification"),
+    approval: make("approval", "Review", { status: "answered" }),
+  }, jobs: {}, projects: {}, outbox: [] };
+  const projected = dashboardProjection(data, { projects: [{ id: "example", status: "active" }] }).overview;
+  assert.deepEqual(projected.needs_you.map(question => question.item_id).sort(), ["approval", "current"]);
+  assert.equal(projected.items.find(item => item.id === "answered").review_required, false);
+  assert.equal(projected.items.find(item => item.id === "approval").review_required, true);
+});
+
+test("a Ready slice blocked by a prerequisite is not dispatch-gate-open", () => {
+  const parent = { id: "i", state: "Ready", revision: 1, project_id: "example",
+    input: { text: "Work" }, history: [], questions: [], job_ids: ["blocked", "held", "free"] };
+  const job = (id, state, deps = []) => ({ id, parent_id: "i", state, revision: 1, project_id: "example",
+    dependencies: deps, history: [], attempts: [], work: { title: id } });
+  const data = { items: { i: parent }, jobs: {
+    blocked: job("blocked", "Blocked"), held: job("held", "Ready", ["blocked"]),
+    free: job("free", "Ready"),
+  }, projects: {}, outbox: [] };
+  const items = dashboardProjection(data, { projects: [{ id: "example", status: "active", runtime: "local" }] }).overview.items;
+  assert.equal(items.find(item => item.id === "held").dispatch_gate_open, false);
+  assert.match(items.find(item => item.id === "held").dispatch_hold, /prerequisite blocked/);
+  assert.equal(items.find(item => item.id === "free").dispatch_gate_open, true);
+  assert.equal(items.find(item => item.id === "blocked").dispatch_gate_open, false);
+});

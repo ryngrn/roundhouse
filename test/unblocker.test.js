@@ -167,3 +167,74 @@ test("Unblocker can be invoked by the existing scheduled dispatcher without a mo
   assert.deepEqual(result.released_projects, []);
   assert.equal(result.refreshed, 0);
 });
+
+test("an unavailable cleanup provider retains an answered recovery without asking again or replaying", async () => {
+  const h = codexHarness();
+  const [failed, independent] = await readyJobs(h, ["prior attempted job", "unrelated ready work"]);
+  markIsolatedFailure(h, failed.id);
+  h.store.change(data => {
+    data.jobs[failed.id].issue_resolution = {
+      status: "answered",
+      response: { action: "custom", message: "Preserve and plan isolated recovery, never replay.",
+        actor: "operator", at: "2026-10-14T00:00:00Z" },
+    };
+  });
+  const original = h.store.read().jobs[failed.id].attempts;
+  let cleanupCalls = 0;
+  h.engine.decision.distillCleanupIntent = async () => ({
+    desired_outcome: "Preserve audit evidence.", blocker_category: "technical_failure",
+    evidence: [], unresolved_assumptions: [], non_goals: [], constraints: [], superseded_scope: [],
+  });
+  h.engine.decision.decideCleanup = async () => {
+    cleanupCalls += 1;
+    return { action: "ask", confidence: 0,
+      reason: "The configured cleanup decision provider did not return a valid decision.",
+      question: "Repeat the operator decision?", active_scope: "", removed_scope: [],
+      dependent_actions: [], options: [{ id: "replan", label: "Replan", description: "Replan", effects: [], resolution: "repurpose" },
+        { id: "delete", label: "Delete", description: "Delete", effects: [], resolution: "delete" }] };
+  };
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup.action, "keep");
+  const held = h.store.read().jobs[failed.id];
+  assert.equal(held.state, "Blocked");
+  assert.equal(held.issue_resolution.status, "kept");
+  assert.deepEqual(held.issue_resolution.response, {
+    action: "custom", message: "Preserve and plan isolated recovery, never replay.",
+    actor: "operator", at: "2026-10-14T00:00:00Z",
+  });
+  assert.deepEqual(held.attempts, original);
+  assert.equal(h.store.read().jobs[independent.id].state, "Ready");
+  const repeat = await h.engine.runUnblocker();
+  assert.equal(repeat.cleanup, null);
+  assert.equal(cleanupCalls, 1);
+});
+
+test("a low-confidence repeated question cannot override existing operator direction", async () => {
+  const h = codexHarness();
+  const [failed] = await readyJobs(h, ["previously approved recover-only intent"]);
+  markIsolatedFailure(h, failed.id);
+  h.store.change(data => {
+    data.jobs[failed.id].issue_resolution = { status: "answered",
+      response: { action: "custom", actor: "operator",
+        message: "Retain held work; plan a fresh isolated evidence review.", at: "2026-10-14T00:00:00Z" } };
+  });
+  h.engine.decision.distillCleanupIntent = async () => ({
+    desired_outcome: "Preserve prior approval", blocker_category: "obsolete", evidence: [],
+    constraints: [], non_goals: [], unresolved_assumptions: [], superseded_scope: [],
+  });
+  h.engine.decision.decideCleanup = async () => ({
+    action: "ask", confidence: 0.4, reason: "Need operator to choose again.",
+    active_scope: "", removed_scope: [], question: "Preserve or delete?", dependent_actions: [],
+    options: [
+      { id: "keep", label: "Preserve", description: "Preserve", effects: [], resolution: "repurpose" },
+      { id: "delete", label: "Delete", description: "Delete", effects: [], resolution: "delete" },
+    ],
+  });
+  const result = await h.engine.runUnblocker();
+  assert.equal(result.cleanup.action, "keep");
+  const job = h.store.read().jobs[failed.id];
+  assert.equal(job.issue_resolution.status, "kept");
+  assert.match(job.issue_resolution.reason, /do not re-ask/);
+  assert.equal(job.state, "Blocked");
+  assert.equal(job.attempts.length, 1);
+});
