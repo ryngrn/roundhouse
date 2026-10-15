@@ -40,14 +40,17 @@ export class WorkerLoop {
     return { error: error.message };
   }
 
-  async remoteCommandTick() {
+  async remoteCommandTick({ maxCommands = Infinity } = {}) {
+    if (!(maxCommands === Infinity || (Number.isInteger(maxCommands) && maxCommands >= 1 && maxCommands <= 100))) {
+      throw new Error("Remote command limit must be between 1 and 100.");
+    }
     const queue = this.commandQueue;
     if (!queue?.claimRemoteCommand || this.commandRunning) return this.commandRunning ?? { remote_commands: 0 };
     this.commandRunning = (async () => {
       let processed = 0;
       let lastError;
       try {
-        while (true) {
+        while (processed < maxCommands) {
           const command = await queue.claimRemoteCommand();
           if (!command) break;
           processed += 1;
@@ -156,8 +159,9 @@ export class WorkerLoop {
   async tick() {
     if (this.cycleRunning) return this.cycleRunning;
     this.cycleRunning = (async () => {
-      // Remote commands are an optional relay concern. The local store remains
-      // authoritative, so a relay failure must never prevent local triage or dispatch.
+      // The relay transports commands; the configured storage repository holds
+      // workflow authority. Relay outages cannot transfer authority or create
+      // a local-state fallback while PostgreSQL is the selected source of truth.
       this.cyclePhase = "remote_commands";
       const commands = this.commandQueue ? await this.remoteCommandTick() : { remote_commands: 0 };
       this.cyclePhase = "unblocker";
