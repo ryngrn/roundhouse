@@ -68,8 +68,11 @@ function possibleRelease(data, project) {
 }
 
 // Retain decisions Hermes explicitly marked as requiring future planning.
-// Unblocker must not archive or repurpose these as generic stale blockers.
+// An interrupted decision lease is not a product-scope problem: triage already
+// requires explicit retry for it. Never let cleanup silently re-arm that item
+// as an awaiting Decision and recreate the same expired-lease loop.
 const cleanupEligible = (entity) => ["Needs Clarification", "Blocked"].includes(entity?.state)
+  && entity?.triage?.interrupted !== true
   && !(entity?.triage?.blocked_on ?? []).includes("hermes:planning_capacity");
 
 const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");

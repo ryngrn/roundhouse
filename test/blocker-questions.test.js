@@ -10,6 +10,27 @@ function blockStandalone(h, text) {
   return item.id;
 }
 
+test("Unblocker does not recycle an interrupted decision lease into an automatic retry loop", async () => {
+  const h = harness();
+  const id = blockStandalone(h, "Preserve interrupted ownership until guarded retry");
+  h.store.change((data) => {
+    const item = data.items[id];
+    item.triage = { status: "interrupted", interrupted: true, attempts: [{ number: 1, started_at: new Date().toISOString() }] };
+    item.awaiting_decision = false;
+    item.history.at(-1).reason = "Expired owner lease interrupted decision work; explicit retry is required.";
+  });
+  const before = h.store.read().items[id];
+  for (let i = 0; i < 3; i++) {
+    const result = await h.engine.runUnblocker();
+    assert.equal(result.cleanup, null);
+    const item = h.store.read().items[id];
+    assert.equal(item.state, "Blocked");
+    assert.equal(item.revision, before.revision);
+    assert.equal(item.triage.attempts.length, 1);
+    assert.equal(item.awaiting_decision, false);
+  }
+});
+
 test("cleanup agent permanently deletes low-value blocked work and keeps a concise tombstone", async () => {
   const h = harness();
   const id = blockStandalone(h, "cleanup delete obsolete experiment");

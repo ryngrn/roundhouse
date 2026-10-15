@@ -4,12 +4,13 @@ import { EventEmitter } from "node:events";
 import { startLeaseHeartbeat } from "../src/workflow/lease-heartbeat.js";
 import { monitorIdlePoolErrors } from "../src/storage/postgres.js";
 
-function controlled(store, leases) {
+function controlled(store, leases, options = {}) {
   let scheduled;
   let cancelled = false;
   const monitor = startLeaseHeartbeat(store, leases, {
     schedule: (fn) => { scheduled = fn; return { unref() {} }; },
     unschedule: () => { cancelled = true; },
+    ...options,
   });
   return { ...monitor, fire: () => scheduled(), get cancelled() { return cancelled; } };
 }
@@ -61,6 +62,41 @@ test("slow lease renewals are single-flight rather than creating overlapping que
   await monitor.tick();
   assert.equal(calls, 2);
   await monitor.stop();
+});
+
+test("transient PostgreSQL connection timeout permits bounded lease renewal retry", async () => {
+  let clock = 0;
+  let attempts = 0;
+  const monitor = controlled({
+    leaseMs: 60_000,
+    heartbeatLease: async () => {
+      attempts++;
+      if (attempts === 1) throw Object.assign(new Error("timeout exceeded when trying to connect"), { code: "ETIMEDOUT" });
+    },
+  }, [{ token: "owner" }], { now: () => clock });
+  clock = 20_000;
+  await monitor.tick();
+  assert.doesNotThrow(() => monitor.assertHealthy());
+  clock = 40_000;
+  await monitor.tick();
+  assert.equal(attempts, 2);
+  assert.doesNotThrow(() => monitor.assertHealthy());
+  await monitor.stop();
+});
+
+test("transient transport failures cannot outlive the last confirmed lease", async () => {
+  let clock = 0;
+  const monitor = controlled({
+    leaseMs: 60_000,
+    heartbeatLease: async () => { throw Object.assign(new Error("connection down"), { code: "ECONNRESET" }); },
+  }, [{ token: "owner" }], { now: () => clock });
+  clock = 20_000;
+  await monitor.tick();
+  assert.doesNotThrow(() => monitor.assertHealthy());
+  clock = 60_000;
+  assert.throws(() => monitor.assertHealthy(), /Lease renewal not confirmed/);
+  await monitor.tick();
+  await assert.rejects(monitor.stop(), /connection down/);
 });
 
 test("lost ownership fails closed and prevents additional renewals", async () => {
