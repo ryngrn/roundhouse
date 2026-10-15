@@ -389,3 +389,38 @@ test("unavailable shared authority stops triage and dispatch before stale work c
   await assert.rejects(() => engine.runDispatch(), /PostgreSQL unavailable/);
   assert.equal(runtimeCalls, 0);
 });
+
+test("a slow decision cannot commit after a second claimant takes its lease", async () => {
+  const h = harness();
+  const original = h.submit("slow decision with stolen lease");
+  const store = h.store;
+  store.shared = true;
+  store.leaseMs = 60_000;
+  let activeToken = "first-worker";
+  const originalChange = store.change.bind(store);
+  store.change = (fn, options) => {
+    if (options?.lease && options.lease.token !== activeToken) {
+      throw new Error(`Lease lost: item/${original.id}`);
+    }
+    return originalChange(fn);
+  };
+  store.acquireLease = async (kind, key) => ({ resource_kind: kind, resource_key: key, token: "first-worker" });
+  store.assertLease = async () => {}; // Simulate an earlier, non-atomic preflight check that passed.
+  store.releaseLease = async (lease) => {
+    if (activeToken === lease.token) activeToken = null;
+  };
+  store.heartbeatLease = async () => {};
+  store.heartbeatNode = async () => {};
+  store.recoverExpiredClaims = async () => 0;
+  const engine = engineWith(h, async ({ projects }) => {
+    // First owner loses its lease while doing slow external planning.
+    activeToken = "second-worker";
+    return executable(projects[0]);
+  });
+  await assert.rejects(engine.runTriage({ limit: 1 }), /Lease lost: item/);
+  const state = h.store.read();
+  assert.equal(activeToken, "second-worker", "stale cleanup must not delete the new claimant");
+  assert.equal(state.items[original.id].state, "Decision");
+  assert.equal(state.items[original.id].triage.status, "evaluating");
+  assert.equal(Object.keys(state.jobs).length, 0, "stale planner must not create any job");
+});

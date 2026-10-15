@@ -345,9 +345,19 @@ export class PostgresStorageRepository extends StorageRepository {
     try { return await readSnapshot(client); } finally { client.release(); }
   }
 
-  async change(fn) {
+  async change(fn, { lease } = {}) {
     return tx(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
+      // Fence the state write in the SAME transaction as the lease check.
+      // A prior assertLease is not sufficient: another worker may claim an
+      // expired lease before a separate change() transaction commits.
+      if (lease) {
+        const claim = await client.query(`SELECT 1 FROM roundhouse.resource_leases
+          WHERE resource_kind=$1 AND resource_key=$2 AND owner_node_id=$3 AND token=$4
+            AND expires_at>clock_timestamp() FOR UPDATE`,
+        [lease.resource_kind, lease.resource_key, this.node.id, lease.token]);
+        if (!claim.rowCount) throw new Error(`Lease lost: ${lease.resource_kind}/${lease.resource_key}`);
+      }
       const data = await readSnapshot(client);
       const before = structuredClone(data);
       const result = await fn(data);
