@@ -147,13 +147,13 @@ export class Engine {
     runtime ??= new CapabilityRuntime(providers, createRuntime());
     Object.assign(this, { store, config, decision, runtime, verifier, shipping, clock });
   }
-  processRecorder(collection, id, lease = null) {
+  processRecorder(collection, id, lease = null, decisionAttempt = null) {
     return (pid) => {
       const pending = this.store.change((data) => {
         const entity = data[collection][id];
         entity.processes ??= [];
         entity.processes.push({ pid, at: new Date().toISOString() });
-      }, lease ? { lease } : undefined);
+      }, decisionAttempt ? { decisionAttempt } : lease ? { lease } : undefined);
       return pending;
     };
   }
@@ -163,7 +163,14 @@ export class Engine {
       : existingLease;
     if (this.store.shared && !decisionLease) throw new Error("Item is already owned by another decision worker.");
     const releaseDecisionLease = this.store.shared && !existingLease;
-    const leaseHeartbeat = this.store.shared ? startLeaseHeartbeat(this.store, [decisionLease]) : null;
+    const durableDecisions = this.store.shared && typeof this.store.startDecisionAttempt === "function"
+      && (this.config.decision?.durable_attempts === true || process.env.ROUNDHOUSE_DURABLE_DECISIONS === "1");
+    const leaseHeartbeat = this.store.shared && !durableDecisions ? startLeaseHeartbeat(this.store, [decisionLease]) : null;
+    let decisionAttempt = null;
+    let shortLeaseReleased = false;
+    const decisionWrite = (outcome) => decisionAttempt
+      ? { decisionAttempt, ...(outcome ? { decisionOutcome: outcome } : {}) }
+      : this.store.shared ? { lease: decisionLease } : undefined;
     try {
     await this.store.change((data) => {
       const item = data.items[id];
@@ -180,6 +187,13 @@ export class Engine {
       item.triage.retry_requested_at = null;
       item.triage.next_attempt_at = null;
     }, this.store.shared ? { lease: decisionLease } : undefined);
+    if (durableDecisions) {
+      decisionAttempt = await this.store.startDecisionAttempt(id, decisionLease);
+      // The receipt is now the result's fencing authority. Do not spend the
+      // entire model invocation renewing a Studio-owned resource lease.
+      await this.store.releaseLease(decisionLease);
+      shortLeaseReleased = true;
+    }
     try {
       const snapshot = await this.store.read();
       const item = snapshot.items[id];
@@ -187,7 +201,8 @@ export class Engine {
       const selectedProject = item.selected_project ?? item.input.project_id;
       const proposed = await this.decision.decide({ item: { ...item, related_work: relatedWork(snapshot, item),
         input: { ...item.input, ...(selectedProject ? { project_id: selectedProject } : {}) } }, projects,
-        directory: path.join(this.store.directory, "decisions", id, String(item.revision)), onStart: this.processRecorder("items", id, decisionLease) });
+        directory: path.join(this.store.directory, "decisions", id, String(item.revision)),
+        onStart: this.processRecorder("items", id, decisionAttempt ? null : decisionLease, decisionAttempt) });
       const configuredProject = this.config.projects.find((project) => project.id === proposed.project);
       const role = configuredProject ? inferAgentRole({ item, decision: proposed, project: configuredProject }) : "general";
       const project = configuredProject ? executionProjectContext(configuredProject, role) : null;
@@ -202,7 +217,7 @@ export class Engine {
           this.config.execution.capabilities, { work }).reasons)
         : [];
       leaseHeartbeat?.assertHealthy();
-      if (this.store.shared) await this.store.assertLease(decisionLease);
+      if (this.store.shared && !decisionAttempt) await this.store.assertLease(decisionLease);
       await this.store.change((data) => {
         const current = data.items[id];
         current.questions ??= [];
@@ -337,27 +352,33 @@ export class Engine {
         current.triage.blocked_on = decision.blocked_on ?? [];
         current.triage.interrupted = false;
         current.triage.blocked_fingerprint = current.state === "Blocked" ? triageFingerprint(current, data, this.config, this.store) : null;
-      }, this.store.shared ? { lease: decisionLease } : undefined);
+      }, decisionWrite("completed"));
     } catch (error) {
-      if (this.store.shared) await this.store.assertLease(decisionLease);
+      if (this.store.shared && !decisionAttempt) await this.store.assertLease(decisionLease);
       await this.store.change((data) => {
         const current = data.items[id];
         const failures = (current.triage?.failure_count ?? 0) + 1;
         const delay = triageBackoff(this.config, failures);
-        if (current.state === "Decision") this.store.move(data, current, "Depot", `Triage failed; retry deferred for ${delay}ms: ${error.message}`);
+        if (current.state === "Decision") this.store.move(data, current,
+          decisionAttempt ? "Blocked" : "Depot",
+          decisionAttempt ? `Decision attempt failed; explicit retry required: ${error.message}`
+            : `Triage failed; retry deferred for ${delay}ms: ${error.message}`);
         current.processes = [];
         current.triage ??= { attempts: [] };
         const attempt = current.triage.attempts?.at(-1);
         if (attempt) { attempt.finished_at = new Date(this.clock()).toISOString(); attempt.error = error.message; }
-        current.triage.status = "backoff";
+        current.triage.status = decisionAttempt ? "interrupted" : "backoff";
+        current.triage.interrupted = Boolean(decisionAttempt);
         current.triage.failure_count = failures;
         current.triage.last_error = error.message;
-        current.triage.next_attempt_at = new Date(this.clock() + delay).toISOString();
-      }, this.store.shared ? { lease: decisionLease } : undefined);
+        current.triage.next_attempt_at = decisionAttempt ? null : new Date(this.clock() + delay).toISOString();
+      }, decisionWrite(decisionAttempt ? "failed" : undefined));
     }
     } finally {
       if (leaseHeartbeat) await leaseHeartbeat.stop().catch(() => {});
-      if (releaseDecisionLease) await this.store.releaseLease(decisionLease).catch(() => {});
+      if ((releaseDecisionLease || durableDecisions) && !shortLeaseReleased) {
+        await this.store.releaseLease(decisionLease).catch(() => {});
+      }
     }
   }
   createJobs(data, item) {

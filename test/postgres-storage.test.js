@@ -70,6 +70,55 @@ test("postgres: migrations, normalized restart projection, provenance, and outbo
   await restarted.close();
 });
 
+test("postgres: durable decision attempt survives lease release and rejects second finalization", { skip: !enabled }, async () => {
+  await reset();
+  const first = await open("decision-owner");
+  const second = await open("decision-result");
+  const id = "decision-1";
+  await first.change((data) => {
+    data.items[id] = record(id, { state: "Decision", input: { text: "Evaluate once", source: "test", actor: "test" },
+      clarifications: [], questions: [], awaiting_decision: false, decision: null, job_ids: [], triage: { attempts: [] } });
+  });
+  const lease = await first.acquireLease("item", id, { operation: "decision" });
+  assert.ok(lease);
+  const receipt = await first.startDecisionAttempt(id, lease);
+  await first.releaseLease(lease);
+  assert.equal(await second.recoverExpiredClaims(), 0);
+  await second.change((data) => {
+    second.move(data, data.items[id], "Blocked", "Model result safely committed once.");
+  }, { decisionAttempt: receipt, decisionOutcome: "completed" });
+  assert.equal((await second.read()).items[id].state, "Blocked");
+  assert.equal((await second.pool.query("SELECT status FROM roundhouse.decision_attempts WHERE id=$1", [receipt.id])).rows[0].status, "completed");
+  await assert.rejects(second.change(() => {}, { decisionAttempt: receipt, decisionOutcome: "completed" }), /stale or expired/);
+  await second.close();
+  await first.close();
+});
+
+test("postgres: expired decision receipt quarantines the item without re-executing it", { skip: !enabled }, async () => {
+  await reset();
+  const first = await open("decision-expiry");
+  const id = "decision-expired";
+  await first.change((data) => {
+    data.items[id] = record(id, { state: "Decision", input: { text: "Never replay", source: "test", actor: "test" },
+      clarifications: [], questions: [], awaiting_decision: false, decision: null, job_ids: [],
+      triage: { attempts: [{ number: 1, started_at: new Date().toISOString() }] } });
+  });
+  const lease = await first.acquireLease("item", id);
+  const receipt = await first.startDecisionAttempt(id, lease);
+  await first.releaseLease(lease);
+  await first.pool.query(`UPDATE roundhouse.decision_attempts SET
+    started_at=clock_timestamp()-interval '2 days',
+    deadline_at=clock_timestamp()-interval '1 day' WHERE id=$1`, [receipt.id]);
+  assert.ok(await first.recoverExpiredClaims() >= 1);
+  const item = (await first.read()).items[id];
+  assert.equal(item.state, "Blocked");
+  assert.equal(item.triage.interrupted, true);
+  assert.equal(item.triage.attempts.length, 1);
+  await assert.rejects(first.change(() => {}, { decisionAttempt: receipt, decisionOutcome: "completed" }), /stale or expired/);
+  assert.equal((await first.pool.query("SELECT status FROM roundhouse.decision_attempts WHERE id=$1", [receipt.id])).rows[0].status, "interrupted");
+  await first.close();
+});
+
 test("postgres: ordinary changes leave unrelated domain rows untouched", { skip: !enabled }, async () => {
   await reset();
   const store = await open("incremental");

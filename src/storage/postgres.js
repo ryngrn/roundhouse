@@ -17,6 +17,7 @@ const migrations = [
   { version: 4, name: "attempt_node_identity", file: path.join(here, "migrations", "004_attempt_node_identity.sql") },
   { version: 5, name: "remote_commands", file: path.join(here, "migrations", "005_remote_commands.sql") },
   { version: 6, name: "schedule_ledger", file: path.join(here, "migrations", "006_schedule_ledger.sql") },
+  { version: 7, name: "durable_decision_attempts", file: path.join(here, "migrations", "007_durable_decision_attempts.sql") },
 ];
 const snapshotLock = 714_209_533;
 
@@ -357,7 +358,38 @@ export class PostgresStorageRepository extends StorageRepository {
     try { return await readSnapshot(client); } finally { client.release(); }
   }
 
-  async change(fn, { lease } = {}) {
+  // A short item lease authorizes creation of a durable attempt receipt.
+  // No lease or database transaction is held while the model runs.
+  async startDecisionAttempt(itemId, lease, { maxDurationMs = 10 * 60_000 } = {}) {
+    if (!lease || lease.resource_kind !== "item" || lease.resource_key !== itemId)
+      throw new Error("Decision attempt requires its exact item lease.");
+    if (!Number.isInteger(maxDurationMs) || maxDurationMs < 60_000 || maxDurationMs > 15 * 60_000)
+      throw new Error("Decision attempt duration must be between 1 and 15 minutes.");
+    return tx(this.pool, async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
+      const claim = await client.query(`SELECT 1 FROM roundhouse.resource_leases
+        WHERE resource_kind='item' AND resource_key=$1 AND owner_node_id=$2
+          AND token=$3 AND expires_at>clock_timestamp() FOR UPDATE`,
+      [itemId, this.node.id, lease.token]);
+      if (!claim.rowCount) throw new Error(`Lease lost: item/${itemId}`);
+      const item = await client.query("SELECT revision,state,payload FROM roundhouse.depot_items WHERE id=$1 FOR UPDATE", [itemId]);
+      const current = item.rows[0];
+      if (!current || current.state !== "Decision" || current.payload.awaiting_decision)
+        throw new Error("Decision attempt requires a committed, active Decision item.");
+      const attempt = { id: randomUUID(), item_id: itemId, token: randomUUID(),
+        start_revision: Number(current.revision) };
+      const result = await client.query(`INSERT INTO roundhouse.decision_attempts
+        (id,item_id,owner_node_id,token,start_revision,status,deadline_at)
+        VALUES ($1,$2,$3,$4,$5,'running',clock_timestamp()+($6 * interval '1 millisecond'))
+        RETURNING deadline_at,started_at`,
+      [attempt.id, itemId, this.node.id, attempt.token, attempt.start_revision, maxDurationMs]);
+      return { ...attempt, ...result.rows[0] };
+    });
+  }
+
+  async change(fn, { lease, decisionAttempt, decisionOutcome } = {}) {
+    if (decisionOutcome && (!decisionAttempt || !["completed", "failed"].includes(decisionOutcome)))
+      throw new Error("Decision completion requires an active attempt and valid outcome.");
     return tx(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock($1)", [snapshotLock]);
       // Fence the state write in the SAME transaction as the lease check.
@@ -370,10 +402,25 @@ export class PostgresStorageRepository extends StorageRepository {
         [lease.resource_kind, lease.resource_key, this.node.id, lease.token]);
         if (!claim.rowCount) throw new Error(`Lease lost: ${lease.resource_kind}/${lease.resource_key}`);
       }
+      if (decisionAttempt) {
+        const receipt = await client.query(`SELECT 1 FROM roundhouse.decision_attempts a
+          JOIN roundhouse.depot_items i ON i.id=a.item_id
+          WHERE a.id=$1 AND a.item_id=$2 AND a.token=$3 AND a.start_revision=$4
+            AND a.status='running' AND a.deadline_at>clock_timestamp()
+            AND i.revision=a.start_revision AND i.state='Decision'
+          FOR UPDATE OF a`,
+        [decisionAttempt.id, decisionAttempt.item_id, decisionAttempt.token, decisionAttempt.start_revision]);
+        if (!receipt.rowCount) throw new Error(`Decision attempt stale or expired: ${decisionAttempt.id}`);
+      }
       const data = await readSnapshot(client);
       const before = structuredClone(data);
       const result = await fn(data);
       await writeChanges(client, before, data);
+      if (decisionOutcome) {
+        await client.query(`UPDATE roundhouse.decision_attempts
+          SET status=$2,finished_at=clock_timestamp(),result_state=$3
+          WHERE id=$1`, [decisionAttempt.id, decisionOutcome, data.items[decisionAttempt.item_id]?.state ?? null]);
+      }
       return structuredClone(result ?? null);
     });
   }
@@ -621,8 +668,11 @@ export class PostgresStorageRepository extends StorageRepository {
           OR (j.state='Ready' AND l.expires_at<=clock_timestamp() AND l.payload->>'operation'='execution')`);
       const expiredItems = await rows(client, `SELECT i.id FROM roundhouse.depot_items i
         LEFT JOIN roundhouse.resource_leases l ON l.resource_kind='item' AND l.resource_key=i.id
+        LEFT JOIN roundhouse.decision_attempts a
+          ON a.item_id=i.id AND a.status='running' AND a.deadline_at>clock_timestamp()
         WHERE i.state='Decision' AND COALESCE((i.payload->>'awaiting_decision')::boolean,false)=false
-          AND (l.resource_key IS NULL OR l.expires_at<=clock_timestamp())`);
+          AND (l.resource_key IS NULL OR l.expires_at<=clock_timestamp())
+          AND a.id IS NULL`);
       for (const { id } of expired) {
         const job = data.jobs[id];
         if (!job || job.state === "Blocked") continue;
@@ -655,10 +705,25 @@ export class PostgresStorageRepository extends StorageRepository {
           item.triage ??= { attempts: [], failure_count: 0 };
           item.triage.status = "interrupted";
           item.triage.interrupted = true;
+          const attempt = item.triage.attempts?.at(-1);
+          if (attempt && !attempt.finished_at) {
+            attempt.finished_at = new Date().toISOString();
+            attempt.error = "Decision ownership expired; result unverified.";
+          }
+          await client.query(`UPDATE roundhouse.decision_attempts
+            SET status='interrupted',finished_at=clock_timestamp(),result_state='Blocked'
+            WHERE item_id=$1 AND status='running' AND deadline_at<=clock_timestamp()`, [id]);
         }
       }
-      const recovered = expired.length + expiredItems.length;
-      if (recovered) await writeChanges(client, before, data);
+      // A decision may have been changed by an operator before the worker
+      // returned. Retire the expired receipt even if its item is no longer in
+      // Decision; preserve the receipt's history and never replay its output.
+      const orphaned = await client.query(`UPDATE roundhouse.decision_attempts
+        SET status='interrupted',finished_at=clock_timestamp()
+        WHERE status='running' AND deadline_at<=clock_timestamp()
+        RETURNING id`);
+      const recovered = expired.length + expiredItems.length + orphaned.rowCount;
+      if (expired.length || expiredItems.length) await writeChanges(client, before, data);
       return recovered;
     });
   }
