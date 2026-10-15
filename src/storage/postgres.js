@@ -19,6 +19,16 @@ const migrations = [
 ];
 const snapshotLock = 714_209_533;
 
+// pg emits an `error` event when an *idle* connection breaks. Without a
+// listener Node treats it as an uncaught exception and kills the whole worker.
+// Active queries still reject and the authority still fails closed.
+export function monitorIdlePoolErrors(pool, report = (message) => process.stderr.write(`${message}\n`)) {
+  pool.on("error", (error) => {
+    const code = typeof error?.code === "string" ? ` (${error.code})` : "";
+    report(`PostgreSQL idle client disconnected${code}; future queries will reconnect or fail closed.`);
+  });
+}
+
 function emptySnapshot() {
   return { schema_version: 1, items: {}, jobs: {}, projects: {}, project_candidates: {}, system_metadata: {}, outbox: [] };
 }
@@ -314,6 +324,7 @@ export class PostgresStorageRepository extends StorageRepository {
     parsed.searchParams.delete("uselibpqcompat");
     const pool = new Pool({ connectionString: parsed.toString(), ssl: databaseTls(connectionString, allowInsecure), max: 12,
       connectionTimeoutMillis: 5_000, query_timeout: 120_000, application_name: `roundhouse:${node.name}` });
+    monitorIdlePoolErrors(pool);
     const store = new PostgresStorageRepository({ pool, directory, node, leaseMs });
     try {
       await store.migrate();
