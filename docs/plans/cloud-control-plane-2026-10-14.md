@@ -83,3 +83,20 @@ Each slice needs a reviewable commit, targeted tests, live evidence, and explici
 - This slice is not complete until production restart/idle-disconnect
   observability and multiple real worker passes are confirmed. Independent
   cloud scheduling and Studio-offline acceptance remain subsequent slices.
+
+## Slice 3A — Dormant PostgreSQL schedule ledger (October 14)
+
+- Add a small normalized `schedules` registry with minimum 5-minute cadence,
+  revision, next-due UTC timestamp, explicit `enabled=false` default, and only
+  `control_plane_wake`/`health_check` kinds (never arbitrary executor commands).
+- Add immutable occurrence identity `(schedule_id, scheduled_for)` and due
+  receipts. A bounded `FOR UPDATE SKIP LOCKED` transaction records no more
+  than 50 due occurrences and advances through missed intervals without a
+  costly backlog or duplicate claim after a restart.
+- Existing projects, jobs, decisions, database authority and deployment
+  policies are unchanged. No schedule is activated by the migration, and
+  this slice intentionally creates no polling loops, cron jobs or services.
+- **Not a completed cloud scheduler:** later isolated slices must add guarded
+  schedule activation, independent hosted worker, budget telemetry, and
+  Studio-offline acceptance before any schedule is made live. A receipt means
+  "became due," not "executed successfully."

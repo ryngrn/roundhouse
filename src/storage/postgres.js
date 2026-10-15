@@ -16,6 +16,7 @@ const migrations = [
   { version: 3, name: "durable_item_revisions", file: path.join(here, "migrations", "003_durable_item_revisions.sql") },
   { version: 4, name: "attempt_node_identity", file: path.join(here, "migrations", "004_attempt_node_identity.sql") },
   { version: 5, name: "remote_commands", file: path.join(here, "migrations", "005_remote_commands.sql") },
+  { version: 6, name: "schedule_ledger", file: path.join(here, "migrations", "006_schedule_ledger.sql") },
 ];
 const snapshotLock = 714_209_533;
 
@@ -521,6 +522,66 @@ export class PostgresStorageRepository extends StorageRepository {
       const job = selected.payload;
       return { job, lease: { resource_kind: "job", resource_key: job.id, owner_node_id: this.node.id, token, reservation },
         ...(returnEvidence ? { claim_evidence: claimEvidence } : {}) };
+    });
+  }
+
+  // This ledger produces durable due receipts only; it never dispatches jobs.
+  // No schedules exist or are enabled by default, so migration is inert.
+  async registerDisabledSchedule({ key, kind, intervalMinutes, nextDueAt, payload = {} }) {
+    if (typeof key !== "string" || !/^[a-z0-9][a-z0-9_.-]{2,95}$/.test(key)) throw new Error("Invalid schedule key.");
+    if (!["control_plane_wake", "health_check"].includes(kind)) throw new Error("Unsupported scheduler operation.");
+    if (!Number.isInteger(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 10080) {
+      throw new Error("Schedules must be between 5 minutes and 7 days.");
+    }
+    const due = new Date(nextDueAt);
+    if (Number.isNaN(due.valueOf())) throw new Error("Schedule requires a valid next-due time.");
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid schedule payload.");
+    return tx(this.pool, async (client) => {
+      const result = await client.query(`INSERT INTO roundhouse.schedules
+        (id,schedule_key,kind,interval_minutes,next_due_at,enabled,payload)
+        VALUES ($1,$2,$3,$4,$5,false,$6) ON CONFLICT (schedule_key) DO NOTHING
+        RETURNING id,schedule_key,kind,interval_minutes,next_due_at,enabled,revision`,
+      [randomUUID(), key, kind, intervalMinutes, due, payload]);
+      if (result.rowCount) return result.rows[0];
+      const existing = await client.query(`SELECT id,schedule_key,kind,interval_minutes,next_due_at,enabled,revision,payload
+        FROM roundhouse.schedules WHERE schedule_key=$1`, [key]);
+      const row = existing.rows[0];
+      if (!row || row.kind !== kind || row.interval_minutes !== intervalMinutes
+          || new Date(row.next_due_at).valueOf() !== due.valueOf()
+          || JSON.stringify(row.payload) !== JSON.stringify(payload)) {
+        throw new Error("Schedule key already exists with different configuration; explicit revision approval is required.");
+      }
+      return row;
+    });
+  }
+
+  // Schedule activation is deliberately NOT exposed here; it needs a separate
+  // guarded operator decision and independent hosted-worker acceptance.
+  async recordDueSchedules({ limit = 10 } = {}) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("Schedule claim limit must be 1–50.");
+    return tx(this.pool, async (client) => {
+      const due = await client.query(`SELECT id,schedule_key,kind,interval_minutes,next_due_at,revision,payload
+        FROM roundhouse.schedules WHERE enabled AND next_due_at<=clock_timestamp()
+        ORDER BY next_due_at,id FOR UPDATE SKIP LOCKED LIMIT $1`, [limit]);
+      const receipts = [];
+      for (const schedule of due.rows) {
+        const receipt = await client.query(`INSERT INTO roundhouse.schedule_occurrences
+          (id,schedule_id,scheduled_for,schedule_revision,kind,payload)
+          VALUES ($1,$2,$3,$4,$5,$6)
+          ON CONFLICT (schedule_id,scheduled_for) DO NOTHING
+          RETURNING id,schedule_id,scheduled_for,kind,status,recorded_at`,
+        [randomUUID(), schedule.id, schedule.next_due_at, schedule.revision, schedule.kind, schedule.payload]);
+        // Advance past missed intervals in one bounded transaction instead of
+        // replaying every due instant after a long outage.
+        await client.query(`UPDATE roundhouse.schedules SET
+          next_due_at=next_due_at +
+            (floor(greatest(0,extract(epoch FROM (clock_timestamp()-next_due_at))) /
+              (interval_minutes * 60))::bigint + 1) * interval_minutes * interval '1 minute',
+          updated_at=clock_timestamp()
+          WHERE id=$1 AND revision=$2`, [schedule.id, schedule.revision]);
+        if (receipt.rowCount) receipts.push(receipt.rows[0]);
+      }
+      return receipts;
     });
   }
 
