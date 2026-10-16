@@ -1,4 +1,5 @@
 import { digest } from "../storage/repository.js";
+import { mergeProjectRepositories, projectRepositories } from "./project-repositories.js";
 
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 
@@ -23,14 +24,22 @@ export function resolveProjectIdentity(data, configuredProjects, name, metadata 
     id = `${id.slice(0, 55)}-${digest(normalized.toLowerCase()).slice(0, 8)}`;
   }
   data.projects ??= {};
+  const previous = data.projects[id];
+  const repositories = mergeProjectRepositories(previous, configured).map((repository) => ({
+    ...projectRepositories(previous).find((entry) => entry.id === repository.id),
+    id: repository.id,
+    ...(repository.label ? { label: repository.label } : {}),
+    ...(repository.github_url ? { github_url: repository.github_url } : {}),
+    ...(repository.checkout_path ? { checkout_path: repository.checkout_path } : {}),
+  }));
   data.projects[id] = {
     ...data.projects[id],
     id,
     name: configured?.name ?? data.projects[id]?.name ?? normalized,
     configured: Boolean(configured),
     repository: configured?.repository ?? data.projects[id]?.repository ?? null,
-    repositories: configured?.repositories?.map((repository) => ({ id: repository.id,
-      checkout_path: repository.checkout_path })) ?? data.projects[id]?.repositories ?? [],
+    repositories: previous?.repositories && !Array.isArray(previous.repositories) ? previous.repositories : repositories,
+    repository_connections: repositories,
     repository_required: configured?.repository_required ?? data.projects[id]?.repository_required ?? false,
     ...metadata,
   };

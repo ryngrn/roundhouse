@@ -1,105 +1,85 @@
-# Multi-repository projects
+# Project repository connections
 
-A Roundhouse project is a durable product/work identity, not a Git checkout. It
-may have zero, one, or many connected repositories while retaining one project
-ID, work history, audit trail, intent model, and human review queue.
-
-## Configuration
-
-New configuration uses `repositories`. Every entry has a stable lowercase `id`, an optional readable `label`,
-and an existing local `checkout_path`. Repository entries may override
-`base_ref`, `remote`, `verification`, `policy`, `deployment`, and repository
-context settings. Paths are resolved and validated when configuration loads.
+A project is a durable product identity with zero, one, or many connected GitHub
+repositories. Roundhouse's canonical project ID is `roundhouse`; both repositories
+belong to that product:
 
 ```yaml
 projects:
-  - id: storefront
-    name: Storefront
-    purpose: Operate the customer storefront
-    success_state: Changes are verified and reviewable
+  - id: roundhouse
+    name: Roundhouse
+    purpose: Turn human intent into useful verified work
+    success_state: Useful work is reviewable
     status: active
-    executor: { kind: codex, bin: codex }
-    policy:
-      allow_autonomous: false
-      shipping: push_branch
     repositories:
-      - id: api
-        label: API
-        checkout_path: ../storefront-api
-        base_ref: main
-        remote: origin
-        verification:
-          - id: api-tests
-            command: [npm, test]
-      - id: web
-        label: Website
-        checkout_path: ../storefront-web
-        base_ref: main
-        remote: origin
-        verification:
-          - id: web-check
-            command: [npm, run, check]
+      - id: core
+        github_url: https://github.com/ryngrn/roundhouse
+      - id: dashboard
+        github_url: https://github.com/ryngrn/roundhouse.ryan.green
 ```
 
-The legacy `repository`, `base_ref`, `remote`, project `verification`, and
-project shipping policy remain supported. They normalize to one repository with
-ID `default`, preserving the prior execution, approval, verification, and
-delivery behavior. A project must not mix secret material into repository
-configuration; unknown repository fields are rejected.
+Each repository has a stable lowercase `id`, a `github_url`, and an optional
+`label` and local `checkout_path`. HTTPS, GitHub SCP-style SSH, and SSH URLs
+normalize to credential-free HTTPS repository URLs. Credentials, query strings,
+fragments, and non-GitHub hosts are rejected. Remote-only entries carry connection
+metadata; local checkout entries continue to require the existing verification
+configuration. The Git remote name (`remote: origin`) is separate from `github_url`.
+Existing local-only entries remain supported, as does the singular local
+`repository` property (stable repository ID `default`). Use `repositories: []`
+for a project with no repositories. IDs must remain stable when paths change.
 
-## Work-item targeting and safety
+The public project projection includes repository IDs, labels, normalized GitHub
+URLs, and existing verification IDs/shipping labels. It omits local paths and
+credentials for configured and stored-only projects. The legacy public
+`repository` field is always null. Durable connections supplement narrower
+configuration by stable ID, so loading a core-only configuration does not erase
+the dashboard connection. Repository changes affect the projection revision.
+Storage also keeps `repository_connections` because older execution code uses
+`repositories` as an operational state map. That map is retained verbatim;
+configuration and public responses use the repository list.
 
-Each planned slice records `repository_required` and `repository_id`.
+This model change does not change execution targeting, scheduling, dispatch,
+approval, or deployment. A remote connection alone does not provision a checkout.
+The existing self-development manifest is deliberately left unchanged: replacing
+its execution configuration with the metadata example above is a separate change.
 
-- Repository-free research, strategy, and durable-output slices use
-  `repository_required: false` and `repository_id: null`.
-- A repository-required slice in a one-repository project safely inherits that
-  sole stable ID.
-- Every repository-required slice in a multi-repository project must name its
-  repository. Roundhouse never chooses the first entry.
-- An unknown ID, an ambiguous target, or a required repository in a zero-repo
-  project produces Needs Clarification before any job is created or dispatched.
-  The review tells the operator to connect an existing repository or perform a
-  separately authorized create-and-connect setup action. Roundhouse neither
-  creates a remote repository nor asks for credentials.
+## Offline Roundhouse identity proposal
 
-Cross-repository work is represented as separate ordered slices under the same
-logical project. Each job persists its repository ID, resolved checkout,
-verification set, base ref, remote, delivery authority, policy hash, and lock.
-Recovery and reconciliation re-resolve the same ID and fail closed if its
-binding or execution authority changed. Commits from a different repository are
-not used as Git ancestry constraints.
+The opt-in script operates only on an exported version 1 storage snapshot:
 
-## Public projection
+```sh
+node scripts/prepare-roundhouse-repositories.mjs snapshot.json proposed.json
+diff -u snapshot.json proposed.json
+```
 
-The project projection exposes stable repository IDs, readable labels,
-verification IDs, and shipping policy. Local checkout paths, remote credentials,
-commands, tokens, and unrelated configuration are not included in the public
-presentation payload. Job
-rows expose the stable `repository_id`, so one project continues to feed one
-review queue without obscuring the concrete execution target.
+It never connects to a database. It creates a new file with mode 0600, refuses to
+overwrite files, and leaves the input untouched. Both exports contain private
+state; keep them outside version control. Running the transform again is
+idempotent. Existing IDs for matching URLs are retained; conflicting `core` or
+`dashboard` IDs cause an error for manual review. Existing local/singular
+repositories, features, goals, changelogs, other projects, assignments, and jobs
+are preserved. A missing canonical record is added with ID `roundhouse`; an
+existing canonical record keeps its information and increments its revision only
+when changed.
 
-## Repository setup
+Historical dashboard project records remain intact. This proposal associates
+both remotes with `roundhouse`; it does not silently merge project histories,
+rewrite old assignments, or replan work. Any consolidation of those records needs
+its own reviewed mapping.
 
-New project initiation writes `repositories: []`. This supports useful
-repository-free work immediately. Connecting a checkout later is an explicit
-configuration/setup change: prepare or obtain the repository separately, add a
-validated repository entry and its verification/delivery policy, then submit or
-re-triage the code request. Remote creation, credential provisioning,
-permissions, deployment, and rollout remain outside this workflow unless each
-is separately authorized.
+For local storage, prepare the proposal from a consistent backup, review the
+diff, and obtain approval before replacing any live snapshot with the reviewed
+file while writers are stopped. Preserve the backup for rollback.
 
-## Remaining rollout work
-
-This change adds safe repository selection and the repository-setup **trigger**
-for development slices with no checkout. The trigger is a focused Needs
-Clarification review; it does not yet implement an automatic approved GitHub
-repository creation, checkout linking, or guarded add/remove UI. Those should
-be separate verified slices with explicit permissions and audit trails.
-Likewise, migrating the existing Roundhouse and Roundhouse Dashboard project
-records to one unified project is a subsequent reversible data migration,
-not a side effect of enabling the schema.
-
-Do not activate multi-repository dispatch on a live control plane until the
-full external integration/acceptance suite has passed in its supported
-environment. Existing single-repository installations remain supported.
+For PostgreSQL, first obtain a consistent export using the existing storage
+snapshot interface. Prepare and review this proposal offline. Database application
+requires separate operator approval: back up the original canonical project row,
+stop writers, and use a transaction to update only the `roundhouse.projects` row
+with `id = 'roundhouse'`. Compare its entire current payload against the exported
+original before updating; abort on any difference. Update payload and revision
+together (and name when inserting a missing record), without changing operational
+columns. If the row was absent, insert only if still absent. Do not import the
+entire snapshot or update jobs, features, other project rows, or assignments.
+Verify both repository URLs and retained history before committing. Rollback
+restores that backed-up row after checking no subsequent writes would be lost.
+This handoff supplies the offline proposal only; no live mutation is automatic.
