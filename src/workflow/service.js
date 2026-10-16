@@ -37,6 +37,67 @@ function normalizeFeatureIntentFields(fields) {
   }));
 }
 
+function inferredFeatureId(item) {
+  if (nonempty(item?.intent?.feature_id)) return item.intent.feature_id.trim();
+  if (nonempty(item?.feature_id)) return item.feature_id.trim();
+  const intentId = item?.intent?.id ?? item?.intent_id ?? item?.id;
+  return nonempty(intentId) ? `intent:${intentId.trim()}` : null;
+}
+
+function inferredFeatureTitle(items) {
+  for (const item of items) {
+    const title = item.intent?.fields?.title ?? item.intent?.summary;
+    if (nonempty(title)) return title.trim().slice(0, 2_000);
+  }
+  for (const item of items) {
+    const title = item.input?.text?.split(/\r?\n/).find((line) => line.trim());
+    if (nonempty(title)) return title.trim().slice(0, 2_000);
+  }
+  return "Untitled intent";
+}
+
+function promoteInferredFeature(featureId, items, actor, at, projectRevision) {
+  const ordered = [...items].sort((left, right) => String(left.created_at ?? "").localeCompare(String(right.created_at ?? ""))
+    || left.id.localeCompare(right.id));
+  const intentValue = (field) => {
+    for (const item of ordered) {
+      const value = item.intent?.fields?.[field];
+      if (value !== undefined) return structuredClone(value);
+    }
+    return undefined;
+  };
+  const firstIntent = ordered.find((item) => item.intent)?.intent;
+  const description = intentValue("description") ?? firstIntent?.summary ?? ordered[0]?.input?.text ?? null;
+  const goalIds = [...new Set(ordered.flatMap((item) => Array.isArray(item.intent?.goal_ids) ? item.intent.goal_ids : [])
+    .filter(nonempty).map((id) => id.trim()))];
+  const derived = Object.fromEntries([...FEATURE_INTENT_FIELDS].flatMap((field) => {
+    const value = intentValue(field);
+    return value === undefined ? [] : [[field, value]];
+  }));
+  const feature = {
+    id: featureId,
+    title: inferredFeatureTitle(ordered),
+    description: structuredClone(description),
+    ...derived,
+    completion_type: firstIntent?.completion_type ?? "Done when shipped",
+    goal_ids: goalIds,
+    status: "Planned",
+    evidence: [],
+    progress: null,
+    work_item_ids: ordered.map((item) => item.id),
+    revision: 1,
+    intent_audit: [],
+    created_at: at,
+    updated_at: at,
+    created_by: actor,
+  };
+  feature.intent_audit.push({ revision: 1, project_revision: projectRevision, actor,
+    source: "inferred-intent-promotion", action: "promoted", changed_fields: Object.keys(derived),
+    previous: null, values: { title: feature.title, description: feature.description, ...structuredClone(derived) },
+    work_item_ids: [...feature.work_item_ids], recorded_at: at });
+  return feature;
+}
+
 function validateFilters(filters) {
   if (!filters || typeof filters !== "object" || Array.isArray(filters)) throw new Error("Filters must be an object.");
   for (const key of Object.keys(filters)) if (!["item_id", "project_id"].includes(key)) throw new Error(`Unknown filter: ${key}`);
@@ -201,12 +262,34 @@ export class RoundhouseService {
     if (!nonempty(actor)) throw new Error("Feature intent update requires an authenticated actor.");
     const normalized = normalizeFeatureIntentFields(fields);
     return this.store.change((data) => {
+      const matchingItems = () => Object.values(data.items ?? {}).filter((item) => inferredFeatureId(item) === feature_id);
       const existing = data.projects?.[project_id];
-      if (!existing) throw new Error("Unknown project.");
-      const project = projectCollection(existing);
+      let project = existing ? projectCollection(existing) : null;
+      if (!project) {
+        const linkedItems = matchingItems();
+        if (!linkedItems.length || linkedItems.some((item) => item.project_id !== project_id)) {
+          throw new Error("Feature is outside this project or does not exist.");
+        }
+        if (expected_project_revision !== 1) throw new Error("Project changed; refresh before updating feature intent.");
+        data.projects ??= {};
+        const configured = this.config?.projects?.find((candidate) => candidate.id === project_id);
+        project = projectCollection(data.projects[project_id] = {
+          id: project_id, ...(configured?.name ? { name: configured.name } : {}), revision: 1,
+        });
+      }
       if (project.revision !== expected_project_revision) throw new Error("Project changed; refresh before updating feature intent.");
-      const feature = project.features.find((candidate) => candidate.id === feature_id);
-      if (!feature) throw new Error("Feature is outside this project or does not exist.");
+      let feature = project.features.find((candidate) => candidate.id === feature_id);
+      let promoted = false;
+      if (!feature) {
+        const linkedItems = matchingItems();
+        if (!linkedItems.length || linkedItems.some((item) => item.project_id !== project_id)) {
+          throw new Error("Feature is outside this project or does not exist.");
+        }
+        const at = new Date().toISOString();
+        feature = promoteInferredFeature(feature_id, linkedItems, actor.trim(), at, project.revision + 1);
+        project.features.push(feature);
+        promoted = true;
+      }
       const featureRevision = feature.revision ?? 1;
       if (expected_feature_revision !== undefined && featureRevision !== expected_feature_revision) {
         throw new Error("Feature changed; refresh before updating feature intent.");
@@ -220,7 +303,8 @@ export class RoundhouseService {
       feature.updated_at = at;
       feature.intent_audit ??= [];
       feature.intent_audit.push({ revision: feature.revision, project_revision: project.revision + 1,
-        actor: actor.trim(), source: "dashboard-command", changed_fields: Object.keys(normalized), previous,
+        actor: actor.trim(), source: "dashboard-command", action: promoted ? "promoted-and-updated" : "updated",
+        changed_fields: Object.keys(normalized), previous,
         values: structuredClone(normalized), clarification_behavior, recorded_at: at });
       project.revision += 1;
       project.updated_at = at;
