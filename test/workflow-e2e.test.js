@@ -737,3 +737,44 @@ test("integration: interrupted non-code run retains identity, failure, and recon
   assert.equal(job.reconciliation.intent, null);
   assert.equal(job.attempts[0].run.reconciliation.status, "required");
 });
+
+test("acceptance: five independent eligible slices run concurrently and all reach verified fixture outcomes", async () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"roundhouse-five-lanes-"));
+  try {
+    const store=new Store(directory);
+    const projects=["one","two","three","four","five"].map(id=>schedulingProject(id));
+    store.change(data=>{
+      for(const [index,project] of projects.entries()){
+        data.projects[project.id]={};
+        data.jobs[project.id+"-job"]=schedulingJob(project.id+"-job",project.id,index);
+      }
+    });
+    const engine=new Engine({store,
+      config:{projects,max_jobs_per_run:5,execution:{capacity:5,capabilities:[],resource_limits:{}},triage:{}},
+      shipping:{canDispatch:()=>true}});
+    let active=0, maximum=0;
+    const completed=new Set();
+    engine.execute=async(id,project)=>{
+      active++;maximum=Math.max(maximum,active);
+      try {
+        await new Promise(resolve=>setTimeout(resolve,25));
+        store.change(data=>{
+          data.jobs[id].verification={passed:true,checks:[{id:"fixture",passed:true,summary:"Deterministic in-memory fixture"}]};
+          data.jobs[id].state="Shipped";
+          data.projects[project.id].active=false;
+        });
+        completed.add(id);
+        return true;
+      }finally{active--;}
+    };
+    const result=await engine.runDispatch();
+    assert.equal(result.executed,5);
+    assert.equal(maximum,5);
+    assert.equal(completed.size,5);
+    for(const job of Object.values(result.jobs)){
+      assert.equal(job.state,"Shipped");
+      assert.equal(job.verification.passed,true);
+    }
+    assert.equal((await engine.runDispatch()).executed,0);
+  }finally{fs.rmSync(directory,{recursive:true,force:true})}
+});
