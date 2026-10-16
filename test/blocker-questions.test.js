@@ -250,3 +250,36 @@ test("repurposing previously attempted work becomes one durable operator decisio
   assert.ok(issue.options.slice(0, 2).every((option) => !option.effects.some((effect) => /remain(?:s)? blocked|remain(?:s)? held/i.test(effect))));
   assert.equal((await h.engine.runUnblocker()).cleanup, null);
 });
+
+test("evidence-only reconciliation keeps unverified prerequisite and downstream dependencies blocked", async () => {
+  const h=harness();
+  const original=h.submit("Implement critical spending enforcement","reconcile-original");
+  await h.engine.runTriage();
+  const id=h.store.read().items[original.id].job_ids[0];
+  h.store.change(data=>{
+    const job=data.jobs[id];
+    job.attempts=[{number:1,execution:{passed:false,exit_code:1}}];
+    h.store.move(data,job,"Blocked","Unverified integration attempt.");
+    data.projects.example={...data.projects.example,blocked:true};
+  });
+  const downstream=h.submit("Dependent budget-sensitive integration","reconcile-dependent");
+  await h.engine.runTriage();
+  const dependentId=h.store.read().items[downstream.id].job_ids[0];
+  h.store.change(data=>{data.jobs[dependentId].dependencies=[id];});
+  const recovery=h.submit("Prepare a new audit of unfinished budget enforcement and plan missing implementation","reconcile-recovery");
+  h.store.change(data=>{
+    const item=data.items[recovery.id];
+    item.input.context={blocker_entity_id:id,recovery_kind:"reconcile"};
+    item.blocker_followup={original_id:id,kind:"reconcile"};
+    data.jobs[id].issue_resolution={status:"followup_queued",selected_resolution:"reconcile",followup_item_id:recovery.id};
+  });
+  await h.engine.runTriage();
+  const state=h.store.read();
+  const plan=state.items[recovery.id];
+  assert.equal(plan.state,"Ready");
+  assert.equal(state.jobs[id].state,"Blocked");
+  assert.equal(state.jobs[id].attempts.length,1);
+  assert.equal(state.projects.example.blocked,true);
+  assert.deepEqual(state.jobs[dependentId].dependencies,[id]);
+  assert.equal(state.jobs[plan.job_ids[0]].recovery_for,id);
+});

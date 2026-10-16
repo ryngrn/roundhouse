@@ -202,8 +202,20 @@ export function dispatchConsiderations(data, projects, execution, {
       const dependencies = (job.dependencies ?? []).map((id) => ({ id, state: data.jobs[id]?.state ?? "Missing" }));
       const running = Object.values(data.jobs ?? {}).filter((candidate) => candidate.project_id === project.id
         && ["Executing", "Verification", "Rework"].includes(candidate.state)).length;
-      const projectGateReason = runtime.blocked ? "Project is blocked." : runtime.stop ? "Project is stopped."
-        : runtime.review_required ? "Project awaits post-shipping review." : "Project gates are open.";
+      // A blocked project may execute its exact approved recovery, but not
+      // unrelated work. Never bypass operator stops or post-shipping review.
+      const original = job.recovery_for && (data.jobs?.[job.recovery_for] ?? data.items?.[job.recovery_for]);
+      const recoveryItem = data.items?.[job.parent_id];
+      const approvedRecovery = Boolean(runtime.blocked && ["Blocked", "Superseded"].includes(original?.state)
+        && (original.state === "Blocked" || original.superseded_by === job.parent_id)
+        && original.issue_resolution?.followup_item_id === job.parent_id
+        && ["reconcile", "repurpose"].includes(original.issue_resolution?.selected_resolution)
+        && recoveryItem?.blocker_followup?.original_id === job.recovery_for
+        && recoveryItem.input?.context?.blocker_entity_id === job.recovery_for);
+      const projectGateReason = runtime.stop ? "Project is stopped."
+        : runtime.review_required ? "Project awaits post-shipping review."
+        : runtime.blocked && !approvedRecovery ? "Project is blocked."
+        : approvedRecovery ? "This exact approved recovery may repair a blocked project." : "Project gates are open.";
       const waitingDependencies = dependencies.filter((dependency) => dependency.state !== "Shipped");
       const repositoryResolution = resolveRepositoryContext(project, job.work);
       const shippingProject = repositoryResolution.ok ? repositoryResolution.project : project;
@@ -212,7 +224,7 @@ export function dispatchConsiderations(data, projects, execution, {
         project_active: { passed: project.status === "active", reason: project.status === "active" ? "Project is active." : `Project status is ${project.status}.` },
         continuation: { passed: !stopped.has(project.id), reason: stopped.has(project.id)
           ? "This worker invocation already allocated the project's stop-after-job slice." : "Project continuation policy permits an allocation." },
-        project_gate: { passed: !runtime.blocked && !runtime.stop && !runtime.review_required,
+        project_gate: { passed: (!runtime.blocked || approvedRecovery) && !runtime.stop && !runtime.review_required,
           reason: projectGateReason },
         shipping: { passed: shippingSupported, reason: shippingSupported
           ? "The delivery provider supports this project."

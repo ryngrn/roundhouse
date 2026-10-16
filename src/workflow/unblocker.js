@@ -346,11 +346,14 @@ export async function followThroughApprovedResolution(store, data) {
   const resolution = candidate.issue_resolution;
   const kind = resolution.selected_resolution;
   const projectId = candidate.project_id ?? data.items?.[candidate.parent_id]?.project_id;
-  const text = (kind === "reconcile" ? "Reconcile the existing unverified attempt for " : "Replan the useful outcome of ")
+  const text = (kind === "reconcile"
+    ? "Prepare a new, evidence-based remediation and verification plan for unfinished work: "
+    : "Prepare a narrower, independently executable implementation plan for unfinished work: ")
     + (candidate.work?.title ?? data.items?.[candidate.parent_id]?.input?.text?.slice(0, 160) ?? candidate.input?.text?.slice(0, 160) ?? candidate.id)
-    + ". Preserve original attempts and audit evidence. Verify existing implementation and delivery before considering replacement work. "
+    + ". This is planning for missing, unverified work, NOT a request to mark any existing record Reconciled or Shipped. "
+    + "Inspect earlier attempts and retained delivery evidence, identify precisely what remains undone, and propose only necessary new work. "
     + "Never replay failed attempts, bypass dependencies or approvals, or deploy production without separate authorization. "
-    + "Operator instruction: " + resolution.response.message;
+    + "Operator instruction (outcome only, not lifecycle-state attestation): " + resolution.response.message;
   const input = { text, source: "roundhouse-unblocker", actor: "roundhouse-worker",
     ...(projectId ? { project_hint: projectId } : {}),
     context: { blocker_entity_id: candidate.id, blocker_entity_revision: candidate.revision,

@@ -443,6 +443,25 @@ export class Engine {
     if (!original || original.state !== "Blocked") return;
 
     const at = new Date(this.clock()).toISOString();
+    // An approved evidence-reconciliation request is investigative work, not
+    // a verified replacement for the old requirement. Preserve the blocked
+    // prerequisite and its dependent edges until independently verified.
+    if (recovery.input?.context?.recovery_kind === "reconcile") {
+      recovery.recovery_for = originalId;
+      recovery.priority_rank = Math.min(priorityRank(recovery), -1);
+      const positions = Object.values(data.jobs).filter(job=>job.project_id === (original.project_id ?? recovery.project_id)
+        && !recovery.job_ids.includes(job.id)).map(job=>Number.isFinite(job.position) ? job.position : 0);
+      for (const [index, id] of recovery.job_ids.entries()) {
+        const job = data.jobs[id];
+        job.recovery_for = originalId;
+        job.priority_rank = -1;
+        job.position = (positions.length ? Math.min(...positions) : 0) - recovery.job_ids.length + index;
+        job.dependencies = (job.dependencies ?? []).filter(dep=>dep!==originalId);
+      }
+      recovery.history.push({from:recovery.state,to:recovery.state,
+        reason:"Evidence reconciliation queued without superseding unverified prerequisite or releasing dependents.",at});
+      return;
+    }
     const replacementIds = [...recovery.job_ids];
     const replacementTail = replacementIds.at(-1);
     const projectId = original.project_id ?? recovery.project_id ?? null;

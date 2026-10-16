@@ -244,3 +244,33 @@ test("scheduler contract: reservations enforce capabilities, capacity, project l
   assert.equal(blocked.fits, false);
   assert.deepEqual(blocked.constraints.locks.conflicts, alpha.locks);
 });
+
+test("approved recovery bypasses only its own project block, not stops or reviews", () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"roundhouse-approved-recovery-"));
+  try{
+    const store=new Store(directory);
+    const project={id:"alpha",status:"active",weight:1,max_concurrent_runs:1,repository_required:false,
+      required_capabilities:[],resource_requirements:{},policy:{shipping:"commit_only"}};
+    const originalId="failed-old",recoveryId="recovery-new",jobId="recovery-new-1";
+    store.change(data=>{
+      data.projects.alpha={blocked:true};
+      data.jobs[originalId]={id:originalId,state:"Blocked",project_id:"alpha",
+        issue_resolution:{followup_item_id:recoveryId,selected_resolution:"reconcile"}};
+      data.items[recoveryId]={id:recoveryId,state:"Ready",project_id:"alpha",
+        blocker_followup:{original_id:originalId},input:{context:{blocker_entity_id:originalId}}};
+      data.jobs[jobId]={id:jobId,project_id:"alpha",parent_id:recoveryId,position:0,state:"Ready",
+        recovery_for:originalId,dependencies:[],attempts:[],history:[],work:{repository_required:false}};
+    });
+    const consider=()=>dispatchConsiderations(store.read(),[project],
+      {capacity:2,capabilities:[],resource_limits:{}},{canDispatch:()=>true})[0];
+    assert.equal(consider().job.id,jobId);
+    assert.equal(consider().checks.project_gate.passed,true);
+    assert.equal(consider().eligible,true);
+    store.change(data=>{data.projects.alpha.stop=true;});
+    assert.equal(consider().checks.project_gate.passed,false);
+    store.change(data=>{data.projects.alpha.stop=false;data.projects.alpha.review_required=true;});
+    assert.equal(consider().checks.project_gate.passed,false);
+    store.change(data=>{data.projects.alpha.review_required=false;data.jobs[originalId].issue_resolution.followup_item_id="wrong";});
+    assert.equal(consider().checks.project_gate.passed,false);
+  }finally{fs.rmSync(directory,{recursive:true,force:true})}
+});
