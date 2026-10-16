@@ -93,7 +93,7 @@ export async function startRoundhouseServer({
   allowedHosts = [],
   service,
   worker,
-  autoStartWorker = true,
+  autoStartWorker = false,
   wakeSubscribeUrl = process.env.ROUNDHOUSE_WAKE_SUBSCRIBE_URL,
   wakeSource,
   remoteRelay,
@@ -175,7 +175,7 @@ export async function startRoundhouseServer({
   };
   await refreshLocalSnapshot();
   projectionPublisher.trigger();
-  const wakes = wakeSource ?? new HttpWakeSource({ url: wakeSubscribeUrl, wake: () => loop.wake() });
+  const wakes = wakeSource ?? new HttpWakeSource({ url: wakeSubscribeUrl, wake: () => {} });
   const allowed = new Set([host, ...(host === "127.0.0.1" ? ["localhost", "::1"] : []), ...allowedHosts].map((value) => value.toLowerCase()));
   const origins = new Set([
     `http://${host}:${port}`,
@@ -188,7 +188,7 @@ export async function startRoundhouseServer({
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? host}`);
       if (url.pathname === "/mcp") {
         if (!["POST", "GET", "DELETE", "OPTIONS"].includes(request.method ?? "")) return send(response, 405, { error: "Method Not Allowed" });
-        return await handleMcpRequest(request, response, roundhouse, events, { onMutation: () => loop.wake() });
+        return await handleMcpRequest(request, response, roundhouse, events, { onMutation: () => {} });
       }
       if (request.method === "GET" && url.pathname === "/") {
         response.writeHead(302, { location: hostedDashboard, "cache-control": "no-store" }).end();
@@ -214,7 +214,7 @@ export async function startRoundhouseServer({
         verifyOrigin(request, origins);
         const result = roundhouse.saveConfiguration((await jsonBody(request)).configuration);
         loop.service = roundhouse;
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 200, result);
       }
       if (request.method === "GET" && url.pathname === "/api/notifications") {
@@ -223,7 +223,7 @@ export async function startRoundhouseServer({
       if (request.method === "POST" && url.pathname === "/api/intake") {
         verifyOrigin(request, origins);
         const result = await roundhouse.addToDepot(await jsonBody(request), { source: "web", actor: "local-user" });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 201, result);
       }
       if (request.method === "POST" && url.pathname === "/api/projects") {
@@ -231,7 +231,7 @@ export async function startRoundhouseServer({
         const result = await roundhouse.initiateProject(await jsonBody(request), { source: "web", actor: "local-user" });
         await refreshLocalSnapshot();
         projectionPublisher.trigger();
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 201, result);
       }
       const projectIcon = url.pathname.match(/^\/api\/projects\/([^/]+)\/icon$/);
@@ -300,7 +300,7 @@ export async function startRoundhouseServer({
         verifyOrigin(request, origins);
         const input = await jsonBody(request);
         const result = await roundhouse.answerQuestion({ id: decodeURIComponent(answer[1]), answer: input.answer, expected_revision: input.expected_revision, actor: "local-user" });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 200, result);
       }
       const reviewAction = url.pathname.match(/^\/api\/items\/([^/]+)\/review-action$/);
@@ -314,7 +314,7 @@ export async function startRoundhouseServer({
           note: input.note ?? "",
           actor: "local-user",
         });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         projectionPublisher.trigger();
         return send(response, 200, result);
       }
@@ -328,7 +328,7 @@ export async function startRoundhouseServer({
           answers: input.answers,
           actor: "local-user",
         });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 200, result);
       }
       const approve = url.pathname.match(/^\/api\/items\/([^/]+)\/approve$/);
@@ -336,7 +336,7 @@ export async function startRoundhouseServer({
         verifyOrigin(request, origins);
         const input = await jsonBody(request);
         const result = await roundhouse.approveItem({ id: decodeURIComponent(approve[1]), expected_revision: input.expected_revision, actor: "local-user" });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 200, result);
       }
       const reconsider = url.pathname.match(/^\/api\/items\/([^/]+)\/reconsider$/);
@@ -344,7 +344,7 @@ export async function startRoundhouseServer({
         verifyOrigin(request, origins);
         const input = await jsonBody(request);
         const result = await roundhouse.reconsiderItem({ id: decodeURIComponent(reconsider[1]), expected_revision: input.expected_revision, actor: "local-user" });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 200, result);
       }
       const reevaluateImport = url.pathname.match(/^\/api\/items\/([^/]+)\/reevaluate-import$/);
@@ -352,7 +352,7 @@ export async function startRoundhouseServer({
         verifyOrigin(request, origins);
         const input = await jsonBody(request);
         const result = await roundhouse.reevaluateImportedItem({ id: decodeURIComponent(reevaluateImport[1]), expected_revision: input.expected_revision, actor: "local-user" });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 200, result);
       }
       const retryTriage = url.pathname.match(/^\/api\/items\/([^/]+)\/retry-triage$/);
@@ -360,7 +360,7 @@ export async function startRoundhouseServer({
         verifyOrigin(request, origins);
         const input = await jsonBody(request);
         const result = await roundhouse.retryTriage({ id: decodeURIComponent(retryTriage[1]), expected_revision: input.expected_revision, actor: "local-user" });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 200, result);
       }
       const explodeJob = url.pathname.match(/^\/api\/jobs\/([^/]+)\/explode$/);
@@ -369,7 +369,7 @@ export async function startRoundhouseServer({
         const input = await jsonBody(request);
         const result = await roundhouse.explodeJob({ id: decodeURIComponent(explodeJob[1]), expected_revision: input.expected_revision,
           actor: "local-user", note: input.note ?? "Operator removed a blocked job from the dashboard." });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 200, result);
       }
       const explodeItem = url.pathname.match(/^\/api\/items\/([^/]+)\/explode$/);
@@ -378,15 +378,8 @@ export async function startRoundhouseServer({
         const input = await jsonBody(request);
         const result = await roundhouse.explodeItem({ id: decodeURIComponent(explodeItem[1]), expected_revision: input.expected_revision,
           actor: "local-user", note: input.note ?? "Operator removed an unresolved idea from the dashboard." });
-        loop.wake();
+        // Legacy autonomous dispatch removed.
         return send(response, 200, result);
-      }
-      if (request.method === "POST" && url.pathname === "/api/worker/tick") {
-        verifyOrigin(request, origins);
-        await jsonBody(request);
-        const result = await loop.tick();
-        return send(response, 200, { triaged: result.triaged ?? 0, executed: result.executed ?? 0,
-          ...(result.error ? { error: result.error } : {}), worker: loop.status() });
       }
       return send(response, 404, { error: "Not Found" });
     } catch (error) {
