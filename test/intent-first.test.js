@@ -162,3 +162,64 @@ test("project icon updates are durable, revision-guarded and reject unsafe value
   assert.throws(() => service.setProjectIcon({ project_id: "example", expected_project_revision: 2, icon: "<script>" }), /emoji/);
   assert.throws(() => service.setProjectIcon({ project_id: "example", expected_project_revision: 2, icon: "🎨🎨" }), /emoji/);
 });
+
+test("feature intent updates are atomic, revision-fenced, audited, and keep clarification in Inbox", () => {
+  const h = harness();
+  h.store.change((data) => {
+    data.projects.example = { id: "example", name: "Example", revision: 4, features: [{
+      id: "guided-onboarding", title: "Guided onboarding", why: "Slow first value", revision: 2,
+      success_criteria: "Activation improves", research: ["Baseline"], proposed_options: [], work_item_ids: ["question-item"],
+    }] };
+    data.items["question-item"] = { id: "question-item", state: "Needs Clarification", revision: 3,
+      input: { text: "Choose the onboarding audience", source: "test", actor: "owner" }, project_id: "example",
+      job_ids: [], history: [], clarifications: [],
+      questions: [{ id: "question", status: "open", prompt: "Which audience is decision-critical?", revision: 1 }] };
+  });
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  const beforeProjection = service.getDashboardProjection().projection_revision;
+  const saved = service.updateFeatureIntent({
+    project_id: "example", feature_id: "guided-onboarding", expected_project_revision: 4, expected_feature_revision: 2,
+    fields: { why: "  Users wait for guidance.  ", desired_outcome: "", success_criteria: ["First value in one day", ""],
+      research: [], proposed_options: null }, clarification_behavior: "ask_if_required", actor: "owner",
+  });
+  assert.equal(saved.project_revision, 5);
+  assert.equal(saved.feature_revision, 3);
+  assert.equal(saved.clarification_required, true);
+  assert.deepEqual(saved.inbox_item_ids, ["question-item"]);
+  const state = h.store.read();
+  const feature = state.projects.example.features[0];
+  assert.equal(feature.why, "Users wait for guidance.");
+  assert.equal(feature.desired_outcome, null);
+  assert.deepEqual(feature.success_criteria, ["First value in one day"]);
+  assert.deepEqual(feature.research, []);
+  assert.equal(feature.proposed_options, null);
+  assert.equal(state.items["question-item"].questions.length, 1);
+  assert.equal(feature.intent_audit.length, 1);
+  assert.deepEqual(feature.intent_audit[0].changed_fields,
+    ["why", "desired_outcome", "success_criteria", "research", "proposed_options"]);
+  assert.equal(feature.intent_audit[0].actor, "owner");
+  assert.notEqual(service.getDashboardProjection().projection_revision, beforeProjection);
+  assert.equal(service.getDashboardProjection().overview.projects.example.features[0].revision, 3);
+
+  assert.throws(() => service.updateFeatureIntent({ project_id: "example", feature_id: "guided-onboarding",
+    expected_project_revision: 4, expected_feature_revision: 3, fields: { why: "stale" } }), /Project changed/);
+  assert.throws(() => service.updateFeatureIntent({ project_id: "example", feature_id: "guided-onboarding",
+    expected_project_revision: 5, expected_feature_revision: 2, fields: { why: "stale" } }), /Feature changed/);
+  assert.throws(() => service.updateFeatureIntent({ project_id: "example", feature_id: "other",
+    expected_project_revision: 5, fields: { why: "wrong scope" } }), /outside this project/);
+  assert.throws(() => service.updateFeatureIntent({ project_id: "example", feature_id: "guided-onboarding",
+    expected_project_revision: 5, fields: { status: "Shipped" } }), /unsupported/);
+});
+
+test("legacy features project revision one and optional blank edits do not create clarification", () => {
+  const h = harness();
+  h.store.change((data) => { data.projects.example = { id: "example", revision: 1,
+    features: [{ id: "legacy", why: "Original", work_item_ids: [] }] }; });
+  const service = new RoundhouseService({ store: h.store, engine: h.engine });
+  assert.equal(service.getDashboardProjection().overview.projects.example.features[0].revision, 1);
+  const saved = service.updateFeatureIntent({ project_id: "example", feature_id: "legacy",
+    expected_project_revision: 1, expected_feature_revision: 1, fields: { why: null, research: [] } });
+  assert.equal(saved.clarification_required, false);
+  assert.deepEqual(saved.inbox_item_ids, []);
+  assert.equal(saved.feature_revision, 2);
+});

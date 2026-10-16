@@ -11,6 +11,31 @@ import { broadIntentReady, initialIntent, makeFeature, makeGoal, projectCollecti
 
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const jsonSize = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
+const FEATURE_INTENT_FIELDS = new Set(["why", "problem", "desired_outcome", "success_criteria", "research", "proposed_options"]);
+const FEATURE_INTENT_LIST_FIELDS = new Set(["success_criteria", "research", "proposed_options"]);
+
+function normalizeFeatureIntentFields(fields) {
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Feature intent fields must be an object.");
+  const keys = Object.keys(fields);
+  if (!keys.length) throw new Error("Choose at least one feature intent field to update.");
+  if (keys.some((key) => !FEATURE_INTENT_FIELDS.has(key))) throw new Error("Feature intent contains unsupported fields.");
+  return Object.fromEntries(keys.map((key) => {
+    const value = fields[key];
+    if (value === null || value === "") return [key, null];
+    if (typeof value === "string") {
+      const normalized = value.trim();
+      if (normalized.length > 12_000) throw new Error(`${key} exceeds 12,000 characters.`);
+      return [key, normalized || null];
+    }
+    if (FEATURE_INTENT_LIST_FIELDS.has(key) && Array.isArray(value)) {
+      if (value.length > 50 || value.some((entry) => typeof entry !== "string" || entry.length > 4_000)) {
+        throw new Error(`${key} must contain at most 50 text entries of 4,000 characters each.`);
+      }
+      return [key, value.map((entry) => entry.trim()).filter(Boolean)];
+    }
+    throw new Error(`${key} must be text${FEATURE_INTENT_LIST_FIELDS.has(key) ? " or a list of text" : ""}.`);
+  }));
+}
 
 function validateFilters(filters) {
   if (!filters || typeof filters !== "object" || Array.isArray(filters)) throw new Error("Filters must be an object.");
@@ -160,6 +185,56 @@ export class RoundhouseService {
       project.revision += 1;
       project.updated_at = created.created_at;
       return { feature: structuredClone(created), project_revision: project.revision };
+    });
+  }
+
+  updateFeatureIntent({ project_id, feature_id, expected_project_revision, expected_feature_revision,
+    fields, clarification_behavior = "ask_if_required", actor = "local-user" }) {
+    if (!nonempty(project_id) || !nonempty(feature_id) || !Number.isInteger(expected_project_revision) || expected_project_revision < 1) {
+      throw new Error("Feature intent update requires project, feature, and current project revision.");
+    }
+    if (expected_feature_revision !== undefined
+      && (!Number.isInteger(expected_feature_revision) || expected_feature_revision < 1)) {
+      throw new Error("Feature intent revision must be a positive integer.");
+    }
+    if (clarification_behavior !== "ask_if_required") throw new Error("Unsupported feature intent clarification behavior.");
+    if (!nonempty(actor)) throw new Error("Feature intent update requires an authenticated actor.");
+    const normalized = normalizeFeatureIntentFields(fields);
+    return this.store.change((data) => {
+      const existing = data.projects?.[project_id];
+      if (!existing) throw new Error("Unknown project.");
+      const project = projectCollection(existing);
+      if (project.revision !== expected_project_revision) throw new Error("Project changed; refresh before updating feature intent.");
+      const feature = project.features.find((candidate) => candidate.id === feature_id);
+      if (!feature) throw new Error("Feature is outside this project or does not exist.");
+      const featureRevision = feature.revision ?? 1;
+      if (expected_feature_revision !== undefined && featureRevision !== expected_feature_revision) {
+        throw new Error("Feature changed; refresh before updating feature intent.");
+      }
+
+      const at = new Date().toISOString();
+      const previous = Object.fromEntries(Object.keys(normalized).map((key) => [key,
+        feature[key] === undefined ? null : structuredClone(feature[key])]));
+      for (const [key, value] of Object.entries(normalized)) feature[key] = structuredClone(value);
+      feature.revision = featureRevision + 1;
+      feature.updated_at = at;
+      feature.intent_audit ??= [];
+      feature.intent_audit.push({ revision: feature.revision, project_revision: project.revision + 1,
+        actor: actor.trim(), source: "dashboard-command", changed_fields: Object.keys(normalized), previous,
+        values: structuredClone(normalized), clarification_behavior, recorded_at: at });
+      project.revision += 1;
+      project.updated_at = at;
+
+      // Feature intent edits do not manufacture blockers from optional blanks.
+      // If linked discovery work already has a consequential open question, it
+      // remains in the canonical item/question Inbox flow.
+      const inboxItemIds = (feature.work_item_ids ?? []).filter((id) => {
+        const item = data.items?.[id];
+        return item?.state === "Needs Clarification" && (item.questions ?? []).some((question) => question.status === "open");
+      });
+      return { feature: structuredClone(feature), project_revision: project.revision,
+        feature_revision: feature.revision, clarification_required: inboxItemIds.length > 0,
+        inbox_item_ids: inboxItemIds };
     });
   }
 

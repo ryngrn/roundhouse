@@ -185,6 +185,26 @@ test("local worker processes relay commands without making relay authoritative",
   assert.equal(finished[0][1].result.item.id, "local-item");
 });
 
+test("local worker maps feature intent commands to the guarded authoritative service", async () => {
+  const payload = { project_id: "example", feature_id: "feature", expected_project_revision: 7,
+    expected_feature_revision: 3, fields: { desired_outcome: "A faster verified choice", research: [] },
+    clarification_behavior: "ask_if_required" };
+  const commands = [{ id: "feature-intent", kind: "feature_intent_update", payload }];
+  const finished = [];
+  let received;
+  const worker = new WorkerLoop({
+    service: { updateFeatureIntent: async (input) => { received = input; return { project_revision: 8, feature_revision: 4 }; } },
+    commandQueue: {
+      claimRemoteCommand: async () => commands.shift() ?? null,
+      finishRemoteCommand: async (id, result) => finished.push([id, result]),
+    },
+  });
+  const result = await worker.remoteCommandTick();
+  assert.equal(result.remote_commands, 1);
+  assert.deepEqual(received, { ...payload, actor: "ryan" });
+  assert.deepEqual(finished, [["feature-intent", { result: { project_revision: 8, feature_revision: 4 } }]]);
+});
+
 test("local worker maps an explode command to the authoritative job removal service", async () => {
   const commands = [{ id: "command-explode", kind: "explode_job", payload: {
     job_id: "blocked-job", expected_revision: 7, note: "Operator removed a dead blocker.",

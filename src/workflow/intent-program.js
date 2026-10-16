@@ -149,5 +149,5 @@ export function makeFeature(input, goals, actor, at = now()) {
   return { id: nonempty(input.id) ? input.id.trim() : randomUUID(), title: input.title.trim(), description: input.description.trim(), why: input.why.trim(),
     success_criteria: nonempty(input.success_criteria) ? input.success_criteria.trim() : null,
     completion_type: input.completion_type, goal_ids: goalIds, status: "Planned", evidence: [], progress: null,
-    work_item_ids: [], proposed_options: [], created_at: at, updated_at: at, created_by: actor };
+    work_item_ids: [], proposed_options: [], revision: 1, intent_audit: [], created_at: at, updated_at: at, created_by: actor };
 }
