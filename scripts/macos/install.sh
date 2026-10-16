@@ -49,7 +49,7 @@ node "$repo/scripts/macos/generate.mjs" "$stage" "$repo" "$node_bin" "$HOME"
 launchctl bootout "gui/$UID/io.roundhouse.dispatch" 2>/dev/null || true
 launchctl bootout "gui/$UID/io.roundhouse.service" 2>/dev/null || true
 cp "$stage/io.roundhouse.service.plist" "$agents/io.roundhouse.service.plist"
-cp "$stage/io.roundhouse.dispatch.plist" "$agents/io.roundhouse.dispatch.plist"
+rm -f "$agents/io.roundhouse.dispatch.plist"
 
 if ! launchctl bootstrap "gui/$UID" "$agents/io.roundhouse.service.plist"; then
   print -u2 "Initial user service bootstrap failed; clearing the stale registration and retrying once."
@@ -59,9 +59,4 @@ fi
 launchctl kickstart -k "gui/$UID/io.roundhouse.service"
 
 wait_for_health "app service" app_health
-if ! launchctl bootstrap "gui/$UID" "$agents/io.roundhouse.dispatch.plist"; then
-  print -u2 "Initial dispatcher bootstrap failed; clearing the stale registration and retrying once."
-  launchctl bootout "gui/$UID/io.roundhouse.dispatch" 2>/dev/null || true
-  launchctl bootstrap "gui/$UID" "$agents/io.roundhouse.dispatch.plist"
-fi
 print "Roundhouse local engine installed and healthy. Open https://roundhouse.ryan.green"
