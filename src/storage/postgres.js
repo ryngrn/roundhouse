@@ -310,6 +310,17 @@ async function writeChanges(client, before, data) {
     VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=clock_timestamp()`, [key, json(value)]);
 }
 
+// Bound per-process database connections to leave headroom for the relay,
+// hosted control-plane invocations, and maintenance on small Aiven tiers.
+// Overrides outside the safe budget fail closed instead of creating large pools.
+export function authorityPoolConfig(env = process.env) {
+  const raw = env.ROUNDHOUSE_DB_POOL_MAX ?? "4";
+  if (!/^[1-4]$/.test(String(raw))) {
+    throw new Error("ROUNDHOUSE_DB_POOL_MAX must be an integer between 1 and 4.");
+  }
+  return { max: Number(raw), idleTimeoutMillis: 10_000 };
+}
+
 export class PostgresStorageRepository extends StorageRepository {
   constructor({ pool, directory, node, leaseMs = 60_000 }) {
     super({ kind: "postgresql", shared: true });
@@ -319,12 +330,12 @@ export class PostgresStorageRepository extends StorageRepository {
     this.leaseMs = leaseMs;
   }
 
-  static async open({ connectionString, directory, node, allowInsecure = false, leaseMs } = {}) {
+  static async open({ connectionString, directory, node, allowInsecure = false, leaseMs, env = process.env } = {}) {
     if (!connectionString) throw new Error("DATABASE_URL is required for PostgreSQL storage.");
     const parsed = new URL(connectionString);
     parsed.searchParams.delete("sslmode");
     parsed.searchParams.delete("uselibpqcompat");
-    const pool = new Pool({ connectionString: parsed.toString(), ssl: databaseTls(connectionString, allowInsecure), max: 12,
+    const pool = new Pool({ connectionString: parsed.toString(), ssl: databaseTls(connectionString, allowInsecure), ...authorityPoolConfig(env),
       connectionTimeoutMillis: 5_000, query_timeout: 120_000, application_name: `roundhouse:${node.name}` });
     monitorIdlePoolErrors(pool);
     const store = new PostgresStorageRepository({ pool, directory, node, leaseMs });
