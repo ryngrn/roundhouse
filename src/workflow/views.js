@@ -27,7 +27,8 @@ function publicRepositories(project) {
 
 export function itemView(data, item) {
   const jobs = item.job_ids.map((id) => data.jobs[id]).filter(Boolean);
-  const openQuestions = (item.questions ?? []).filter((question) => question.status === "open");
+  const openQuestions = ["Needs Clarification", "Review", "Blocked"].includes(item.state)
+    ? (item.questions ?? []).filter((question) => question.status === "open") : [];
   const openQuestion = openQuestions[0];
   const state = aggregateState(item, jobs);
   const currentJob = jobs.find((job) => job.state === state);
@@ -400,6 +401,7 @@ export function needsHumanView(data, filters = {}) {
   const questions = Object.values(data.items)
     .filter((item) => !filters.item_id || item.id === filters.item_id)
     .filter((item) => !filters.project_id || item.project_id === filters.project_id || item.input.project_hint === filters.project_id)
+    .filter((item) => reviewFor(item).required)
     .flatMap((item) => (item.questions ?? [])
       .filter((question) => question.status === "open")
       .map((question) => ({
