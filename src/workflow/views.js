@@ -326,6 +326,28 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
     ...Object.values(data.items ?? {}).filter((item) => !(item.job_ids ?? []).length)
       .map((item) => projectedStandaloneItem(data, item)),
   ].sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")) || a.id.localeCompare(b.id));
+  // Outcome-level summary: attempts remain queryable, but the operator sees
+  // one intent with outstanding work instead of multiple failed wrappers.
+  // This is read-only: no result is inferred from a failed attempt.
+  const outcomeGroups = new Map();
+  for (const entry of items) {
+    const parentId = entry.entity_kind === "job" ? (data.jobs?.[entry.id]?.parent_id ?? entry.id) : entry.id;
+    const intentId = data.items?.[parentId]?.superseded_by ?? parentId;
+    const group = outcomeGroups.get(intentId) ?? {
+      intent_id: intentId, title: data.items?.[intentId]?.input?.text?.split("\n")[0]?.slice(0, 160) ?? entry.title,
+      project: entry.project, work_ids: [], open_work_ids: [], blocked_work_ids: [],
+      verified_work_ids: [], needs_you: false, status: "pending",
+    };
+    group.work_ids.push(entry.id);
+    if (["Shipped", "Reconciled"].includes(entry.state)) group.verified_work_ids.push(entry.id);
+    else if (!["Archived", "Imported History", "Superseded"].includes(entry.state)) group.open_work_ids.push(entry.id);
+    if (entry.state === "Blocked") group.blocked_work_ids.push(entry.id);
+    if (entry.review_required) group.needs_you = true;
+    outcomeGroups.set(intentId, group);
+  }
+  const outcomes = [...outcomeGroups.values()].map((group) => ({ ...group,
+    status: group.open_work_ids.length ? "pending" : group.verified_work_ids.length ? "verified" : "retired",
+  }));
   const counts = {
     needs_review: items.filter((item) => item.review_required).length,
     needs_you: items.filter((item) => item.needs_you).length,
@@ -349,6 +371,7 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
       projects,
       projection_revision,
       items,
+      outcomes,
       counts,
       needs_you: needsHumanView(data).questions,
       connection,

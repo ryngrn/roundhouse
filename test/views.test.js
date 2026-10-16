@@ -90,3 +90,19 @@ test("previously answered cleanup cannot hide an outstanding Review approval",()
  assert.equal(projected.items[0].review_required,true);
  assert.equal(projected.counts.needs_review,1);
 });
+
+test('outcome-first projection groups attempts without claiming failed work shipped', () => {
+  const parent = {id:'intent',state:'Ready',revision:1,project_id:'example',input:{text:'Provide working feature'},history:[],questions:[],job_ids:['old','new']};
+  const obsolete = {id:'obsolete',state:'Archived',revision:2,project_id:'example',input:{text:'Historical wrapper'},history:[],questions:[{id:'stale',revision:1,status:'open',prompt:'Old question'}],job_ids:[]};
+  const data = {items:{intent:parent,obsolete},jobs:{
+    old:{id:'old',parent_id:'intent',project_id:'example',state:'Blocked',revision:2,history:[],work:{title:'Failed attempt'},attempts:[],dependencies:[]},
+    new:{id:'new',parent_id:'intent',project_id:'example',state:'Shipped',revision:2,history:[],work:{title:'Verified delivery'},attempts:[],dependencies:[],shipping:{commit:'abc'}},
+  },projects:{example:{}},outbox:[],system_metadata:{}};
+  const overview = dashboardProjection(data,{projects:[{id:'example',name:'Example',status:'active',runtime:'local'}]}).overview;
+  const outcome = overview.outcomes.find(x=>x.intent_id==='intent');
+  assert.deepEqual(outcome.work_ids.sort(),['new','old']);
+  assert.deepEqual(outcome.blocked_work_ids,['old']);
+  assert.deepEqual(outcome.verified_work_ids,['new']);
+  assert.equal(outcome.status,'pending');
+  assert.equal(overview.needs_you.find(x=>x.item_id==='obsolete'),undefined);
+});
