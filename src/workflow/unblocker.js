@@ -126,7 +126,10 @@ function cleanupCandidates(data) {
   }));
   const items = Object.values(data.items ?? {}).filter(cleanupEligible).map((entity) => ({ kind: "item", entity, parent: entity }));
   return [...jobs, ...items]
-    .filter((root) => root.entity.issue_resolution?.status !== "waiting")
+    // A recorded human resolution is authoritative guidance, not a fresh
+    // cleanup proposal. Never feed it back into an unconstrained model decision
+    // that can overwrite the answer with the same question.
+    .filter((root) => !["waiting", "answered", "reconciliation_pending", "replan_pending"].includes(root.entity.issue_resolution?.status))
     .filter((root) => root.entity.issue_resolution?.status !== "kept" || root.entity.issue_resolution.evidence_fingerprint !== evidenceFingerprint(root))
     .map((root) => ({ ...root, priority: rankCandidate(data, root) }))
     .sort((a, b) => b.priority.score - a.priority.score || a.entity.id.localeCompare(b.entity.id));
