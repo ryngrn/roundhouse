@@ -62,6 +62,8 @@ export class WorkerLoop {
               result = await this.service.initiateProject(command.payload, { source: "remote-dashboard", actor: "ryan" });
             } else if (command.kind === "project_icon") {
               result = await this.service.setProjectIcon({ ...command.payload, actor: "ryan" });
+            } else if (command.kind === "feature_intent_update") {
+              result = await this.service.updateFeatureIntent({ ...command.payload, actor: "ryan" });
             } else if (command.kind === "project_assign") {
               result = await this.service.assignProject({ ...command.payload, actor: "ryan" });
             } else if (command.kind === "jump_front") {

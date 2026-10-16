@@ -315,9 +315,10 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
     status: project.status,
   }]));
   for (const [id, project] of Object.entries(data.projects ?? {})) projects[id] ??= project;
-  for (const project of Object.values(projects)) {
+  for (const [id, source] of Object.entries(projects)) {
+    const project = projects[id] = { ...source };
     project.goals ??= [];
-    project.features ??= [];
+    project.features = (project.features ?? []).map((feature) => ({ ...feature, revision: feature.revision ?? 1 }));
     project.research_tasks ??= [];
   }
   const items = [
