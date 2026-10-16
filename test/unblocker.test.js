@@ -187,3 +187,38 @@ test("an answered human cleanup decision cannot be replaced by another cleanup q
   assert.equal(after.state,"Blocked");
   assert.notEqual(result.cleanup?.id,job.id);
 });
+
+test("approved reconciliation creates one guarded recovery intent and preserves failed attempt", async t => {
+  const h=codexHarness();
+  t.after(()=>fs.rmSync(h.root,{recursive:true,force:true}));
+  const [job,dependent]=await readyJobs(h,["failed budget enforcement","dependent budget integration"]);
+  h.store.change(data=>{
+    data.jobs[dependent.id].dependencies=[job.id];
+    const blocked=data.jobs[job.id];
+    blocked.attempts=[{number:1,execution:{passed:false,exit_code:1}}];
+    h.store.move(data,blocked,"Blocked","Unverified prior attempt.");
+    blocked.issue_resolution={status:"waiting",options:[
+      {id:"preserve-for-reconciliation",label:"Reconcile the existing attempt",resolution:"reconcile"},
+      {id:"delete-unverified-attempt",label:"Delete the unverified work",resolution:"delete"}
+    ]};
+  });
+  const {RoundhouseService}=await import("../src/workflow/service.js");
+  const service=new RoundhouseService({store:h.store,engine:h.engine});
+  const original=h.store.read().jobs[job.id];
+  const approval=await service.resolveIssue({issue_id:job.id,expected_revision:original.revision,
+    action:"option",message:"Reconcile the existing attempt. Preserve all evidence.",actor:"ryan"});
+  assert.equal(approval.issue_resolution.selected_resolution,"reconcile");
+  const first=await h.engine.runUnblocker();
+  assert.equal(first.resolution_followup.original_id,job.id);
+  const recoveryId=first.resolution_followup.followup_item_id;
+  const after=h.store.read();
+  assert.equal(after.jobs[job.id].state,"Blocked");
+  assert.equal(after.jobs[job.id].attempts.length,1);
+  assert.deepEqual(after.jobs[dependent.id].dependencies,[job.id]);
+  assert.equal(after.jobs[job.id].issue_resolution.status,"followup_queued");
+  assert.equal(after.items[recoveryId].input.context.blocker_entity_id,job.id);
+  assert.equal(after.items[recoveryId].blocker_followup.original_id,job.id);
+  const second=await h.engine.runUnblocker();
+  assert.equal(second.resolution_followup,null);
+  assert.equal(Object.values(h.store.read().items).filter(i=>i.input?.context?.blocker_entity_id===job.id).length,1);
+});

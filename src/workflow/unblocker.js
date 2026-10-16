@@ -8,6 +8,7 @@
  */
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { submitToDepot } from "./intake-contract.js";
 
 const ISOLATED_VERIFICATION = /^Rework limit reached: Required verification failed\.$/;
 const STALE_PROJECT_CONTEXT = /^Project policy or context changed after decision; resubmit for a new decision\.$/;
@@ -129,7 +130,7 @@ function cleanupCandidates(data) {
     // A recorded human resolution is authoritative guidance, not a fresh
     // cleanup proposal. Never feed it back into an unconstrained model decision
     // that can overwrite the answer with the same question.
-    .filter((root) => !["waiting", "answered", "reconciliation_pending", "replan_pending"].includes(root.entity.issue_resolution?.status))
+    .filter((root) => !["waiting", "answered", "reconciliation_pending", "replan_pending", "followup_queued"].includes(root.entity.issue_resolution?.status))
     .filter((root) => root.entity.issue_resolution?.status !== "kept" || root.entity.issue_resolution.evidence_fingerprint !== evidenceFingerprint(root))
     .map((root) => ({ ...root, priority: rankCandidate(data, root) }))
     .sort((a, b) => b.priority.score - a.priority.score || a.entity.id.localeCompare(b.entity.id));
@@ -334,6 +335,52 @@ function archiveCandidate(data, root, decision, brief, at) {
   return entity;
 }
 
+// Apply a human-approved non-destructive resolution once. Submitting a
+// recovery item is not approval to execute it: the normal planning, policy,
+// dependency, and verification gates still apply.
+export async function followThroughApprovedResolution(store, data) {
+  const candidate = [...Object.values(data.jobs ?? {}), ...Object.values(data.items ?? {})]
+    .find(entity => cleanupEligible(entity) && entity.issue_resolution?.status === "answered"
+      && ["reconcile", "repurpose"].includes(entity.issue_resolution.selected_resolution));
+  if (!candidate) return null;
+  const resolution = candidate.issue_resolution;
+  const kind = resolution.selected_resolution;
+  const projectId = candidate.project_id ?? data.items?.[candidate.parent_id]?.project_id;
+  const text = (kind === "reconcile" ? "Reconcile the existing unverified attempt for " : "Replan the useful outcome of ")
+    + (candidate.work?.title ?? data.items?.[candidate.parent_id]?.input?.text?.slice(0, 160) ?? candidate.input?.text?.slice(0, 160) ?? candidate.id)
+    + ". Preserve original attempts and audit evidence. Verify existing implementation and delivery before considering replacement work. "
+    + "Never replay failed attempts, bypass dependencies or approvals, or deploy production without separate authorization. "
+    + "Operator instruction: " + resolution.response.message;
+  const input = { text, source: "roundhouse-unblocker", actor: "roundhouse-worker",
+    ...(projectId ? { project_hint: projectId } : {}),
+    context: { blocker_entity_id: candidate.id, blocker_entity_revision: candidate.revision,
+      recovery_kind: kind, human_decision_at: resolution.response.at },
+    metadata: { intent_scope: "tactical", kind: "approved_resolution_followup" } };
+  const key = "approved-resolution:" + candidate.id + ":" + resolution.response.at;
+  const created = await submitToDepot(store, input, key);
+  const result = await store.change(state => {
+    const current = state.jobs?.[candidate.id] ?? state.items?.[candidate.id];
+    if (!current || current.state !== candidate.state
+      || current.issue_resolution?.status !== "answered"
+      || current.issue_resolution.response?.at !== resolution.response.at) {
+      throw new Error("Approved resolution changed before follow-up linkage; refresh authoritative state.");
+    }
+    if (current.issue_resolution.followup_item_id && current.issue_resolution.followup_item_id !== created.id)
+      throw new Error("Approved resolution has a different follow-up; operator reconciliation required.");
+    const at = new Date().toISOString();
+    current.issue_resolution = { ...current.issue_resolution, status: "followup_queued",
+      followup_item_id: created.id, followed_up_at: at };
+    current.revision += 1;
+    current.updated_at = at;
+    current.history.push({from: current.state, to: current.state,
+      reason: "Human-approved " + kind + " follow-up queued as " + created.id + "; original execution held.", at});
+    const followup = state.items[created.id];
+    followup.blocker_followup = { original_id: candidate.id, kind, approved_at: resolution.response.at };
+    return { original_id: candidate.id, followup_item_id: created.id, kind };
+  });
+  return result;
+}
+
 export class Unblocker {
   constructor({ store, config, engine }) {
     Object.assign(this, { store, config, engine });
@@ -365,6 +412,8 @@ export class Unblocker {
       }
     }
     snapshot = await this.store.read();
+    const resolutionFollowup = await followThroughApprovedResolution(this.store, snapshot);
+    if (resolutionFollowup) snapshot = await this.store.read();
     const releases = this.config.projects
       .map(project => ({ project, action: possibleRelease(snapshot, project) }))
       .filter(x => x.action);
@@ -497,7 +546,7 @@ export class Unblocker {
         .map(item => ({ item_id: item.id, project_id: item.project_id ?? null,
           category: "unplanned_blocked_intake", action: "human_review" })),
     ];
-    return { role: "Unblocker", refreshed, released_projects: released, cleanup,
+    return { role: "Unblocker", refreshed, released_projects: released, resolution_followup: resolutionFollowup, cleanup,
       cleanup_metrics: current.system_metadata?.cleanup_metrics ?? null,
       questions_created: [], questions_created_count: cleanup?.action === "ask" ? 1 : 0,
       isolated_jobs: unresolved.filter(x => x.action === "isolate_job").length,
