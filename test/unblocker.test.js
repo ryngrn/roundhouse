@@ -167,3 +167,23 @@ test("Unblocker can be invoked by the existing scheduled dispatcher without a mo
   assert.deepEqual(result.released_projects, []);
   assert.equal(result.refreshed, 0);
 });
+
+test("an answered human cleanup decision cannot be replaced by another cleanup question", async t => {
+  const h = codexHarness();
+  t.after(() => fs.rmSync(h.root, {recursive:true,force:true}));
+  const [job] = await readyJobs(h, ["keep human reconciliation decision"]);
+  h.store.change(data => {
+    h.store.move(data, data.jobs[job.id], "Blocked", "Unverified prior execution.");
+    data.jobs[job.id].issue_resolution = {
+      status:"answered",response:{action:"option",message:"Reconcile existing attempt; do not replay.",actor:"ryan",at:new Date().toISOString()},
+      impact:{fingerprint:"preserve-this-evidence"}
+    };
+  });
+  const before=h.store.read().jobs[job.id];
+  const result=await h.engine.runUnblocker();
+  const after=h.store.read().jobs[job.id];
+  assert.equal(after.revision,before.revision);
+  assert.deepEqual(after.issue_resolution,before.issue_resolution);
+  assert.equal(after.state,"Blocked");
+  assert.notEqual(result.cleanup?.id,job.id);
+});

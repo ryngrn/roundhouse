@@ -795,6 +795,9 @@ export class RoundhouseService {
       if (!entity || !["Blocked", "Needs Clarification"].includes(entity.state)) throw new Error("Only Blocked or Needs Clarification work can be resolved here.");
       if (entity.revision !== expected_revision) throw new Error("Stale issue revision; review the latest state before answering.");
       const prior = entity.issue_resolution;
+      if (prior?.status === "answered" || prior?.status === "reconciliation_pending" || prior?.status === "replan_pending") {
+        throw new Error("This resolution is already recorded; do not answer the same question again.");
+      }
       entity.issue_resolution = { ...(prior ?? {}), status: "answered", response: { action, message, actor, at: new Date().toISOString() } };
       data.system_metadata ??= {};
       data.system_metadata.cleanup_metrics ??= { decisions: 0, deleted: 0, repurposed: 0, asked: 0, kept: 0,
