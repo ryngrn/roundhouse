@@ -418,7 +418,15 @@ export class Unblocker {
       const unsafeDelete = effective.action === "delete" &&
         (root.kind === "item" && (root.entity.job_ids ?? []).some((id) => beforeCleanup.jobs?.[id]) ||
           (root.entity.processes ?? []).length > 0 || Boolean(root.entity.owning_node_id));
-      const preserveUnsafe = unsafeArchive || unsafeDelete;
+      const hasOperatorResponse = Boolean(packet.candidate.operator_response);
+      const providerUnavailableAfterAnswer = hasOperatorResponse
+        && /configured cleanup decision provider did not return a valid decision/i.test(proposed.reason ?? "");
+      // Do not turn an authoritative operator response into another cleanup
+      // question on the same evidence, whether from an invalid provider result
+      // or a low-confidence "ask". New evidence changes the fingerprint and
+      // permits re-evaluation; original attempts and holds remain untouched.
+      const repeatedQuestion = hasOperatorResponse && effective.action === "ask";
+      const preserveUnsafe = unsafeArchive || unsafeDelete || repeatedQuestion;
       const at = new Date().toISOString();
       const commit = (change) => {
         try { return this.store.change(change); }
@@ -432,9 +440,12 @@ export class Unblocker {
           const current = assertCleanupGuard(data, root, packet, this.config);
           const entity = current.entity;
           const response = entity.issue_resolution?.response;
-          const reason = unsafeArchive
-            ? "Proposed archival is invalid for attempted or dependent work."
-            : "Proposed deletion is invalid while dependent or active work is retained.";
+          const reason = providerUnavailableAfterAnswer
+            ? "Cleanup decision provider unavailable after an operator response; preserve the answered decision and hold until new evidence or a verified recovery path exists."
+            : repeatedQuestion
+              ? "Cleanup already has an operator response; do not re-ask on unchanged evidence. Preserve the hold until new evidence or a verified recovery path exists."
+              : unsafeArchive ? "Proposed archival is invalid for attempted or dependent work."
+                : "Proposed deletion is invalid while dependent or active work is retained.";
           entity.cleanup_intent = { ...intentBrief, distilled_at: at, evidence_fingerprint: packet.guard.evidence_fingerprint };
           entity.issue_resolution = {
             status: "kept", confidence: effective.calibrated_confidence, model_confidence: effective.confidence,

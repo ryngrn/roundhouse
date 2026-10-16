@@ -258,6 +258,9 @@ function projectedJob(data, job, config) {
     review_required: review.required,
     review_kind: review.kind,
     review_reason: review.reason,
+    // A Ready slice may still be held by a dependency or project policy;
+    // this is a gate snapshot, not a guarantee of capacity or a live lease.
+    dispatch_gate_open: job.state === "Ready" && !dispatchHold,
     project: job.project_id ?? parentView.project ?? null,
     repository_id: job.repository_id ?? null,
     agent_role: job.agent_role ?? parentView.agent_role ?? "general",
@@ -398,6 +401,10 @@ export function statusView(data, filters = {}) {
 
 export function needsHumanView(data, filters = {}) {
   const questions = Object.values(data.items)
+    // Do not resurrect legacy open-question metadata from Archived/Blocked/
+    // Decision records. Only an actionable review state can ask a question.
+    .filter((item) => ["Needs Clarification", "Review"].includes(item.state))
+    .filter((item) => item.state === "Review" || item.issue_resolution?.status !== "answered")
     .filter((item) => !filters.item_id || item.id === filters.item_id)
     .filter((item) => !filters.project_id || item.project_id === filters.project_id || item.input.project_hint === filters.project_id)
     .flatMap((item) => (item.questions ?? [])
