@@ -336,7 +336,7 @@ export class PostgresStorageRepository extends StorageRepository {
     parsed.searchParams.delete("sslmode");
     parsed.searchParams.delete("uselibpqcompat");
     const pool = new Pool({ connectionString: parsed.toString(), ssl: databaseTls(connectionString, allowInsecure), ...authorityPoolConfig(env),
-      connectionTimeoutMillis: 5_000, query_timeout: 120_000, application_name: `roundhouse:${node.name}` });
+      connectionTimeoutMillis: 15_000, query_timeout: 120_000, application_name: `roundhouse:${node.name}` });
     monitorIdlePoolErrors(pool);
     const store = new PostgresStorageRepository({ pool, directory, node, leaseMs });
     try {
