@@ -1,6 +1,7 @@
 import { displayState } from "./presentation.js";
 import { digest } from "../storage/repository.js";
 import { projectSlug } from "./project-model.js";
+import { mergeProjectRepositories, publicProjectRepositories } from "./project-repositories.js";
 
 const activeStates = new Set(["Decision", "Executing", "Verification", "Rework"]);
 const queuedStates = new Set(["Depot", "Ready", "Imported Pending"]);
@@ -14,15 +15,6 @@ function aggregateState(item, jobs) {
   return ["Blocked", "Review", "Rework", "Verification", "Executing", "Ready"].find((state) =>
     jobs.some((job) => job.state === state),
   );
-}
-
-function publicRepositories(project) {
-  return (project.repositories ?? []).map((repository) => ({
-    id: repository.id,
-    label: repository.label ?? repository.id,
-    verification_ids: (repository.verification ?? []).map((rule) => rule.id),
-    shipping_policy: repository.policy?.shipping ?? project.policy?.shipping ?? null,
-  }));
 }
 
 export function itemView(data, item) {
@@ -310,13 +302,15 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
   const parentStatus = statusView(data);
   const projects = Object.fromEntries((config?.projects ?? []).map((project) => [project.id, {
     ...data.projects?.[project.id], id: project.id, name: project.name, configured: true,
-    repository: project.repositories?.length === 1 ? project.repository ?? null : null,
-    repositories: publicRepositories(project), repository_required: project.repository_required,
+    repository_connections: mergeProjectRepositories(data.projects?.[project.id], project), repository_required: project.repository_required,
     status: project.status,
   }]));
   for (const [id, project] of Object.entries(data.projects ?? {})) projects[id] ??= project;
   for (const [id, source] of Object.entries(projects)) {
     const project = projects[id] = { ...source };
+    project.repository = null;
+    project.repositories = publicProjectRepositories(source);
+    for (const key of ["repository_connections", "checkout_path", "path", "remote", "credentials"]) delete project[key];
     project.goals ??= [];
     project.features = (project.features ?? []).map((feature) => ({ ...feature, revision: feature.revision ?? 1 }));
     project.research_tasks ??= [];
@@ -339,6 +333,7 @@ export function dashboardProjection(data, config, { connection = {} } = {}) {
       intent: item.intent, evidence: item.evidence, needs_you: item.needs_you, review_kind: item.review_kind })),
     projects: Object.fromEntries(Object.entries(projects).map(([id, project]) => [id, {
       revision: project.revision ?? 1, goals: project.goals, features: project.features, research_tasks: project.research_tasks,
+      repositories: project.repositories,
     }])),
   }).slice(0, 24);
   return {

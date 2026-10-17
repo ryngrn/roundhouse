@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import { agentRoleIds } from "./roles.js";
+import { githubRepositoryUrl } from "./project-repositories.js";
 
 export const shippingModes = ["commit_only", "push_branch", "create_pull_request", "merge_to_main", "deploy", "durable_output", "artifact"];
 const check = (value, message) => { if (!value) throw new Error(message); };
@@ -105,7 +106,7 @@ function normalizeProjects(raw, root, execution) {
     }
     const repositories = repositoryInputs.map((entry) => {
       check(plainObject(entry), `Project ${project.id} repository entries must be objects.`);
-      const repositoryKeys = new Set(["id", "checkout_path", "repository", "path", "base_ref", "remote", "verification", "policy", "deployment", "context_sources", "agent", "self_hosting", "label"]);
+      const repositoryKeys = new Set(["id", "github_url", "checkout_path", "repository", "path", "base_ref", "remote", "verification", "policy", "deployment", "context_sources", "agent", "self_hosting", "label"]);
       check(Object.keys(entry).every((key) => repositoryKeys.has(key)), `Project ${project.id} repository ${entry.id ?? "entry"} has an unknown or unsafe setting.`);
       check(nonempty(entry.id) && contractKey.test(entry.id), `Project ${project.id} repository id must be a stable lowercase identifier.`);
       check(!repositoryIds.has(entry.id), `Duplicate repository id ${entry.id} in project ${project.id}.`);
@@ -113,6 +114,12 @@ function normalizeProjects(raw, root, execution) {
       check(entry.label === undefined || (nonempty(entry.label) && entry.label.length <= 80),
         `Repository ${entry.id} label must be nonempty and at most 80 characters.`);
       const suppliedPath = entry.checkout_path ?? entry.repository ?? entry.path;
+      const github_url = entry.github_url === undefined ? undefined : githubRepositoryUrl(entry.github_url);
+      if (suppliedPath === undefined && github_url) {
+        check(Object.keys(entry).every((key) => ["id", "label", "github_url"].includes(key)),
+          `Repository ${entry.id} without checkout_path supports connection metadata only.`);
+        return { id: entry.id, label: entry.label ?? entry.id, github_url };
+      }
       check(nonempty(suppliedPath), `Project ${project.id} repository ${entry.id} requires checkout_path.`);
       const checkout_path = fs.realpathSync(path.resolve(root, suppliedPath));
       const repoVerification = entry.verification ?? verification;
@@ -135,6 +142,7 @@ function normalizeProjects(raw, root, execution) {
       return {
         id: entry.id,
         label: entry.label ?? entry.id,
+        ...(github_url ? { github_url } : {}),
         checkout_path,
         repository: checkout_path,
         base_ref: entry.base_ref ?? project.base_ref ?? "HEAD",
@@ -149,7 +157,7 @@ function normalizeProjects(raw, root, execution) {
     });
     // Compatibility aliases are intentionally available only when there is one
     // concrete repository. Multi-repository execution must resolve by id.
-    const repository = repositories.length === 1 ? repositories[0].checkout_path : null;
+    const repository = repositories.length === 1 ? repositories[0].checkout_path ?? null : null;
     const executor = project.executor ?? { kind: "codex", bin: "codex" };
     check(["codex", "command"].includes(executor.kind), "Unknown executor.");
     if (executor.kind === "command") check(commandValid(executor.command), "Executor requires an argv array.");
